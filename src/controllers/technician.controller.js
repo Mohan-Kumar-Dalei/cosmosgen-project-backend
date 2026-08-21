@@ -11,7 +11,7 @@ const jwt = require('jsonwebtoken');
 
 const registerTechnician = async (req, res) => {
     try {
-        const { name, phone, password, pincode,state, skills, hasVehicle, area } = req.body;
+        const { name, phone, password, pincode, state, skills, hasVehicle, area } = req.body;
 
         // 1. Basic validation
         if (!name || !phone || !password || !pincode || !state || !skills || !area) {
@@ -56,9 +56,9 @@ const registerTechnician = async (req, res) => {
         // 6. Set token in HTTP-only cookie for secure session management
         res.cookie('techToken', token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
+            secure: true, 
+            sameSite: 'none',
+            maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
         console.log("Secure technician registration successful. Tech ID:", newTech._id);
@@ -117,9 +117,9 @@ const loginTechnician = async (req, res) => {
 
         res.cookie('techToken', token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            maxAge: 7 * 24 * 60 * 60 * 1000 
+            secure: true, 
+            sameSite: 'none',
+            maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
         console.log("Technician logged in successfully:", technician._id);
@@ -135,7 +135,7 @@ const updateTechProfile = async (req, res) => {
     try {
         const techId = req.technician._id;
         const { name, phone, state, area, pincode } = req.body;
-        
+
         // Prepare update object
         let updateData = { name, phone, state, area, pincode };
 
@@ -167,7 +167,7 @@ const deleteTechProfile = async (req, res) => {
         const techId = req.technician._id;
 
         await technicianModel.findByIdAndDelete(techId);
-        
+
         // Clear the cookie so the user is logged out
         res.clearCookie('techToken');
 
@@ -255,12 +255,12 @@ const getMyAssignedTicket = async (req, res) => {
         const techId = req.technician._id;
 
         // 👇 Yahan status array mein saare active statuses hone chahiye
-        const activeTicket = await ticketModel.findOne({ 
-            technician: techId, 
-            status: { $in: ['Assigned', 'In-Progress', 'Payment-Pending'] } 
+        const activeTicket = await ticketModel.findOne({
+            technician: techId,
+            status: { $in: ['Assigned', 'In-Progress', 'Payment-Pending'] }
         })
-        .populate('customer', 'name phone address lat lon area state') 
-        .sort({ createdAt: -1 });
+            .populate('customer', 'name phone address lat lon area state')
+            .sort({ createdAt: -1 });
 
         if (!activeTicket) {
             // Agar active ticket nahi hai, toh gracefully null return karo
@@ -331,7 +331,7 @@ const completeTicket = async (req, res) => {
 
         // 4. Recalculate Performance Level based on real DB values
         const rating = technician.rating || 5.0;
-        
+
         if (technician.completedJobs >= 20 && rating >= 4.5) {
             technician.performanceLevel = 'EXPERT';
         } else if (technician.completedJobs >= 5 && rating >= 4.0) {
@@ -346,11 +346,11 @@ const completeTicket = async (req, res) => {
         await technician.save();
 
         console.log(`Job completed! Tech ${techId} stats updated permanently in DB. Total Jobs: ${technician.completedJobs}, Level: ${technician.performanceLevel}`);
-        
-        res.status(200).json({ 
-            success: true, 
-            message: "Job marked as completed and profile updated", 
-            data: technician 
+
+        res.status(200).json({
+            success: true,
+            message: "Job marked as completed and profile updated",
+            data: technician
         });
     } catch (error) {
         console.error("Error completing ticket:", error);
@@ -366,18 +366,18 @@ const generateBill = async (req, res) => {
 
         const ticket = await ticketModel.findOneAndUpdate(
             { _id: ticketId, technician: techId },
-            { 
+            {
                 status: 'Payment-Pending',
                 serviceProvided: { partsUsed, gasFilled, additionalNotes },
-                totalAmount: totalAmount 
+                totalAmount: totalAmount
             },
             { returnDocument: 'after' } // 👈 Mongoose Warning Fix
         ).populate('customer');
 
         // 👇 Socket.io se User ko Bill bhejenge
-        const io = socketManager.getIo(); 
+        const io = socketManager.getIo();
         const billMessage = `📝 *SERVICE INVOICE*\n\n🔧 Parts Used: ${partsUsed.join(', ') || 'None'}\n💨 Gas Filled: ${gasFilled ? 'Yes' : 'No'}\n💰 Total Amount: ₹${totalAmount}\n\n[PAYMENT_LINK_₹${totalAmount}]`;
-        
+
         io.to(`user_${ticket.customer._id}`).emit('ai-response', {
             content: billMessage,
             sender: 'system',
@@ -402,8 +402,8 @@ const verifyPaymentAndClose = async (req, res) => {
         // 1. Ticket status update karein aur Technician ki details (History ke liye) save karein
         const ticket = await ticketModel.findOneAndUpdate(
             { _id: ticketId, technician: techId },
-            { 
-                status: 'Closed', 
+            {
+                status: 'Closed',
                 paymentStatus: 'Completed',
                 technicianId: techId,        // 👈 Ticket history mein Tech ID save
                 technicianName: techName     // 👈 Ticket history mein Tech Name save
@@ -420,7 +420,7 @@ const verifyPaymentAndClose = async (req, res) => {
         await technicianModel.findByIdAndUpdate(techId, {
             isAvailable: true,
             activeTicket: null,
-            $inc: { completedJobs: 1 } 
+            $inc: { completedJobs: 1 }
         });
 
         // 3. Socket message safe emit karein
@@ -450,7 +450,7 @@ const getCompletedTickets = async (req, res) => {
         const history = await ticketModel.find({ technician: techId, status: 'Closed' })
             .populate('customer', 'name address area state')
             .sort({ updatedAt: -1 }); // Naye wale upar
-            
+
         res.status(200).json({ success: true, data: history });
     } catch (error) {
         res.status(500).json({ success: false, message: "Internal Server Error" });
