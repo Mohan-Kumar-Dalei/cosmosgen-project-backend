@@ -11,7 +11,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173", "https://cosmosgen-backend.onrender.com"], 
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173", "https://cosmosgen-frontend.netlify.app"], 
     methods: ["GET", "POST","PUT", "DELETE","PATCH","UPDATE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true
