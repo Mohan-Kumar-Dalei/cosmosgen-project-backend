@@ -22,7 +22,7 @@ const registerUser = async (req, res) => {
             // Exact Map mapping ke liye GeoJSON format
             location: {
                 type: "Point",
-                coordinates: [lon || 0, lat || 0] 
+                coordinates: [lon || 0, lat || 0]
             }
         });
 
@@ -30,7 +30,12 @@ const registerUser = async (req, res) => {
             userId: user._id,
         }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
-        res.cookie('token', token);
+        res.cookie('token', token, {
+            httpOnly: true,
+            secure: true,         
+            sameSite: 'none',  
+            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+        });
         res.status(201).json({ success: true, token, user });
     }
     catch (err) {
@@ -41,7 +46,7 @@ const registerUser = async (req, res) => {
 const getUserDetails = async (req, res) => {
     try {
         // req.user humein auth middleware se mil gaya hai
-        const user = await userModel.findById(req.user._id).select("-password -__v"); 
+        const user = await userModel.findById(req.user._id).select("-password -__v");
         // .select("-password") ka matlab hai ki password field frontend par send nahi karni (security)
 
         if (!user) {
@@ -59,4 +64,4 @@ const getUserDetails = async (req, res) => {
 
 
 
-module.exports = { registerUser,getUserDetails }
+module.exports = { registerUser, getUserDetails }

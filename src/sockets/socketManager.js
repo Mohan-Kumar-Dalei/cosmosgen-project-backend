@@ -21,7 +21,7 @@ function initSocketServer(httpServer) {
     io.use(async (socket, next) => {
         try {
             // FIX: cookie.parseCookie nahi hota, sirf cookie.parse hota hai
-            const cookies = cookie.parseCookie(socket.handshake.headers?.cookie || "");
+            const cookies = cookie.parse(socket.handshake.headers?.cookie || "");
 
             if (!cookies.token) {
                 return next(new Error("Authentication error: No token provided"));

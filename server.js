@@ -1,7 +1,7 @@
 require("dotenv").config();
 //express
 const app = require("./src/app");
-const port = 3000;
+const port = process.env.PORT || 3000;
 //db
 const connectDB = require("./src/config/db");
 //socket server
