@@ -3,30 +3,30 @@ const userModel = require("../models/user.model");
 
 const isAuthenticated = async (req, res, next) => {
     try {
-        // Cookie parser se token nikalna (ensure karein app.use(cookieParser()) `server.js` mein laga ho)
-        const token = req.cookies.token;
-        
+        const token = req.cookies?.token;
         if (!token) {
-            return res.status(401).json({ message: "Unauthorized: No token provided" });
+            return res.status(401).json({ success: false, message: "Unauthorized: No token provided" });
         }
 
-        // Token verify karna
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        
-        // Database se user find karna (decoded.userId ya decoded.id aapke login logic par depend karta hai)
-        const user = await userModel.findById(decoded.userId || decoded.id);
-        
+        const userId = decoded.userId || decoded.id;
+
+        // select + lean -> sirf zaroori fields, mongoose hydration skip.
+        // Ye middleware HAR request pe chalta hai, isliye yahan speed matter karti hai
+        const user = await userModel
+            .findById(userId)
+            .select("_id name phone address state area lat lon role")
+            .lean();
+
         if (!user) {
-            return res.status(401).json({ message: "Unauthorized: User not found" });
+            return res.status(401).json({ success: false, message: "Unauthorized: User not found" });
         }
 
-        // Request object mein user data attach kar diya
         req.user = user;
         next();
-
     } catch (error) {
-        console.error("🚨 Auth Middleware Error:", error.message);
-        res.status(401).json({ message: "Unauthorized: Invalid token" });
+        console.error("Auth middleware error:", error.message);
+        return res.status(401).json({ success: false, message: "Unauthorized: Invalid token" });
     }
 };
 

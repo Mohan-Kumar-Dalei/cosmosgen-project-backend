@@ -1,64 +1,50 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const upload = require('../middlewares/multer');
-const {
-    registerTechnician,
-    updateLocation,
-    loginTechnician,
-    updateTechProfile,
-    deleteTechProfile,
-    logoutTechnician,
-    getOpenTickets,
-    acceptTicket,
-    completeTicket,
-    getTechProfile,
-    getMyAssignedTicket,
-    updateStatus,
-    generateBill,
-    verifyPaymentAndClose,
-    getCompletedTickets
-} = require('../controllers/technician.controller');
-const { isTechAuthenticated } = require('../middlewares/techAuth.middleware');
-// Create a new technician
-router.post('/register', registerTechnician);
+const rateLimit = require("express-rate-limit");
 
-// Get the profile of the authenticated technician
-router.get('/me', isTechAuthenticated, getTechProfile);
+const upload = require("../middlewares/multer");
+const { isTechAuthenticated } = require("../middlewares/techAuth.middleware");
+const technicianController = require("../controllers/technician.controller");
 
-// Login technician and issue JWT token
-router.post('/login', loginTechnician);
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    skipSuccessfulRequests: true,
+    message: { success: false, message: "Too many attempts, try again later" },
+});
 
-// Logout technician and clear JWT token
-router.post('/logout', logoutTechnician);
+// Auth
+router.post("/register", authLimiter, technicianController.registerTechnician);
+router.post("/login", authLimiter, technicianController.loginTechnician);
+router.post("/logout", technicianController.logoutTechnician);
 
-// Update technician profile
-router.put('/profile/update', isTechAuthenticated,upload.single('profileImage'), updateTechProfile);
+// Profile
+router.get("/me", isTechAuthenticated, technicianController.getTechProfile);
+router.get("/bootstrap", isTechAuthenticated, technicianController.bootstrap);
+router.get("/cash-deposits", isTechAuthenticated, technicianController.getCashDeposits);
+router.put("/profile/update", isTechAuthenticated, upload.single("profileImage"), technicianController.updateTechProfile);
+router.delete("/profile/delete", isTechAuthenticated, technicianController.deleteTechProfile);
 
-// Delete technician profile
-router.delete('/profile/delete', isTechAuthenticated, deleteTechProfile);
+// Status & location
+router.put("/status", isTechAuthenticated, technicianController.updateStatus);
+//router.post("/update-location", isTechAuthenticated, technicianController.updateLocation);
 
-// Update technician's availability status
-router.put('/status', isTechAuthenticated, updateStatus);
+// Pricing catalog
+router.get("/pricing", isTechAuthenticated, technicianController.getPricing);
 
-// Update live location and status
-router.post('/update-location', isTechAuthenticated, updateLocation);
+// Tickets
+// router.get("/my-ticket", isTechAuthenticated, technicianController.getMyAssignedTicket);
+// router.get("/tickets/history", isTechAuthenticated, technicianController.getCompletedTickets);
+router.post("/tickets/:id/start-work", isTechAuthenticated, technicianController.startWork);
+router.post("/tickets/:id/release", isTechAuthenticated, technicianController.releaseTicket);
+router.post("/tickets/generateBill", isTechAuthenticated, technicianController.generateBill);
+router.post("/tickets/:id/collect-cash", isTechAuthenticated, technicianController.collectCash);
+router.get("/tickets/:id/payment-status", isTechAuthenticated, technicianController.getPaymentStatus);
+router.post("/tickets/:id/start-now", isTechAuthenticated, technicianController.startScheduledNow);
 
-// Get list of all unassigned 'Open' tickets
-router.get('/tickets/open', isTechAuthenticated, getOpenTickets);
-
-
-router.get('/my-ticket', isTechAuthenticated, getMyAssignedTicket);
-
-// Accept a specific ticket
-router.post('/tickets/accept', isTechAuthenticated, acceptTicket);
-
-// Mark a specific ticket as completed and update technician's performance
-router.post('/tickets/complete', isTechAuthenticated, completeTicket);
-
-router.post('/tickets/verify-close', isTechAuthenticated, verifyPaymentAndClose);
-
-router.post('/tickets/generateBill', isTechAuthenticated, generateBill);
-
-router.get('/tickets/history', isTechAuthenticated, getCompletedTickets);
+//wallet
+router.get("/wallet", isTechAuthenticated, technicianController.getWallet); 
+router.post("/wallet/recharge", isTechAuthenticated, technicianController.createWalletRecharge);
+router.get("/wallet/recharge/:linkId", isTechAuthenticated, technicianController.checkWalletRecharge);
 
 module.exports = router;

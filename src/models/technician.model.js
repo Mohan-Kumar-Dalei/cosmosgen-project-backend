@@ -1,44 +1,76 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const technicianSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    phone: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-    
-    // Naye Location Fields
-    state: { type: String, required: true }, // e.g., 'West Bengal'
-    area: { type: String, required: true },  // e.g., 'Salt Lake'
-    pincode: { type: String, required: true }, 
-    
-    // Naya Profile Image Field
-    profileImage: { type: String, default: "" }, // URL or base64 string
-    
-    skills: [{ type: String }], 
+    name: { type: String, required: true, trim: true },
+    // Phone is the technician's identity - they sign in with it, and a
+    // blocked number can never be reused because this stays unique
+    phone: { type: String, required: true, unique: true, trim: true },
+    password: { type: String, required: true, select: false },
+
+    state: { type: String, required: true, trim: true },
+    area: { type: String, required: true, trim: true },
+    pincode: { type: String, required: true, trim: true },
+
+    profileImage: { type: String, default: "" },
+    skills: [{ type: String }],
     hasVehicle: { type: Boolean, default: false },
-    rating: { type: Number, default: 5.0 }, 
-    
+    rating: { type: Number, default: 5.0, min: 0, max: 5 },
+
     location: {
-        type: { type: String, default: 'Point' },
-        coordinates: { type: [Number], default: [0, 0] } 
+        // No default on type - Mongoose would stamp { type: "Point" } onto every
+        // new document, and the 2dsphere index rejects a location object with
+        // a type but no coordinates
+        type: { type: String, enum: ["Point"] },
+        coordinates: { type: [Number] },
     },
-    completedJobs: { 
+    lastLocationAt: { type: Date },
+
+    completedJobs: { type: Number, default: 0 },
+    performanceLevel: {
+        type: String,
+        enum: ["STARTER", "PRO", "EXPERT"],
+        default: "STARTER",
+    },
+
+    // Accounts sit here until the office checks them. Nobody signs in
+    // or receives work while pending.
+    approvalStatus: {
+        type: String,
+        enum: ["pending", "approved", "rejected"],
+        default: "pending",
+        index: true,
+    },
+
+    walletBalancePaise: { 
         type: Number, 
         default: 0 
     },
-    performanceLevel: { 
-        type: String, 
-        enum: ['STARTER', 'PRO', 'EXPERT'],
-        default: 'STARTER' 
+    commissionRate: { 
+        type: Number, 
+        default: () => parseInt(process.env.DEFAULT_COMMISSION_RATE) || 20, // Environment variable driven
+        min: 0, 
+        max: 100 
     },
-    isAvailable: { type: Boolean, default: true },
-    activeTicket: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Ticket',
-        default: null 
-    }
+
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+    approvedAt: { type: Date },
+    rejectionReason: { type: String },
+
+    // A blocked number is permanently barred - login and re-registration
+    // both check this before anything else
+    isBlacklisted: { type: Boolean, default: false },
+    blacklistedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+    blacklistedAt: { type: Date },
+    blacklistReason: { type: String },
+
+    isAvailable: { type: Boolean, default: false },
+    activeTicket: { type: mongoose.Schema.Types.ObjectId, ref: "Ticket", default: null },
+
+    isDeleted: { type: Boolean, default: false },
 }, { timestamps: true });
 
-technicianSchema.index({ location: '2dsphere' });
+technicianSchema.index({ location: "2dsphere" });
+technicianSchema.index({ state: 1, area: 1, isAvailable: 1 });
+technicianSchema.index({ approvalStatus: 1, isDeleted: 1 });
 
-const technicianModel = mongoose.model('Technician', technicianSchema);
-module.exports = technicianModel
+module.exports = mongoose.model("Technician", technicianSchema);

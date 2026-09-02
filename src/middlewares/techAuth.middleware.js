@@ -1,35 +1,55 @@
 const jwt = require("jsonwebtoken");
-const Technician = require("../models/technician.model");
+const technicianModel = require("../models/technician.model");
 
 const isTechAuthenticated = async (req, res, next) => {
     try {
-        // Read the token from the cookie
-        const token = req.cookies.techToken;
-        
+        const token = req.cookies?.techToken;
         if (!token) {
-            console.error("Tech Auth Error: No token found in cookies");
             return res.status(401).json({ success: false, message: "Unauthorized: Please login first" });
         }
 
-        // Verify the token
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        
-        // Find the technician
-        const technician = await Technician.findById(decoded.techId).select("-password");
-        
-        if (!technician) {
-            console.error("Tech Auth Error: Technician not found in database");
-            return res.status(401).json({ success: false, message: "Unauthorized: Invalid user" });
+        if (!decoded.techId || decoded.role !== "technician") {
+            return res.status(401).json({ success: false, message: "Unauthorized: Invalid token" });
         }
 
-        // Attach technician data to the request object for the next functions
+        const technician = await technicianModel
+            .findById(decoded.techId)
+            .select("_id name phone state area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel location approvalStatus isBlacklisted isDeleted")
+            .lean();
+
+        if (!technician) {
+            return res.status(401).json({ success: false, message: "Unauthorized: Technician not found" });
+        }
+
+        // Checked on every request, not just at login - an account blocked or
+        // un-approved mid-session loses access immediately instead of running
+        // on a token that's still technically valid
+        if (technician.isBlacklisted) {
+            res.clearCookie("techToken", { path: "/" });
+            return res.status(403).json({ success: false, message: "This account has been blocked. Contact the office." });
+        }
+        if (technician.isDeleted) {
+            res.clearCookie("techToken", { path: "/" });
+            return res.status(403).json({ success: false, message: "This account is no longer active." });
+        }
+        if (technician.approvalStatus !== "approved") {
+            res.clearCookie("techToken", { path: "/" });
+            return res.status(403).json({
+                success: false,
+                message: "Your account is still being reviewed by the office.",
+                approvalStatus: technician.approvalStatus,
+            });
+        }
+
         req.technician = technician;
         next();
-
     } catch (error) {
-        console.error("Tech Auth Error: Token verification failed", error.message);
-        res.status(401).json({ success: false, message: "Unauthorized: Invalid token" });
+        console.error("Tech auth error:", error.message);
+        return res.status(401).json({ success: false, message: "Unauthorized: Invalid token" });
     }
 };
 
+// No isSuperAdmin here - that lives in adminAuth.middleware.js and reads
+// req.admin, which technician routes never have
 module.exports = { isTechAuthenticated };

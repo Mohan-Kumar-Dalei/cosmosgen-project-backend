@@ -1,169 +1,295 @@
 const { Server } = require("socket.io");
 const cookie = require("cookie");
 const jwt = require("jsonwebtoken");
+
 const userModel = require("../models/user.model");
-const aiService = require("../services/ai.service");
+const technicianModel = require("../models/technician.model");
+const adminModel = require("../models/admin.model");
 const messageModel = require("../models/message.model");
+const aiService = require("../services/ai.service");
 const { createMemory, queryMemory } = require("../services/vector.service");
-let ioInstance;
+const { setIo, userRoom, techRoom, adminRoom } = require("./socket.instance");
+
+const parseCookies = (header = "") => {
+    const fn = cookie.parseCookie || cookie.parse;
+    try {
+        return fn(header) || {};
+    } catch (e) {
+        console.error("[SOCKET] cookie parse threw:", e.message);
+        return {};
+    }
+};
+
 function initSocketServer(httpServer) {
+    const CLIENT_ORIGINS = (process.env.CLIENT_ORIGINS || "http://localhost:5173")
+        .split(",")
+        .map((o) => o.trim());
+
+    console.log("[SOCKET] Initializing. Allowed origins:", CLIENT_ORIGINS);
+
     const io = new Server(httpServer, {
         cors: {
-            origin: ["http://localhost:5173", "http://127.0.0.1:5173", "https://cosmosgen-frontend.netlify.app"],
+            origin: CLIENT_ORIGINS,
             methods: ["GET", "POST"],
-            allowedHeaders: ["Content-Type", "Authorization"],
-            credentials: true
-        }
+            credentials: true,
+        },
+        pingTimeout: 30000,
     });
-    ioInstance = io;
 
-    // 🛡️ AUTHENTICATION MIDDLEWARE
+    setIo(io);
+
+    io.engine.on("connection_error", (err) => {
+        console.error("[SOCKET] Engine-level connection_error:", { message: err.message, code: err.code });
+    });
+
+    /**
+     * AUTH
+     *
+     * The client tells us which role it's connecting as (socket.handshake.auth.role).
+     * This matters because a browser can hold all three auth cookies at once
+     * (e.g. during testing, when you're logged in as admin, technician, and
+     * customer in the same browser) - without an explicit role, we'd always
+     * pick the same cookie first and silently connect as the wrong actor.
+     */
     io.use(async (socket, next) => {
         try {
-            // FIX: cookie.parseCookie nahi hota, sirf cookie.parse hota hai
-            const cookies = cookie.parseCookie(socket.handshake.headers?.cookie || "");
+            const cookies = parseCookies(socket.handshake.headers?.cookie || "");
+            const requestedRole = socket.handshake.auth?.role;
 
-            if (!cookies.token) {
-                return next(new Error("Authentication error: No token provided"));
+            if (!Object.keys(cookies).length) {
+                console.warn("[SOCKET] Auth failed: no cookies sent. Check withCredentials on the client.");
+                return next(new Error("Authentication error: no cookies sent"));
             }
 
-            const decoded = jwt.verify(cookies.token, process.env.JWT_SECRET);
-            const user = await userModel.findById(decoded.userId || decoded.id);
+            if (requestedRole === "admin") {
+                if (!cookies.adminToken) return next(new Error("No admin session"));
+                const decoded = jwt.verify(cookies.adminToken, process.env.ADMIN_JWT_SECRET);
+                const admin = await adminModel.findById(decoded.adminId).select("_id name role isActive").lean();
+                if (!admin || !admin.isActive) return next(new Error("Admin not found"));
+                socket.role = "admin";
+                socket.actor = admin;
+                return next();
+            }
 
-            if (!user) return next(new Error("User not found"));
+            if (requestedRole === "technician") {
+                if (!cookies.techToken) return next(new Error("No technician session"));
+                const decoded = jwt.verify(cookies.techToken, process.env.JWT_SECRET);
+                const tech = await technicianModel.findById(decoded.techId).select("_id name").lean();
+                if (!tech) return next(new Error("Technician not found"));
+                socket.role = "technician";
+                socket.actor = tech;
+                return next();
+            }
 
-            socket.user = user;
-            next();
+            if (requestedRole === "customer") {
+                if (!cookies.token) return next(new Error("No customer session"));
+                const decoded = jwt.verify(cookies.token, process.env.JWT_SECRET);
+                const user = await userModel
+                    .findById(decoded.userId || decoded.id)
+                    .select("_id name phone area state lat lon")
+                    .lean();
+                if (!user) return next(new Error("User not found"));
+                socket.role = "customer";
+                socket.actor = user;
+                return next();
+            }
+
+            // Fallback for older clients that don't send a role yet.
+            // Should not be hit once every panel uses createRoleSocket().
+            console.warn("[SOCKET] No role sent by client, falling back to cookie priority");
+            if (cookies.adminToken) {
+                const decoded = jwt.verify(cookies.adminToken, process.env.ADMIN_JWT_SECRET);
+                const admin = await adminModel.findById(decoded.adminId).select("_id name role isActive").lean();
+                if (admin?.isActive) {
+                    socket.role = "admin";
+                    socket.actor = admin;
+                    return next();
+                }
+            }
+            if (cookies.techToken) {
+                const decoded = jwt.verify(cookies.techToken, process.env.JWT_SECRET);
+                const tech = await technicianModel.findById(decoded.techId).select("_id name").lean();
+                if (tech) {
+                    socket.role = "technician";
+                    socket.actor = tech;
+                    return next();
+                }
+            }
+            if (cookies.token) {
+                const decoded = jwt.verify(cookies.token, process.env.JWT_SECRET);
+                const user = await userModel.findById(decoded.userId || decoded.id).select("_id name phone area state lat lon").lean();
+                if (user) {
+                    socket.role = "customer";
+                    socket.actor = user;
+                    return next();
+                }
+            }
+
+            return next(new Error("Authentication error: no valid session found"));
         } catch (err) {
-            console.error("🚨 Socket Auth Error:", err.message);
-            next(new Error("Authentication error: Invalid token"));
+            console.error("[SOCKET] Auth exception:", err.name, "-", err.message);
+            return next(new Error("Authentication error: invalid token"));
         }
     });
 
     io.on("connection", (socket) => {
-        console.log(`🟢 User connected: ${socket.user._id}`);
-        socket.join(`user_${socket.user._id.toString()}`);
-        socket.on("ai-message", async (messagePayload) => {
-            try {
-                const userIdString = socket.user._id.toString();
+        const actorId = String(socket.actor._id);
+        console.log(`[SOCKET] Connected: role=${socket.role} id=${actorId}`);
 
-                // ==========================================
-                // 🚀 FAST TRACK: Turant Context aur Reply nikalo
-                // ==========================================
+        if (socket.role === "admin") {
+            socket.join(adminRoom());
+            return;
+        }
 
-                // 1. User message ka vector banao aur Purani chat nikalo (Concurrently)
-                const [vectors, chatHistory] = await Promise.all([
-                    aiService.generateVector(messagePayload.content),
-                    messageModel.find({ chat: messagePayload.chat })
-                        .sort({ createdAt: -1 })
-                        .limit(20)
-                        .lean()
-                        .then(messages => messages.reverse())
-                ]);
+        if (socket.role === "technician") {
+            socket.join(techRoom(actorId));
+            registerTechnicianHandlers(socket, actorId);
+            return;
+        }
 
-                // 2. Vector use karke Pinecone se RAG Memory nikalo
-                const memory = await queryMemory({
+        socket.join(userRoom(actorId));
+        registerCustomerHandlers(socket, actorId);
+    });
+
+    return io;
+}
+
+/* ------------------------------------------------------------------ */
+/* TECHNICIAN                                                          */
+/* ------------------------------------------------------------------ */
+
+function registerTechnicianHandlers(socket, techId) {
+    let lastWrite = 0;
+    const MIN_WRITE_GAP_MS = 10000;
+
+    socket.on("tech:location", async (payload = {}) => {
+        const lat = Number(payload.lat);
+        const lon = Number(payload.lon ?? payload.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
+
+        const now = Date.now();
+        if (now - lastWrite < MIN_WRITE_GAP_MS) return;
+        lastWrite = now;
+
+        try {
+            await technicianModel.updateOne(
+                { _id: techId },
+                { location: { type: "Point", coordinates: [lon, lat] }, lastLocationAt: new Date() }
+            );
+        } catch (err) {
+            console.error("[SOCKET] tech:location write failed:", err.message);
+        }
+    });
+}
+
+/* ------------------------------------------------------------------ */
+/* CUSTOMER (AI chat)                                                  */
+/* ------------------------------------------------------------------ */
+
+function registerCustomerHandlers(socket, userIdString) {
+    socket.on("ai-message", async (messagePayload = {}) => {
+        const chatId = String(messagePayload.chat || "").trim();
+        const content = String(messagePayload.content || "").trim();
+
+        console.log(`[SOCKET] ai-message from ${userIdString}: "${content.slice(0, 60)}"`);
+
+        if (!chatId || !content) {
+            console.warn("[SOCKET] ai-message dropped: missing chatId or content");
+            return;
+        }
+        if (content.length > 2000) {
+            socket.emit("ai-response", { content: "That message is too long. Please shorten it and try again.", chat: chatId });
+            return;
+        }
+
+        try {
+            const [vectors, chatHistory] = await Promise.all([
+                aiService.generateVector(content).catch((e) => {
+                    console.error("[SOCKET] generateVector failed:", e.message);
+                    return [];
+                }),
+                messageModel
+                    .find({ chat: chatId, user: userIdString })
+                    .sort({ createdAt: -1 })
+                    .limit(20)
+                    .select("role content")
+                    .lean(),
+            ]);
+
+            let memory = [];
+            if (vectors.length > 0) {
+                memory = await queryMemory({
                     queryVector: vectors,
                     limit: 3,
-                    metadata: { user: userIdString }
+                    metadata: { user: userIdString },
+                }).catch((e) => {
+                    console.error("[SOCKET] queryMemory failed:", e.message);
+                    return [];
                 });
+            }
 
-                // 3. 🧠 SORT TERM MEMORY (Pichli taaza chat history DB se)
-                const sortTermMemory = chatHistory.map(item => ({
-                    role: item.role === "ai" ? "model" : "user", // Gemini sirf 'user' ya 'model' samajhta hai
-                    parts: [{ text: item.content }]
-                }));
+            const shortTermMemory = chatHistory.reverse().map((item) => ({
+                role: item.role === "model" ? "model" : "user",
+                parts: [{ text: item.content }],
+            }));
 
-                // 4. 🧠 LONG TERM MEMORY + NAYA MESSAGE (Pinecone facts + current message)
-                // Isko hum ek "user" prompt bana kar bhej rahe hain taaki AI turant answer de aur error na aaye
-                const longTermMemory = {
-                    role: "user",
-                    parts: [{
-                        text: `[Here is some Long Term Memory context from previous chats]:\n${memory.map(item => item.metadata.text).join(" | ")}\n\n[Here is the Current User Message]:\n${messagePayload.content}`
-                    }]
-                };
+            const memoryText = memory.map((m) => m?.metadata?.text).filter(Boolean).join(" | ");
+            const currentTurn = {
+                role: "user",
+                parts: [{
+                    text: memoryText
+                        ? `[Long term memory from previous chats]:\n${memoryText}\n\n[Current user message]:\n${content}`
+                        : content,
+                }],
+            };
 
-                // 5. generate response from AI using both short-term and long-term memory
-                const chatHistoryMemory = [...sortTermMemory, longTermMemory];
-                const response = await aiService.generateResponse(
-                    chatHistoryMemory,
-                    socket.user,
-                    messagePayload.content,
-                    messagePayload.location
-                );
+            const response = await aiService.generateResponse(
+                [...shortTermMemory, currentTurn],
+                socket.actor,
+                content,
+                messagePayload.location
+            );
 
-                // 6. ⚡ send to frontend without waiting for DB save (background save)
-                socket.emit('ai-response', {
-                    content: response,
-                    chat: messagePayload.chat
-                });
+            socket.emit("ai-response", { content: response, chat: chatId });
+            console.log("[SOCKET] ai-response emitted");
 
-                // ==========================================
-                // 🐢 BACKGROUND TRACK: save in DB with chilling
-                // ==========================================
-                (async () => {
-                    try {
-                        // A. User message save in DB
-                        const userMessage = await messageModel.create({
-                            chat: messagePayload.chat,
-                            user: socket.user._id,
-                            content: messagePayload.content,
-                            role: "user"
-                        });
-
-                        // B. User Vector save in Pinecone(RAG)
+            // Background save - fire and forget
+            (async () => {
+                try {
+                    const userMessage = await messageModel.create({
+                        chat: chatId, user: userIdString, content: content, role: "user",
+                    });
+                    if (vectors.length > 0) {
                         await createMemory({
-                            vectors: vectors,
+                            vectors,
                             messageId: userMessage._id,
-                            metadata: {
-                                chat: messagePayload.chat,
-                                user: userIdString,
-                                text: messagePayload.content
-                            }
-                        });
-
-                        // C. AI reply message save in DB
-                        const responseMessage = await messageModel.create({
-                            chat: messagePayload.chat,
-                            user: socket.user._id,
-                            content: response,
-                            role: "model"
-                        });
-
-                        // D. AI reply message save in Pinecone(RAG)
-                        const responseVectors = await aiService.generateVector(response);
+                            metadata: { chat: chatId, user: userIdString, text: content },
+                        }).catch((e) => console.error("[SOCKET] createMemory (user) failed:", e.message));
+                    }
+                    const responseMessage = await messageModel.create({
+                        chat: chatId, user: userIdString, content: response, role: "model",
+                    });
+                    const responseVectors = await aiService.generateVector(response).catch(() => []);
+                    if (responseVectors.length > 0) {
                         await createMemory({
                             vectors: responseVectors,
                             messageId: responseMessage._id,
-                            metadata: {
-                                chat: messagePayload.chat,
-                                user: userIdString,
-                                text: response
-                            }
-                        });
-
-                    } catch (bgErr) {
-                        console.error("🚨 Background Database Save Error:", bgErr);
+                            metadata: { chat: chatId, user: userIdString, text: response },
+                        }).catch((e) => console.error("[SOCKET] createMemory (model) failed:", e.message));
                     }
-                })(); // IIFE function
-
-            } catch (error) {
-                console.error("🚨 AI Message Handling Error:", error);
-                //after error, send a generic error message to the client
-                socket.emit('ai-response', {
-                    content: "Sorry, something went wrong while processing your message. Please try again later.",
-                    chat: messagePayload?.chat
-                });
-            }
-        });
-    });
-
-    initSocketServer.getIo = () => {
-        if (!ioInstance) {
-            throw new Error("Socket.io is not initialized yet!");
+                } catch (bgErr) {
+                    console.error("[SOCKET] Background save error:", bgErr.message);
+                }
+            })();
+        } catch (error) {
+            console.error("[SOCKET] ai-message handler exception:", error);
+            socket.emit("ai-response", {
+                content: "Sorry, something went wrong. Please try again in a moment.",
+                chat: chatId,
+            });
         }
-        return ioInstance;
-    };
+    });
 }
 
 module.exports = initSocketServer;

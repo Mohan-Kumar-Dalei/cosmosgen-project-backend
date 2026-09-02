@@ -1,476 +1,1215 @@
-const technicianModel = require('../models/technician.model');
-const ticketModel = require('../models/ticket.model');
-const uploadImage = require('../utils/imagekit');
-const socketManager = require('../sockets/socketManager');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
+const technicianModel = require("../models/technician.model");
+const ticketModel = require("../models/ticket.model");
+const ServicePricing = require("../models/servicePricing.model");
+const Payment = require("../models/payment.model");
+const WalletTransaction = require("../models/walletTransaction.model");
+const uploadImage = require("../utils/imagekit");
+const paymentService = require("../services/payment.service");
+const notification = require("../services/notification.service");
+const { promoteQueuedTicket } = require("../services/dispatch.service");
+const { emitToRoom, userRoom } = require("../sockets/socket.instance");
+const walletService = require("../services/wallet.service");
+const { estimateGatewayFee } = require("../config/razorpay");
 
+const isProd = process.env.NODE_ENV === "production";
 
+const cookieOptions = {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: "/",
+};
 
+const clearOptions = {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    path: "/",
+};
+
+const PUBLIC_FIELDS =
+    "_id name phone state area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel createdAt";
+
+const ACTIVE_STATUSES = ["Assigned", "In-Progress", "Payment-Pending"];
+
+const signToken = (techId) =>
+    jwt.sign({ techId, role: "technician" }, process.env.JWT_SECRET, { expiresIn: "7d" });
+
+/* ================= AUTH ================= */
 
 const registerTechnician = async (req, res) => {
     try {
-        const { name, phone, password, pincode, state, skills, hasVehicle, area } = req.body;
+        const { name, phone, password, pincode, state, skills, hasVehicle, area, lat, lon } = req.body;
 
-        // 1. Basic validation
         if (!name || !phone || !password || !pincode || !state || !skills || !area) {
-            console.error("Registration failed: Missing required fields");
             return res.status(400).json({ success: false, message: "Please provide all required details" });
         }
+        if (!/^[6-9]\d{9}$/.test(String(phone).trim())) {
+            return res.status(400).json({ success: false, message: "Enter a valid 10-digit mobile number" });
+        }
+        if (String(password).length < 6) {
+            return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+        }
 
-        // 2. Check if technician already exists
-        const existingTech = await technicianModel.findOne({ phone });
-        if (existingTech) {
-            console.error("Registration failed: Phone number already registered -", phone);
+        const cleanPhone = String(phone).trim();
+
+        const existing = await technicianModel
+            .findOne({ phone: cleanPhone })
+            .select("_id isBlacklisted approvalStatus")
+            .lean();
+
+        if (existing) {
+            // A blocked number can never come back, even under a new name
+            if (existing.isBlacklisted) {
+                return res.status(403).json({
+                    success: false,
+                    message: "This number cannot be registered. Contact the office if you think this is a mistake.",
+                });
+            }
             return res.status(400).json({ success: false, message: "Phone number already registered" });
         }
 
-        // 3. 🔒 Hash the password using bcrypt
-        const saltRounds = 10;
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-        // 4. Create the new technician profile with the hashed password
-        const newTech = await technicianModel.create({
-            name,
-            phone,
-            password: hashedPassword, // Saving encrypted password
-            pincode,
+        const techData = {
+            name: String(name).trim(),
+            phone: cleanPhone,
+            password: await bcrypt.hash(password, 10),
+            pincode: String(pincode).trim(),
+            state: String(state).trim(),
+            area: String(area).trim(),
             skills: Array.isArray(skills) ? skills : [skills],
-            hasVehicle,
-            area,
-            state,
-            location: {
-                type: 'Point',
-                coordinates: [0, 0]
-            }
-        });
+            hasVehicle: Boolean(hasVehicle),
+            approvalStatus: "pending",
+        };
 
-        // 5. 🔑 Generate JWT Token for authentication
-        const token = jwt.sign(
-            { techId: newTech._id, role: 'technician' },
-            process.env.JWT_SECRET, // Make sure this is in your .env file
-            { expiresIn: '7d' } // Token valid for 7 days
-        );
+        const numLat = Number(lat);
+        const numLon = Number(lon);
+        const hasCoords = Number.isFinite(numLat) && Number.isFinite(numLon)
+            && Math.abs(numLat) <= 90 && Math.abs(numLon) <= 180;
 
-        // 6. Set token in HTTP-only cookie for secure session management
-        res.cookie('techToken', token, {
-            httpOnly: true,
-            secure: true, 
-            sameSite: 'none',
-            maxAge: 7 * 24 * 60 * 60 * 1000
-        });
+        if (hasCoords) {
+            techData.location = { type: "Point", coordinates: [numLon, numLat] };
+            techData.lastLocationAt = new Date();
+        }
 
-        console.log("Secure technician registration successful. Tech ID:", newTech._id);
+        const newTech = new technicianModel(techData);
 
-        // 7. Send success response (excluding password)
-        res.status(201).json({
+        // Even if a schema default sneaks in a bare { type: "Point" }, strip it -
+        // the 2dsphere index refuses a location object without coordinates
+        if (!hasCoords) {
+            newTech.location = undefined;
+            newTech.markModified("location");
+        }
+
+        await newTech.save();
+
+        // No cookie here - the account has to be approved before it can sign in
+        return res.status(201).json({
             success: true,
-            message: "Registration successful",
-            data: {
-                _id: newTech._id,
-                name: newTech.name,
-                phone: newTech.phone,
-                skills: newTech.skills,
-                area: newTech.area,
-                pincode: newTech.pincode
-            }
+            requiresApproval: true,
+            message: "Account created. The office will review it and you'll be able to sign in once approved.",
         });
     } catch (error) {
-        console.error("Error during secure technician registration:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        console.error("Register technician error:", error);
+        if (error.code === 11000) {
+            return res.status(400).json({ success: false, message: "Phone number already registered" });
+        }
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
-};
-// Fetch technician profile (secured route)
-const getTechProfile = async (req, res) => {
-    try {
-        // Data is now coming directly from the database!
-        res.status(200).json({ success: true, data: req.technician });
-    } catch (error) {
-        console.error("Error fetching tech profile:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
+}
 
-// Login technician and issue JWT token
 const loginTechnician = async (req, res) => {
     try {
         const { phone, password } = req.body;
+        if (!phone || !password) {
+            return res.status(400).json({ success: false, message: "Phone and password are required" });
+        }
 
-        const technician = await technicianModel.findOne({ phone });
+        const technician = await technicianModel.findOne({ phone: String(phone).trim() }).select("+password");
+
         if (!technician) {
-            console.error("Login failed: Technician not found");
             return res.status(401).json({ success: false, message: "Invalid phone number or password" });
         }
 
         const isPasswordValid = await bcrypt.compare(password, technician.password);
         if (!isPasswordValid) {
-            console.error("Login failed: Incorrect password");
             return res.status(401).json({ success: false, message: "Invalid phone number or password" });
         }
 
-        const token = jwt.sign(
-            { techId: technician._id, role: 'technician' },
-            process.env.JWT_SECRET,
-            { expiresIn: '7d' }
-        );
+        // Password checked first so these messages don't leak which numbers
+        // are registered to someone probing at random
+        if (technician.isBlacklisted) {
+            return res.status(403).json({
+                success: false,
+                message: "This account has been blocked. Contact the office.",
+            });
+        }
+        if (technician.isDeleted) {
+            return res.status(403).json({ success: false, message: "This account is no longer active." });
+        }
+        if (technician.approvalStatus === "rejected") {
+            return res.status(403).json({
+                success: false,
+                message: technician.rejectionReason
+                    ? "Your application was not approved: " + technician.rejectionReason
+                    : "Your application was not approved. Contact the office for details.",
+                approvalStatus: "rejected",
+            });
+        }
+        if (technician.approvalStatus === "pending") {
+            return res.status(403).json({
+                success: false,
+                message: "Your account is still being reviewed. We'll let you know once it's approved.",
+                approvalStatus: "pending",
+            });
+        }
 
-        res.cookie('techToken', token, {
-            httpOnly: true,
-            secure: true, 
-            sameSite: 'none',
-            maxAge: 7 * 24 * 60 * 60 * 1000
-        });
+        res.cookie("techToken", signToken(technician._id), cookieOptions);
 
-        console.log("Technician logged in successfully:", technician._id);
-        res.status(200).json({ success: true, message: "Login successful", data: technician });
+        const data = await technicianModel.findById(technician._id).select(PUBLIC_FIELDS).lean();
+        return res.status(200).json({ success: true, message: "Login successful", data });
     } catch (error) {
         console.error("Login error:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
 
-// Update technician profile (secured route)
+const logoutTechnician = (req, res) => {
+    res.clearCookie("techToken", clearOptions);
+    return res.status(200).json({ success: true, message: "Logged out successfully" });
+};
+
+/* ================= PROFILE ================= */
+
+const getTechProfile = async (req, res) => {
+    return res.status(200).json({ success: true, data: req.technician });
+};
+
+// GET /api/technician/bootstrap
+const bootstrap = async (req, res) => {
+    try {
+        const techId = req.technician._id;
+
+        const [activeTicket, nextJobs, scheduledJobs, history, cashSummary] = await Promise.all([
+            ticketModel
+                .findOne({ technician: techId, status: { $in: ACTIVE_STATUSES } })
+                .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot status billing payment scheduling createdAt assignedAt")
+                .sort({ createdAt: -1 })
+                .lean(),
+
+            // Undated queued work is "next up" - it starts on its own when the
+            // current job closes, so the technician can only decline it
+            ticketModel
+                .find({
+                    technician: techId,
+                    status: "Queued",
+                    "scheduling.scheduledFor": { $in: [null, undefined] },
+                })
+                .select("ticketNumber serviceLabel problemDescription customerSnapshot queuedAt")
+                .sort({ queuedAt: 1 })
+                .lean(),
+
+            // Dated work is scheduled - the technician can pull it forward
+            ticketModel
+                .find({
+                    technician: techId,
+                    status: "Queued",
+                    "scheduling.scheduledFor": { $ne: null },
+                })
+                .select("ticketNumber serviceLabel problemDescription customerSnapshot scheduling queuedAt")
+                .sort({ "scheduling.scheduledFor": 1 })
+                .lean(),
+
+            ticketModel
+                .find({ technician: techId, status: "Closed" })
+                .select("ticketNumber serviceLabel billing.totalPaise billing.invoiceNumber customerSnapshot payment.method payment.status updatedAt")
+                .sort({ updatedAt: -1 })
+                .limit(30)
+                .lean(),
+
+            Payment.aggregate([
+                { $match: { collectedBy: techId, method: "cash", status: "collected" } },
+                { $group: { _id: null, count: { $sum: 1 }, totalPaise: { $sum: "$amountPaise" } } },
+            ]),
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                profile: req.technician,
+                activeTicket: activeTicket || null,
+                nextJobs,
+                scheduledJobs,
+                history,
+                pendingCash: {
+                    count: cashSummary[0]?.count || 0,
+                    totalPaise: cashSummary[0]?.totalPaise || 0,
+                    amountDisplay: paymentService.paiseToRupees(cashSummary[0]?.totalPaise || 0),
+                },
+            },
+        });
+    } catch (error) {
+        console.error("Bootstrap error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// GET /api/technician/cash-deposits
+// The list behind the "pending deposit" number, so a technician can see
+// exactly which jobs make up the cash they're carrying
+const getCashDeposits = async (req, res) => {
+    try {
+        const [pending, recentVerified] = await Promise.all([
+            Payment.find({ collectedBy: req.technician._id, method: "cash", status: "collected" })
+                .select("ticketNumber invoiceNumber amountPaise collectedAt")
+                .sort({ collectedAt: 1 })
+                .lean(),
+
+            Payment.find({ collectedBy: req.technician._id, method: "cash", status: "verified" })
+                .populate("verifiedBy", "name")
+                .select("ticketNumber invoiceNumber amountPaise verifiedAt verifiedBy")
+                .sort({ verifiedAt: -1 })
+                .limit(15)
+                .lean(),
+        ]);
+
+        const totalPaise = pending.reduce((sum, p) => sum + p.amountPaise, 0);
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                pending: pending.map((p) => ({ ...p, amountDisplay: paymentService.paiseToRupees(p.amountPaise) })),
+                recentVerified: recentVerified.map((p) => ({ ...p, amountDisplay: paymentService.paiseToRupees(p.amountPaise) })),
+                totalPendingDisplay: paymentService.paiseToRupees(totalPaise),
+            },
+        });
+    } catch (error) {
+        console.error("Get cash deposits error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 const updateTechProfile = async (req, res) => {
     try {
         const techId = req.technician._id;
-        const { name, phone, state, area, pincode } = req.body;
+        const { name, state, area, pincode } = req.body;
 
-        // Prepare update object
-        let updateData = { name, phone, state, area, pincode };
+        const updateData = {};
+        if (name) updateData.name = String(name).trim();
+        if (state) updateData.state = String(state).trim();
+        if (area) updateData.area = String(area).trim();
+        if (pincode) updateData.pincode = String(pincode).trim();
 
-        // Check if an image file was uploaded
         if (req.file) {
-            console.log(`Uploading new profile image for Tech: ${techId}`);
-            const fileName = `tech_${techId}_${Date.now()}`;
-            const uploadResult = await uploadImage(req.file.buffer, fileName);
-            updateData.profileImage = uploadResult.url; // Save ImageKit URL
+            const uploadResult = await uploadImage(req.file.buffer, `tech_${techId}_${Date.now()}`);
+            updateData.profileImage = uploadResult.url;
         }
 
-        const updatedTech = await technicianModel.findByIdAndUpdate(
-            techId,
-            updateData,
-            { new: true, runValidators: true }
-        ).select("-password");
+        const updatedTech = await technicianModel
+            .findByIdAndUpdate(techId, updateData, { new: true, runValidators: true })
+            .select(PUBLIC_FIELDS)
+            .lean();
 
-        console.log("Profile updated successfully for tech:", techId);
-        res.status(200).json({ success: true, message: "Profile updated successfully", data: updatedTech });
+        return res.status(200).json({ success: true, message: "Profile updated successfully", data: updatedTech });
     } catch (error) {
         console.error("Profile update error:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        return res.status(500).json({ success: false, message: "Failed to update profile" });
     }
 };
 
-// Delete technician profile (secured route)
 const deleteTechProfile = async (req, res) => {
     try {
         const techId = req.technician._id;
 
-        await technicianModel.findByIdAndDelete(techId);
+        const activeJob = await ticketModel
+            .findOne({ technician: techId, status: { $in: [...ACTIVE_STATUSES, "Queued"] } })
+            .select("_id")
+            .lean();
 
-        // Clear the cookie so the user is logged out
-        res.clearCookie('techToken');
-
-        console.log("Technician account deleted permanently:", techId);
-        res.status(200).json({ success: true, message: "Account deleted successfully" });
-    } catch (error) {
-        console.error("Account deletion error:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
-
-// Logout technician by clearing the JWT cookie
-const logoutTechnician = (req, res) => {
-    res.clearCookie('techToken');
-    res.status(200).json({ success: true, message: "Logged out successfully" });
-};
-
-// Toggle Online/Offline and Available/Busy status
-const updateStatus = async (req, res) => {
-    try {
-        const { isOnline, isAvailable } = req.body;
-        const techId = req.technician._id;
-        const updatedTech = await technicianModel.findByIdAndUpdate(
-            techId,
-            { isAvailable: isAvailable },
-            { new: true }
-        ).select("-password");
-
-        console.log(`Status updated for Tech ${techId}: Available=${isAvailable}`);
-        res.status(200).json({ success: true, data: updatedTech });
-    } catch (error) {
-        console.error("Error updating tech status:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
-
-// Update technician's live location and availability
-const updateLocation = async (req, res) => {
-    try {
-        const { techId, lat, lon, isAvailable } = req.body;
-
-        const updatedTech = await technicianModel.findByIdAndUpdate(
-            techId,
-            {
-                location: {
-                    type: 'Point',
-                    coordinates: [lon, lat] // MongoDB expects [longitude, latitude]
-                },
-                isAvailable: isAvailable
-            },
-            { new: true }
-        );
-
-        if (!updatedTech) {
-            console.error("Technician not found for location update:", techId);
-            return res.status(404).json({ success: false, message: "Technician not found" });
+        if (activeJob) {
+            return res.status(400).json({ success: false, message: "Finish your active jobs before deleting your account" });
         }
 
-        console.log(`Location updated for tech ${techId} at coordinates [${lon}, ${lat}]`);
-        res.status(200).json({ success: true, data: updatedTech });
-    } catch (error) {
-        console.error("Error updating location:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
-
-// Fetch open tickets for available technicians
-const getOpenTickets = async (req, res) => {
-    try {
-        // Fetch tickets with 'Open' status
-        const openTickets = await ticketModel.find({ status: 'Open' })
-            .populate('customer', 'name phone address location') // Populate user details
-            .sort({ createdAt: -1 });
-
-        res.status(200).json({ success: true, data: openTickets });
-    } catch (error) {
-        console.error("Error fetching open tickets:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
-
-
-const getMyAssignedTicket = async (req, res) => {
-    try {
-        const techId = req.technician._id;
-
-        // 👇 Yahan status array mein saare active statuses hone chahiye
-        const activeTicket = await ticketModel.findOne({
-            technician: techId,
-            status: { $in: ['Assigned', 'In-Progress', 'Payment-Pending'] }
-        })
-            .populate('customer', 'name phone address lat lon area state')
-            .sort({ createdAt: -1 });
-
-        if (!activeTicket) {
-            // Agar active ticket nahi hai, toh gracefully null return karo
-            return res.status(200).json({ success: true, message: "No active ticket", data: null });
+        const undeposited = await Payment.countDocuments({
+            collectedBy: techId, method: "cash", status: "collected",
+        });
+        if (undeposited > 0) {
+            return res.status(400).json({ success: false, message: "Deposit your collected cash at the office first" });
         }
 
-        res.status(200).json({ success: true, data: activeTicket });
-    } catch (error) {
-        console.error("🚨 Error fetching assigned ticket:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
-
-// Accept a ticket and assign it to the technician
-const acceptTicket = async (req, res) => {
-    try {
-        const { ticketId, techId } = req.body;
-
-        // 1. Verify if the ticket is still open
-        const ticket = await ticketModel.findById(ticketId);
-        if (!ticket || ticket.status !== 'Open') {
-            console.error("Ticket is no longer available:", ticketId);
-            return res.status(400).json({ success: false, message: "Ticket already assigned or closed" });
-        }
-
-        // 2. Assign ticket to technician and change status to 'Assigned'
-        ticket.technician = techId;
-        ticket.status = 'Assigned';
-        await ticket.save();
-
-        // 3. Mark technician as unavailable and link the active ticket
         await technicianModel.findByIdAndUpdate(techId, {
-            isAvailable: false,
-            activeTicket: ticketId
+            isDeleted: true, isAvailable: false, activeTicket: null,
         });
 
-        console.log(`Ticket ${ticketId} successfully assigned to Technician ${techId}`);
-        res.status(200).json({ success: true, message: "Ticket accepted successfully", data: ticket });
+        res.clearCookie("techToken", clearOptions);
+        return res.status(200).json({ success: true, message: "Account deleted successfully" });
     } catch (error) {
-        console.error("Error accepting ticket:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        console.error("Delete profile error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
 
-//MARK TICKET AS COMPLETED & UPDATE PERFORMANCE IN DB
-const completeTicket = async (req, res) => {
-    try {
-        const { ticketId } = req.body;
-        const techId = req.technician._id;
+/* ================= STATUS & LOCATION ================= */
 
-        // 1. Update the Ticket status to 'Closed'
-        const ticket = await Ticket.findOneAndUpdate(
-            { _id: ticketId, technician: techId },
-            { status: 'Closed' },
-            { new: true }
+const updateStatus = async (req, res) => {
+    try {
+        const { isAvailable } = req.body;
+
+        if (typeof isAvailable !== "boolean") {
+            return res.status(400).json({ success: false, message: "isAvailable must be true or false" });
+        }
+        if (req.technician.activeTicket) {
+            return res.status(400).json({ success: false, message: "You cannot change status while on an active job" });
+        }
+
+        const updatedTech = await technicianModel
+            .findByIdAndUpdate(req.technician._id, { isAvailable }, { new: true })
+            .select(PUBLIC_FIELDS)
+            .lean();
+
+        return res.status(200).json({ success: true, data: updatedTech });
+    } catch (error) {
+        console.error("Update status error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/* const updateLocation = async (req, res) => {
+    try {
+        const lat = Number(req.body.lat);
+        const lon = Number(req.body.lon ?? req.body.lng);
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+            return res.status(400).json({ success: false, message: "Valid lat and lon are required" });
+        }
+        if (Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+            return res.status(400).json({ success: false, message: "Coordinates out of range" });
+        }
+
+        await technicianModel.updateOne(
+            { _id: req.technician._id },
+            { location: { type: "Point", coordinates: [lon, lat] }, lastLocationAt: new Date() }
         );
 
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Update location error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+}; */
+
+/* ================= TICKETS ================= */
+
+/* const getMyAssignedTicket = async (req, res) => {
+    try {
+        const activeTicket = await ticketModel
+            .findOne({ technician: req.technician._id, status: { $in: ACTIVE_STATUSES } })
+            .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot status billing payment createdAt assignedAt")
+            .sort({ createdAt: -1 })
+            .lean();
+
+        return res.status(200).json({ success: true, data: activeTicket || null });
+    } catch (error) {
+        console.error("Get assigned ticket error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+}; */
+
+/* const getCompletedTickets = async (req, res) => {
+    try {
+        const history = await ticketModel
+            .find({ technician: req.technician._id, status: "Closed" })
+            .select("ticketNumber serviceLabel billing.totalPaise billing.invoiceNumber customerSnapshot payment.method payment.status updatedAt")
+            .sort({ updatedAt: -1 })
+            .limit(50)
+            .lean();
+
+        return res.status(200).json({ success: true, data: history });
+    } catch (error) {
+        console.error("Get history error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+}; */
+
+const startWork = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOneAndUpdate(
+            { _id: req.params.id, technician: req.technician._id, status: "Assigned" },
+            {
+                status: "In-Progress",
+                $push: {
+                    statusHistory: {
+                        from: "Assigned",
+                        to: "In-Progress",
+                        actorRole: "technician",
+                        actorId: req.technician._id,
+                        at: new Date(),
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
         if (!ticket) {
-            console.error("Complete Ticket Error: Ticket not found or not assigned to this tech.");
+            return res.status(404).json({ success: false, message: "Ticket not found or already started" });
+        }
+
+        // Goes to both channels - a WhatsApp customer never had the web
+        // socket open, so the old socket-only emit reached nobody
+        await notification.notifyCustomerWorkStarted(ticket);
+
+        return res.status(200).json({ success: true, data: ticket });
+    } catch (error) {
+        console.error("Start work error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const releaseTicket = async (req, res) => {
+    try {
+        const { reason } = req.body;
+
+        if (!reason || String(reason).trim().length < 5) {
+            return res.status(400).json({ success: false, message: "Please explain why you can't do this job" });
+        }
+
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+            status: { $in: ["Queued", "Assigned", "In-Progress"] },
+        }).lean();
+
+        if (!ticket) {
+            return res.status(404).json({ success: false, message: "Job not found or not currently yours" });
+        }
+
+        const wasActive = ticket.status !== "Queued";
+        const wasScheduled = Boolean(ticket.scheduling?.scheduledFor);
+
+        const updated = await ticketModel.findByIdAndUpdate(
+            ticket._id,
+            {
+                status: "Pending",
+                technician: null,
+                technicianSnapshot: {},
+                assignedBy: null,
+                assignedAt: null,
+                queuedAt: null,
+                rejection: {
+                    rejectedByName: req.technician.name,
+                    reason: String(reason).trim(),
+                    rejectedAt: new Date(),
+                    wasScheduled,
+                },
+                $push: {
+                    statusHistory: {
+                        from: ticket.status,
+                        to: "Pending",
+                        actorRole: "technician",
+                        actorId: req.technician._id,
+                        reason: "Declined: " + String(reason).trim(),
+                        at: new Date(),
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
+        // Only pull in their next job if this was the one they were on
+        if (wasActive) {
+            await promoteQueuedTicket(req.technician._id);
+        }
+
+        notification.notifyAdminsTicketRejected(updated, req.technician.name, String(reason).trim());
+
+        return res.status(200).json({
+            success: true,
+            message: "The office has been notified",
+            data: updated,
+        });
+    } catch (error) {
+        console.error("Release ticket error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const startScheduledNow = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+            status: "Queued",
+        }).lean();
+
+        if (!ticket) {
+            return res.status(404).json({ success: false, message: "Scheduled job not found" });
+        }
+
+        // Filter on activeTicket so two taps can't both slip through
+        const locked = await technicianModel.findOneAndUpdate(
+            { _id: req.technician._id, activeTicket: null },
+            { isAvailable: false, activeTicket: ticket._id },
+            { returnDocument: "after" }
+        ).lean();
+
+        if (!locked) {
+            return res.status(409).json({
+                success: false,
+                message: "Finish your current job before starting this one",
+            });
+        }
+
+        const updated = await ticketModel.findOneAndUpdate(
+            { _id: ticket._id, status: "Queued" },
+            {
+                status: "Assigned",
+                assignedAt: new Date(),
+                $push: {
+                    statusHistory: {
+                        from: "Queued",
+                        to: "Assigned",
+                        actorRole: "technician",
+                        actorId: req.technician._id,
+                        reason: "Technician pulled this job forward",
+                        at: new Date(),
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
+        if (!updated) {
+            // Someone else moved it first - hand the technician back
+            await technicianModel.updateOne(
+                { _id: req.technician._id },
+                { isAvailable: true, activeTicket: null }
+            );
+            return res.status(409).json({ success: false, message: "This job was just changed. Refresh and try again." });
+        }
+
+        await notification.notifyCustomerAssigned(updated);
+        notification.notifyAdminsScheduledStartedEarly(updated, req.technician.name);
+
+        return res.status(200).json({
+            success: true,
+            message: "Job started - it's now in My Job",
+            data: updated,
+        });
+    } catch (error) {
+        console.error("Start scheduled now error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/* ================= BILLING & PAYMENT ================= */
+
+const getPricing = async (req, res) => {
+    try {
+        const { serviceKey } = req.query;
+        if (!serviceKey) {
+            return res.status(400).json({ success: false, message: "serviceKey is required" });
+        }
+
+        const doc = await ServicePricing.findOne({ serviceKey }).lean();
+        const items = (doc?.itemsList || []).filter((i) => i.isActive);
+
+        return res.status(200).json({
+            success: true,
+            data: items
+                .map((i) => ({ ...i, priceDisplay: paymentService.paiseToRupees(i.pricePaise) }))
+                .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name)),
+            limits: paymentService.LIMITS,
+            onlinePaymentAvailable: paymentService.isRazorpayActive(),
+        });
+    } catch (error) {
+        console.error("Get pricing error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+ // POST /api/technician/tickets/generateBill
+const generateBill = async (req, res) => {
+    try {
+        const { ticketId, catalogItems, customItems, workDone, paymentMethod } = req.body;
+
+        if (!ticketId) {
+            return res.status(400).json({ success: false, message: "ticketId is required" });
+        }
+
+        const method = paymentMethod === "cash" ? "cash" : "online";
+
+        const ticket = await ticketModel.findOne({
+            _id: ticketId,
+            technician: req.technician._id,
+            status: { $in: ["Assigned", "In-Progress"] },
+        });
+
+        if (!ticket) {
+            return res.status(404).json({ success: false, message: "Ticket not found or bill already generated" });
+        }
+
+        // Prices come from the DB, never from the request body
+        const pricingDoc = await ServicePricing.findOne({ serviceKey: ticket.serviceKey }).lean();
+        const priceMap = new Map(
+            (pricingDoc?.itemsList || [])
+                .filter((i) => i.isActive)
+                .map((i) => [String(i._id), { name: i.name, pricePaise: i.pricePaise }])
+        );
+
+        const bill = paymentService.buildBill({
+            catalogItems: Array.isArray(catalogItems) ? catalogItems : [],
+            customItems: Array.isArray(customItems) ? customItems : [],
+            workDone,
+            priceMap,
+        });
+
+        if (bill.error) {
+            return res.status(400).json({ success: false, message: bill.error });
+        }
+
+        const invoiceNumber = await paymentService.generateInvoiceNumber();
+
+        let link = null;
+        if (method === "online") {
+            link = await paymentService.createPaymentLink({
+                ticket, amountPaise: bill.totalPaise, invoiceNumber,
+            });
+
+            if (!link) {
+                return res.status(502).json({
+                    success: false,
+                    message: "Could not create the payment link. Collect cash instead, or check the gateway settings.",
+                });
+            }
+        }
+
+        // Freeze the commission split at billing time. If the rate changes
+        // next month, this job's numbers must not move with it.
+        const techData = await technicianModel.findById(req.technician._id).select("commissionRate").lean();
+        const commissionPercent = techData?.commissionRate ?? parseInt(process.env.DEFAULT_COMMISSION_RATE) ?? 20;
+        const commissionPaise = walletService.calculateCommission(bill.totalPaise, commissionPercent);
+        const technicianSharePaise = bill.totalPaise - commissionPaise;
+
+        const previousStatus = ticket.status;
+
+        ticket.billing = {
+            invoiceNumber,
+            lineItems: bill.lineItems,
+            workDone: bill.workDone,
+            subtotalPaise: bill.subtotalPaise,
+            gstPercent: bill.gstPercent,
+            gstPaise: bill.gstPaise,
+            totalPaise: bill.totalPaise,
+            commissionPercent,
+            commissionPaise,
+            technicianSharePaise,
+            createdByTechnician: req.technician._id,
+            billedAt: new Date(),
+        };
+        ticket.payment = {
+            status: "Pending",
+            method,
+            ...(link ? { razorpayLinkId: link.linkId, razorpayLinkUrl: link.linkUrl } : {}),
+        };
+        ticket.status = "Payment-Pending";
+        ticket.statusHistory.push({
+            from: previousStatus,
+            to: "Payment-Pending",
+            actorRole: "technician",
+            actorId: req.technician._id,
+            at: new Date(),
+        });
+
+        await ticket.save();
+
+        await Payment.create({
+            ticket: ticket._id,
+            ticketNumber: ticket.ticketNumber,
+            invoiceNumber,
+            amountPaise: bill.totalPaise,
+            method,
+            status: "pending",
+            // Copied onto the payment so revenue reporting doesn't have to
+            // join back to the ticket for every row
+            commissionPercent,
+            commissionPaise,
+            technicianSharePaise,
+            ...(link ? { razorpayLinkId: link.linkId, razorpayLinkUrl: link.linkUrl } : {}),
+        });
+
+        const itemLines = bill.lineItems
+            .map((l) => l.description + " - Rs " + paymentService.paiseToRupees(l.amountPaise))
+            .join("\n");
+
+        let message =
+            "*INVOICE " + invoiceNumber + "*\n" +
+            "Ticket: " + ticket.ticketNumber + "\n" +
+            (bill.workDone ? "\nWork done: " + bill.workDone + "\n" : "") +
+            "\n" + itemLines + "\n\n";
+
+        if (bill.gstPaise > 0) {
+            message += "Subtotal: Rs " + paymentService.paiseToRupees(bill.subtotalPaise) + "\n";
+            message += "GST (" + bill.gstPercent + "%): Rs " + paymentService.paiseToRupees(bill.gstPaise) + "\n";
+        }
+        message += "*Total: Rs " + paymentService.paiseToRupees(bill.totalPaise) + "*\n\n";
+        message += link
+            ? "Pay here:\n" + link.linkUrl
+            : "Please pay Rs " + paymentService.paiseToRupees(bill.totalPaise) + " in cash to the technician.";
+
+        await notification.notifyCustomer({ ticket, text: message });
+
+        return res.status(200).json({
+            success: true,
+            message: link ? "Invoice sent to customer" : "Invoice generated - collect the cash",
+            data: {
+                invoiceNumber,
+                method,
+                totalDisplay: paymentService.paiseToRupees(bill.totalPaise),
+                paymentLink: link?.linkUrl || null,
+            },
+        });
+    } catch (error) {
+        console.error("Generate bill error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+ // POST /api/technician/tickets/:id/collect-cash
+
+const collectCash = async (req, res) => {
+    try {
+        const { note } = req.body;
+
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+            status: "Payment-Pending",
+            "payment.method": "cash",
+        }).lean();
+
+        if (!ticket) {
+            return res.status(404).json({
+                success: false,
+                message: "Ticket not found, or this invoice isn't set to cash payment",
+            });
+        }
+
+        const updated = await ticketModel.findOneAndUpdate(
+            { _id: ticket._id, status: "Payment-Pending" },
+            {
+                status: "Closed",
+                "payment.status": "Collected",
+                "payment.collectedAt": new Date(),
+                "payment.collectedNote": note ? String(note).trim().slice(0, 200) : undefined,
+                $push: {
+                    statusHistory: {
+                        from: "Payment-Pending", to: "Closed",
+                        actorRole: "technician", actorId: req.technician._id,
+                        reason: "Cash collected from customer",
+                        at: new Date(),
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
+        // Null means someone closed it first - stop before touching the
+        // wallet, or the commission gets deducted twice
+        if (!updated) {
+            return res.status(409).json({ success: false, message: "This ticket was already closed" });
+        }
+
+        await Payment.findOneAndUpdate(
+            { ticket: ticket._id, status: "pending" },
+            {
+                status: "collected",
+                collectedBy: req.technician._id,
+                collectedAt: new Date(),
+                note: note ? String(note).trim().slice(0, 200) : undefined,
+            }
+        );
+
+        // Use the rate frozen on the invoice, not the technician's current
+        // rate - the customer was billed against that split
+        const commissionPercent = updated.billing?.commissionPercent ?? 20;
+
+        try {
+            await walletService.deductCommissionForCashJob(
+                req.technician._id,
+                updated._id,
+                updated.ticketNumber,
+                updated.billing?.totalPaise || 0,
+                commissionPercent
+            );
+        } catch (walletErr) {
+            console.error("Wallet debit failed for", updated.ticketNumber, walletErr.message);
+        }
+
+        await technicianModel.updateOne(
+            { _id: req.technician._id },
+            { $inc: { completedJobs: 1 } }
+        );
+
+        await promoteQueuedTicket(req.technician._id);
+
+        await notification.notifyCustomer({
+            ticket: updated,
+            text:
+                "Payment received - Rs " + paymentService.paiseToRupees(updated.billing?.totalPaise) + "\n" +
+                "Invoice: " + updated.billing?.invoiceNumber + "\n\n" +
+                "Thank you for choosing Cosmosgen. Ticket " + updated.ticketNumber + " is now closed.",
+        });
+
+        notification.notifyAdminsPaymentCollected(updated, req.technician.name);
+
+        return res.status(200).json({ success: true, message: "Cash recorded, job closed", data: updated });
+    } catch (error) {
+        console.error("Collect cash error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// GET /api/technician/wallet?days=90
+// GET /api/technician/wallet?days=90
+const getWallet = async (req, res) => {
+    try {
+        const techId = req.technician._id;
+
+        // How far a technician can go into the red before the office steps in
+        const CREDIT_LIMIT_PAISE = -100000;
+
+        const days = Math.min(365, Math.max(7, Number(req.query.days) || 90));
+        const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+        const [tech, transactions, periodTotals, lifetimeOnline, cashJobsValue] = await Promise.all([
+            technicianModel.findById(techId).select("walletBalancePaise commissionRate completedJobs").lean(),
+
+            WalletTransaction.find({ technician: techId })
+                .sort({ createdAt: -1 })
+                .limit(50)
+                .populate("ticket", "ticketNumber serviceLabel")
+                .lean(),
+
+            // Split by source so "earned" means work done, not money moved.
+            // A payout is a transfer, not income - lumping them together
+            // would make the earnings number meaningless.
+            WalletTransaction.aggregate([
+                { $match: { technician: techId, createdAt: { $gte: since } } },
+                { $group: { _id: "$source", total: { $sum: "$amountPaise" }, count: { $sum: 1 } } },
+            ]),
+
+            WalletTransaction.aggregate([
+                { $match: { technician: techId, source: "job_online" } },
+                { $group: { _id: null, total: { $sum: "$amountPaise" } } },
+            ]),
+
+            ticketModel.aggregate([
+                {
+                    $match: {
+                        technician: techId,
+                        status: "Closed",
+                        "payment.method": "cash",
+                        updatedAt: { $gte: since },
+                    },
+                },
+                { $group: { _id: null, total: { $sum: "$billing.totalPaise" } } },
+            ]),
+        ]);
+
+        const bySource = {};
+        periodTotals.forEach((t) => { bySource[t._id] = { total: t.total, count: t.count }; });
+
+        // Online jobs credit the technician's share directly. Cash jobs leave
+        // the whole amount with them and only debit the commission - so their
+        // earning there is the job value minus that commission.
+        const onlineEarnedPaise = bySource.job_online?.total || 0;
+        const cashCommissionPaise = bySource.job_cash?.total || 0;
+        const cashEarnedPaise = (cashJobsValue[0]?.total || 0) - cashCommissionPaise;
+        const totalEarnedPaise = onlineEarnedPaise + cashEarnedPaise;
+
+        const balance = tech?.walletBalancePaise || 0;
+        const owedPaise = Math.abs(Math.min(0, balance));
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                balancePaise: balance,
+                balanceDisplay: paymentService.paiseToRupees(Math.abs(balance)),
+                direction: balance >= 0 ? "company_owes" : "you_owe",
+
+                owedPaise,
+                canPayOnline: owedPaise > 0 && paymentService.isRazorpayActive(),
+
+                limitPaise: CREDIT_LIMIT_PAISE,
+                limitDisplay: paymentService.paiseToRupees(Math.abs(CREDIT_LIMIT_PAISE)),
+                nearLimit: balance <= CREDIT_LIMIT_PAISE * 0.7,
+
+                commissionRate: tech?.commissionRate ?? parseInt(process.env.DEFAULT_COMMISSION_RATE) ?? 20,
+
+                period: {
+                    days,
+                    totalEarnedDisplay: paymentService.paiseToRupees(totalEarnedPaise),
+                    onlineEarnedDisplay: paymentService.paiseToRupees(onlineEarnedPaise),
+                    cashEarnedDisplay: paymentService.paiseToRupees(cashEarnedPaise),
+                    commissionPaidDisplay: paymentService.paiseToRupees(cashCommissionPaise),
+                    settledDisplay: paymentService.paiseToRupees(bySource.recharge?.total || 0),
+                    payoutsDisplay: paymentService.paiseToRupees(bySource.payout?.total || 0),
+                    jobsCount: (bySource.job_online?.count || 0) + (bySource.job_cash?.count || 0),
+                },
+
+                lifetime: {
+                    onlineDisplay: paymentService.paiseToRupees(lifetimeOnline[0]?.total || 0),
+                    completedJobs: tech?.completedJobs || 0,
+                },
+
+                transactions: transactions.map((t) => ({
+                    ...t,
+                    amountDisplay: paymentService.paiseToRupees(t.amountPaise),
+                    balanceAfterDisplay: paymentService.paiseToRupees(Math.abs(t.balanceAfterPaise)),
+                })),
+            },
+        });
+    } catch (error) {
+        console.error("Get wallet error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// GET /api/technician/tickets/:id/payment-status
+// GET /api/technician/tickets/:id/payment-status
+const getPaymentStatus = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+        }).lean();
+
+        if (!ticket) {
             return res.status(404).json({ success: false, message: "Ticket not found" });
         }
 
-        // 2. Fetch the technician to update their stats
-        const technician = await Technician.findById(techId);
-
-        // 3. Increment the completed jobs count
-        technician.completedJobs += 1;
-
-        // 4. Recalculate Performance Level based on real DB values
-        const rating = technician.rating || 5.0;
-
-        if (technician.completedJobs >= 20 && rating >= 4.5) {
-            technician.performanceLevel = 'EXPERT';
-        } else if (technician.completedJobs >= 5 && rating >= 4.0) {
-            technician.performanceLevel = 'PRO';
+        if (["Paid", "Collected", "Verified"].includes(ticket.payment?.status) || ticket.status === "Closed") {
+            return res.status(200).json({
+                success: true,
+                data: {
+                    isPaid: true,
+                    status: "paid",
+                    paymentId: ticket.payment?.razorpayPaymentId,
+                    method: ticket.payment?.method,
+                    paidAt: ticket.payment?.paidAt || ticket.payment?.collectedAt,
+                    amountDisplay: paymentService.paiseToRupees(ticket.billing?.totalPaise),
+                },
+            });
         }
 
-        // Make technician available for new jobs again
-        technician.isAvailable = true;
-        technician.activeTicket = null;
-
-        // 5. SAVE PERMANENTLY TO DATABASE
-        await technician.save();
-
-        console.log(`Job completed! Tech ${techId} stats updated permanently in DB. Total Jobs: ${technician.completedJobs}, Level: ${technician.performanceLevel}`);
-
-        res.status(200).json({
-            success: true,
-            message: "Job marked as completed and profile updated",
-            data: technician
-        });
-    } catch (error) {
-        console.error("Error completing ticket:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
-
-
-const generateBill = async (req, res) => {
-    try {
-        const { ticketId, partsUsed, gasFilled, totalAmount, additionalNotes } = req.body;
-        const techId = req.technician._id;
-
-        const ticket = await ticketModel.findOneAndUpdate(
-            { _id: ticketId, technician: techId },
-            {
-                status: 'Payment-Pending',
-                serviceProvided: { partsUsed, gasFilled, additionalNotes },
-                totalAmount: totalAmount
-            },
-            { returnDocument: 'after' } // 👈 Mongoose Warning Fix
-        ).populate('customer');
-
-        // 👇 Socket.io se User ko Bill bhejenge
-        const io = socketManager.getIo();
-        const billMessage = `📝 *SERVICE INVOICE*\n\n🔧 Parts Used: ${partsUsed.join(', ') || 'None'}\n💨 Gas Filled: ${gasFilled ? 'Yes' : 'No'}\n💰 Total Amount: ₹${totalAmount}\n\n[PAYMENT_LINK_₹${totalAmount}]`;
-
-        io.to(`user_${ticket.customer._id}`).emit('ai-response', {
-            content: billMessage,
-            sender: 'system',
-            type: 'bill'
-        });
-
-        res.status(200).json({ success: true, message: "Bill sent to customer", data: ticket });
-    } catch (error) {
-        console.error("Generate Bill Error:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-};
-
-
-// User completes payment, system verifies and closes ticket
-const verifyPaymentAndClose = async (req, res) => {
-    try {
-        const { ticketId } = req.body;
-        const techId = req.technician._id;
-        const techName = req.technician.name; // 👈 Token se tech ka naam nikal liya
-
-        // 1. Ticket status update karein aur Technician ki details (History ke liye) save karein
-        const ticket = await ticketModel.findOneAndUpdate(
-            { _id: ticketId, technician: techId },
-            {
-                status: 'Closed',
-                paymentStatus: 'Completed',
-                technicianId: techId,        // 👈 Ticket history mein Tech ID save
-                technicianName: techName     // 👈 Ticket history mein Tech Name save
-            },
-            { returnDocument: 'after' }
-        ).populate('customer');
-
-        if (!ticket) {
-            return res.status(404).json({ success: false, message: "Ticket not found or not assigned to this tech" });
+        const linkId = ticket.payment?.razorpayLinkId;
+        if (!linkId) {
+            return res.status(400).json({ success: false, message: "No payment link on this ticket" });
         }
 
-        // 2. Tech ko available karein, activeTicket free karein aur jobs increment karein
-        // ✅ FIX: Dono alag-alag update queries ko ek hi single query mein merge kar diya
-        await technicianModel.findByIdAndUpdate(techId, {
-            isAvailable: true,
-            activeTicket: null,
-            $inc: { completedJobs: 1 }
-        });
+        const status = await paymentService.fetchPaymentLinkStatus(linkId);
+        if (!status) {
+            return res.status(502).json({ success: false, message: "Could not reach the payment gateway" });
+        }
 
-        // 3. Socket message safe emit karein
-        try {
-            const io = socketManager.getIo();
-            if (ticket.customer?._id) {
-                io.emit('ai-response', {
-                    content: "✅ Payment received successfully! Thank you for choosing Cosmosgen. Have a great day!\n[DISCONNECT]",
-                    sender: 'system'
+        if (status.isPaid && ticket.status === "Payment-Pending") {
+            // findOneAndUpdate returns null when the filter matches nothing,
+            // which is how we detect that the webhook already closed this
+            // ticket and credited the wallet. updateOne gave no such signal,
+            // so this path used to credit the technician a second time.
+            const closed = await ticketModel.findOneAndUpdate(
+                { _id: ticket._id, status: "Payment-Pending" },
+                {
+                    status: "Closed",
+                    "payment.status": "Paid",
+                    "payment.razorpayPaymentId": status.paymentId,
+                    "payment.method": status.method || "online",
+                    "payment.paidAt": status.paidAt || new Date(),
+                    $push: {
+                        statusHistory: {
+                            from: "Payment-Pending", to: "Closed",
+                            actorRole: "system",
+                            reason: "Payment confirmed via gateway status check",
+                            at: new Date(),
+                        },
+                    },
+                },
+                { returnDocument: "after" }
+            ).lean();
+
+            if (!closed) {
+                // Webhook got here first - it has already done all of this
+                return res.status(200).json({
+                    success: true,
+                    data: {
+                        ...status,
+                        amountDisplay: paymentService.paiseToRupees(ticket.billing?.totalPaise),
+                    },
                 });
             }
-        } catch (socketErr) {
-            console.error("Socket emit warning in verifyPaymentAndClose:", socketErr.message);
+
+            // The webhook carries the exact gateway fee. This path doesn't
+            // have it, so estimate - the webhook overwrites it when it lands.
+            const { feePaise, taxPaise } = estimateGatewayFee(closed.billing?.totalPaise || 0);
+
+            await Payment.findOneAndUpdate(
+                { ticket: ticket._id, status: "pending" },
+                {
+                    status: "collected",
+                    razorpayPaymentId: status.paymentId,
+                    method: status.method || "online",
+                    collectedBy: req.technician._id,
+                    collectedAt: status.paidAt || new Date(),
+                    gatewayFeePaise: feePaise,
+                    gatewayTaxPaise: taxPaise,
+                }
+            );
+
+            const commissionPercent = closed.billing?.commissionPercent ?? 20;
+
+            try {
+                await walletService.addEarningsForOnlineJob(
+                    req.technician._id,
+                    closed._id,
+                    closed.ticketNumber,
+                    closed.billing?.totalPaise || 0,
+                    commissionPercent
+                );
+            } catch (walletErr) {
+                console.error("Wallet credit failed for", closed.ticketNumber, walletErr.message);
+            }
+
+            await technicianModel.updateOne({ _id: req.technician._id }, { $inc: { completedJobs: 1 } });
+            await promoteQueuedTicket(req.technician._id);
         }
 
-        res.status(200).json({ success: true, message: "Payment verified, job closed, and history saved!" });
+        return res.status(200).json({
+            success: true,
+            data: { ...status, amountDisplay: paymentService.paiseToRupees(ticket.billing?.totalPaise) },
+        });
     } catch (error) {
-        console.error("Verify & Close Error:", error);
-        res.status(500).json({ success: false, message: error.message || "Internal Server Error" });
+        console.error("Payment status error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
 
 
-const getCompletedTickets = async (req, res) => {
+/**
+ * POST /api/technician/wallet/recharge
+ * body: { amountRupees }
+ *
+ * Lets a technician clear what they owe from the app instead of carrying
+ * cash to the office. The wallet is only credited by the webhook, never
+ * here - creating a link is not the same as being paid.
+ */
+const createWalletRecharge = async (req, res) => {
     try {
-        const techId = req.technician._id;
-        const history = await ticketModel.find({ technician: techId, status: 'Closed' })
-            .populate('customer', 'name address area state')
-            .sort({ updatedAt: -1 }); // Naye wale upar
+        if (!paymentService.isRazorpayActive()) {
+            return res.status(503).json({
+                success: false,
+                message: "Online payment isn't set up yet. Please deposit the cash at the office.",
+            });
+        }
 
-        res.status(200).json({ success: true, data: history });
+        const tech = await technicianModel.findById(req.technician._id)
+            .select("name phone walletBalancePaise")
+            .lean();
+
+        const owedPaise = Math.abs(Math.min(0, tech?.walletBalancePaise || 0));
+
+        if (owedPaise <= 0) {
+            return res.status(400).json({ success: false, message: "You don't owe anything right now" });
+        }
+
+        const requested = req.body.amountRupees
+            ? Math.round(Number(req.body.amountRupees) * 100)
+            : owedPaise;
+
+        if (!Number.isFinite(requested) || requested < 100) {
+            return res.status(400).json({ success: false, message: "Enter an amount of at least Rs 1" });
+        }
+
+        const amountPaise = Math.min(requested, owedPaise);
+
+        const link = await paymentService.createWalletRechargeLink({
+            technician: tech,
+            amountPaise,
+        });
+
+        if (!link) {
+            return res.status(502).json({
+                success: false,
+                message: "Could not create the payment link. Try again shortly.",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                linkUrl: link.linkUrl,
+                linkId: link.linkId,
+                amountDisplay: paymentService.paiseToRupees(amountPaise),
+            },
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        console.error("Wallet recharge error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
+
+// GET /api/technician/wallet/recharge/:linkId
+// Polled while the payment window is open so the panel updates without
+// waiting for the technician to refresh
+const checkWalletRecharge = async (req, res) => {
+    try {
+        const status = await paymentService.fetchPaymentLinkStatus(req.params.linkId);
+        if (!status) {
+            return res.status(502).json({ success: false, message: "Could not reach the payment gateway" });
+        }
+
+        const tech = await technicianModel.findById(req.technician._id)
+            .select("walletBalancePaise")
+            .lean();
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                isPaid: status.isPaid,
+                balancePaise: tech?.walletBalancePaise || 0,
+                balanceDisplay: paymentService.paiseToRupees(Math.abs(tech?.walletBalancePaise || 0)),
+            },
+        });
+    } catch (error) {
+        console.error("Check recharge error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 
 module.exports = {
     registerTechnician,
-    getTechProfile,
     loginTechnician,
+    logoutTechnician,
+    getTechProfile,
+    bootstrap,
+    getCashDeposits,
     updateTechProfile,
     deleteTechProfile,
-    logoutTechnician,
     updateStatus,
-    updateLocation,
-    getOpenTickets,
-    getMyAssignedTicket,
-    acceptTicket,
-    completeTicket,
+    // updateLocation,
+    // getMyAssignedTicket,
+    // getCompletedTickets,
+    startWork,
+    getWallet,
+    releaseTicket,
+    getPricing,
     generateBill,
-    verifyPaymentAndClose,
-    getCompletedTickets
+    collectCash,
+    getPaymentStatus,
+    startScheduledNow,
+    createWalletRecharge,
+    checkWalletRecharge
 };
