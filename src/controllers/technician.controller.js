@@ -538,6 +538,8 @@ const updateStatus = async (req, res) => {
             .select(PUBLIC_FIELDS)
             .lean();
 
+        emitToRoom("admins", "tech:status", updatedTech);
+
         return res.status(200).json({ success: true, data: updatedTech });
     } catch (error) {
         console.error("Update status error:", error);
@@ -801,7 +803,7 @@ const getPricing = async (req, res) => {
  // POST /api/technician/tickets/generateBill
 const generateBill = async (req, res) => {
     try {
-        const { ticketId, catalogItems, customItems, workDone, paymentMethod } = req.body;
+        const { ticketId, catalogItems, customItems, workDone, paymentMethod, serviceKey } = req.body;
 
         if (!ticketId) {
             return res.status(400).json({ success: false, message: "ticketId is required" });
@@ -819,8 +821,19 @@ const generateBill = async (req, res) => {
             return res.status(404).json({ success: false, message: "Ticket not found or bill already generated" });
         }
 
+        const finalServiceKey = serviceKey || ticket.serviceKey;
+        if (serviceKey && serviceKey !== ticket.serviceKey) {
+            const { getServiceByKey } = require("../config/services");
+            const srv = getServiceByKey(serviceKey);
+            if (srv) {
+                ticket.serviceKey = srv.key;
+                ticket.serviceLabel = srv.label;
+                await ticket.save();
+            }
+        }
+
         // Prices come from the DB, never from the request body
-        const pricingDoc = await ServicePricing.findOne({ serviceKey: ticket.serviceKey }).lean();
+        const pricingDoc = await ServicePricing.findOne({ serviceKey: finalServiceKey }).lean();
         const priceMap = new Map(
             (pricingDoc?.itemsList || [])
                 .filter((i) => i.isActive)

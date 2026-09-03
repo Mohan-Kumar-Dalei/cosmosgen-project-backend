@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const pricingItemSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
     category: { type: String, enum: ["labour", "part", "service"], default: "part" },
+    subCategory: { type: String, trim: true, default: "" }, // Used for Appliances (e.g. AC, Refrigerator)
     pricePaise: { type: Number, required: true, min: 0 },
 
     // Pre-selected on the technician's invoice form

@@ -144,7 +144,7 @@ const getDashboardStats = async (req, res) => {
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
 
-        const [ticketStats, techStats, todayCount, awaitingReconcile, rejectedCount, cashHeld] =
+        const [ticketStats, techStats, todayCount, awaitingReconcile, rejectedCount, cashHeld, awaitingPayment] =
             await Promise.all([
                 ticketModel.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
 
@@ -181,6 +181,12 @@ const getDashboardStats = async (req, res) => {
                     { $match: { status: "collected", method: "cash" } },
                     { $group: { _id: null, count: { $sum: 1 }, totalPaise: { $sum: "$amountPaise" } } },
                 ]),
+
+                // Payments that are completely unpaid yet (awaiting payment)
+                Payment.aggregate([
+                    { $match: { status: "pending" } },
+                    { $group: { _id: null, count: { $sum: 1 }, totalPaise: { $sum: "$amountPaise" } } },
+                ]),
             ]);
 
         const byStatus = {};
@@ -206,6 +212,11 @@ const getDashboardStats = async (req, res) => {
                 awaitingReconcile: {
                     count: awaitingReconcile[0]?.count || 0,
                     amountDisplay: paiseToRupees(awaitingReconcile[0]?.totalPaise || 0),
+                },
+
+                awaitingPayment: {
+                    count: awaitingPayment[0]?.count || 0,
+                    amountDisplay: paiseToRupees(awaitingPayment[0]?.totalPaise || 0),
                 },
 
                 cashWithTechnicians: {
@@ -800,6 +811,8 @@ const rescheduleTicket = async (req, res) => {
 
         notification.notifyTechnicianQueued(updated);
 
+        notification.notifyAdminsTicketRescheduled(updated, req.admin.name);
+
         return res.status(200).json({
             success: true,
             message: "Moved to " + dateStr + " with " + tech.name,
@@ -854,6 +867,8 @@ const cancelTicket = async (req, res) => {
         // Puts the WhatsApp conversation back on the service menu. Without
         // this their next message hits a step that assumes a live ticket.
         await notification.resetConversation(ticket);
+
+        notification.notifyAdminsTicketCancelled(ticket, req.admin.name, String(reason).trim());
 
         return res.status(200).json({ success: true, message: "Ticket cancelled", data: ticket });
     } catch (error) {
@@ -1738,7 +1753,7 @@ const getPricingList = async (req, res) => {
 const addPricingItem = async (req, res) => {
     try {
         const { serviceKey } = req.params;
-        const { name, category, priceRupees, isDefault } = req.body;
+        const { name, category, priceRupees, isDefault, subCategory } = req.body;
 
         const service = SERVICE_CATALOG.find((s) => s.key === serviceKey);
         if (!service) {
@@ -1761,6 +1776,10 @@ const addPricingItem = async (req, res) => {
             isActive: true,
         };
 
+        if (subCategory) {
+            item.subCategory = String(subCategory).trim();
+        }
+
         // upsert so the first item for a service creates the document
         const doc = await ServicePricing.findOneAndUpdate(
             { serviceKey },
@@ -1782,13 +1801,14 @@ const addPricingItem = async (req, res) => {
 const updatePricingItem = async (req, res) => {
     try {
         const { serviceKey, itemId } = req.params;
-        const { name, category, priceRupees, isActive, isDefault } = req.body;
+        const { name, category, priceRupees, isActive, isDefault, subCategory } = req.body;
 
         const set = { updatedBy: req.admin._id };
         if (name) set["itemsList.$.name"] = String(name).trim();
         if (["labour", "part", "service"].includes(category)) set["itemsList.$.category"] = category;
         if (typeof isActive === "boolean") set["itemsList.$.isActive"] = isActive;
         if (typeof isDefault === "boolean") set["itemsList.$.isDefault"] = isDefault;
+        if (subCategory !== undefined) set["itemsList.$.subCategory"] = subCategory ? String(subCategory).trim() : null;
 
         if (priceRupees !== undefined) {
             const rupees = Number(priceRupees);

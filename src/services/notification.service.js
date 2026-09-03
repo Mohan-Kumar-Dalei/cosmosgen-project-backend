@@ -243,6 +243,31 @@ const notifyAdminsTicketTaken = (ticketId, adminName) => {
     emitToRoom(adminRoom(), "ticket:taken", { ticketId: String(ticketId), by: adminName });
 };
 
+// The badge counts read from dashboard stats, so any status change that
+// moves a ticket in or out of Pending has to tell the other panels to
+// refetch. Without these, a cancel or a reschedule left stale numbers on
+// every screen except the one that made the change.
+const notifyAdminsTicketCancelled = (ticket, adminName, reason) => {
+    emitToRoom(adminRoom(), "ticket:cancelled", {
+        ticketId: String(ticket._id),
+        ticketNumber: ticket.ticketNumber,
+        customerName: ticket.customerSnapshot?.name,
+        adminName,
+        reason,
+    });
+};
+
+const notifyAdminsTicketRescheduled = (ticket, adminName) => {
+    emitToRoom(adminRoom(), "ticket:rescheduled", {
+        ticketId: String(ticket._id),
+        ticketNumber: ticket.ticketNumber,
+        customerName: ticket.customerSnapshot?.name,
+        technicianName: ticket.technicianSnapshot?.name,
+        scheduledFor: ticket.scheduling?.scheduledFor,
+        adminName,
+    });
+};
+
 const notifyAdminsPaymentCollected = (ticket, technicianName) => {
     emitToRoom(adminRoom(), "payment:collected", {
         ticketId: String(ticket._id),
@@ -273,5 +298,7 @@ module.exports = {
     notifyAdminsTicketRejected,
     notifyAdminsScheduledStartedEarly,
     notifyAdminsTicketTaken,
+    notifyAdminsTicketCancelled,
+    notifyAdminsTicketRescheduled,
     notifyAdminsPaymentCollected,
 };
