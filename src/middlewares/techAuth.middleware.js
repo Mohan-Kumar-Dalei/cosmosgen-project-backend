@@ -15,7 +15,7 @@ const isTechAuthenticated = async (req, res, next) => {
 
         const technician = await technicianModel
             .findById(decoded.techId)
-            .select("_id name phone state area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel location approvalStatus isBlacklisted isDeleted")
+            .select("_id name phone state area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel location approvalStatus isBlacklisted isDeleted bankDetails")
             .lean();
 
         if (!technician) {

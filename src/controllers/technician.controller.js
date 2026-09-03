@@ -1,5 +1,6 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const axios = require("axios");
 
 const technicianModel = require("../models/technician.model");
 const ticketModel = require("../models/ticket.model");
@@ -13,7 +14,7 @@ const { promoteQueuedTicket } = require("../services/dispatch.service");
 const { emitToRoom, userRoom } = require("../sockets/socket.instance");
 const walletService = require("../services/wallet.service");
 const { estimateGatewayFee } = require("../config/razorpay");
-
+const { verifyPhoneToken } = require("../config/firebase");
 const isProd = process.env.NODE_ENV === "production";
 
 const cookieOptions = {
@@ -39,51 +40,104 @@ const ACTIVE_STATUSES = ["Assigned", "In-Progress", "Payment-Pending"];
 const signToken = (techId) =>
     jwt.sign({ techId, role: "technician" }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
+const ifscCache = new Map();
+
+
+
 /* ================= AUTH ================= */
 
 const registerTechnician = async (req, res) => {
     try {
-        const { name, phone, password, pincode, state, skills, hasVehicle, area, lat, lon } = req.body;
+        const {
+            idToken, name, password, email,
+            pincode, state, area, lat, lon,
+            skills, hasVehicle,
+            accountHolderName, accountNumber, ifsc,
+        } = req.body;
 
-        if (!name || !phone || !password || !pincode || !state || !skills || !area) {
-            return res.status(400).json({ success: false, message: "Please provide all required details" });
+        const verified = await verifyPhoneToken(idToken);
+        if (!verified) {
+            return res.status(401).json({
+                success: false,
+                message: "Your phone verification expired. Please start again.",
+            });
         }
-        if (!/^[6-9]\d{9}$/.test(String(phone).trim())) {
-            return res.status(400).json({ success: false, message: "Enter a valid 10-digit mobile number" });
+
+        if (!name || !password || !pincode || !state || !area || !skills?.length) {
+            return res.status(400).json({ success: false, message: "Please fill in all the required details" });
         }
         if (String(password).length < 6) {
             return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
         }
+        if (!accountHolderName || !accountNumber || !ifsc) {
+            return res.status(400).json({ success: false, message: "Bank details are required to receive payouts" });
+        }
 
-        const cleanPhone = String(phone).trim();
+        const cleanAccount = String(accountNumber).replace(/\s/g, "");
+        if (!/^\d{9,18}$/.test(cleanAccount)) {
+            return res.status(400).json({ success: false, message: "Enter a valid bank account number" });
+        }
 
+        const cleanIfsc = String(ifsc).toUpperCase().trim();
+        if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(cleanIfsc)) {
+            return res.status(400).json({ success: false, message: "Enter a valid IFSC code" });
+        }
+
+        // Re-check here rather than trusting phase 1 - minutes may have passed
         const existing = await technicianModel
-            .findOne({ phone: cleanPhone })
-            .select("_id isBlacklisted approvalStatus")
+            .findOne({ phone: verified.phone })
+            .select("_id isBlacklisted")
             .lean();
 
+        if (existing?.isBlacklisted) {
+            return res.status(403).json({ success: false, message: "This number cannot be registered." });
+        }
         if (existing) {
-            // A blocked number can never come back, even under a new name
-            if (existing.isBlacklisted) {
-                return res.status(403).json({
-                    success: false,
-                    message: "This number cannot be registered. Contact the office if you think this is a mistake.",
-                });
-            }
-            return res.status(400).json({ success: false, message: "Phone number already registered" });
+            return res.status(409).json({ success: false, message: "This number is already registered" });
+        }
+
+        // Confirm the IFSC actually exists before storing it. A typo here
+        // means a failed payout weeks later, when nobody remembers.
+        const bank = await lookupIfsc(cleanIfsc);
+        if (!bank) {
+            return res.status(400).json({
+                success: false,
+                message: "That IFSC code doesn't match any branch. Please check it.",
+            });
         }
 
         const techData = {
             name: String(name).trim(),
-            phone: cleanPhone,
+            phone: verified.phone,
             password: await bcrypt.hash(password, 10),
+            email: email ? String(email).toLowerCase().trim() : undefined,
             pincode: String(pincode).trim(),
             state: String(state).trim(),
             area: String(area).trim(),
-            skills: Array.isArray(skills) ? skills : [skills],
-            hasVehicle: Boolean(hasVehicle),
+            skills: Array.isArray(skills) ? skills : (skills ? JSON.parse(skills) : []),
+            hasVehicle: hasVehicle === 'true' || hasVehicle === true,
             approvalStatus: "pending",
+            phoneVerifiedAt: new Date(),
+            firebaseUid: verified.uid,
+            bankDetails: {
+                accountHolderName: String(accountHolderName).trim(),
+                accountNumber: cleanAccount,
+                accountLast4: cleanAccount.slice(-4),
+                ifsc: cleanIfsc,
+                bankName: bank.BANK,
+                branch: bank.BRANCH,
+                verifiedAt: new Date(),
+            },
         };
+
+        if (req.file) {
+            try {
+                const imgRes = await uploadImage(req.file.buffer, `tech_${Date.now()}`);
+                techData.profileImage = imgRes.url;
+            } catch (err) {
+                console.error("Failed to upload profile image:", err);
+            }
+        }
 
         const numLat = Number(lat);
         const numLon = Number(lon);
@@ -97,8 +151,8 @@ const registerTechnician = async (req, res) => {
 
         const newTech = new technicianModel(techData);
 
-        // Even if a schema default sneaks in a bare { type: "Point" }, strip it -
-        // the 2dsphere index refuses a location object without coordinates
+        // Even if a schema default sneaks in a bare { type: "Point" }, strip
+        // it - the 2dsphere index refuses a location without coordinates
         if (!hasCoords) {
             newTech.location = undefined;
             newTech.markModified("location");
@@ -106,7 +160,7 @@ const registerTechnician = async (req, res) => {
 
         await newTech.save();
 
-        // No cookie here - the account has to be approved before it can sign in
+        // No cookie - the account can't sign in until the office approves it
         return res.status(201).json({
             success: true,
             requiresApproval: true,
@@ -115,11 +169,101 @@ const registerTechnician = async (req, res) => {
     } catch (error) {
         console.error("Register technician error:", error);
         if (error.code === 11000) {
-            return res.status(400).json({ success: false, message: "Phone number already registered" });
+            return res.status(400).json({ success: false, message: "This number is already registered" });
         }
         return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
-}
+};
+
+/**
+ * POST /api/technician/verify-phone
+ * body: { idToken }
+ *
+ * Phase 1 of registration. The client has already done the OTP dance with
+ * Firebase; this confirms the resulting token is real and tells them whether
+ * that number can go on to register.
+ */
+const verifyPhone = async (req, res) => {
+    try {
+        const verified = await verifyPhoneToken(req.body.idToken);
+
+        if (!verified) {
+            return res.status(401).json({
+                success: false,
+                message: "Could not verify that number. Please request a new code.",
+            });
+        }
+
+        const existing = await technicianModel
+            .findOne({ phone: verified.phone })
+            .select("_id isBlacklisted approvalStatus name")
+            .lean();
+
+        if (existing?.isBlacklisted) {
+            return res.status(403).json({
+                success: false,
+                message: "This number cannot be registered. Contact the office if you think this is a mistake.",
+            });
+        }
+
+        if (existing) {
+            return res.status(409).json({
+                success: false,
+                alreadyRegistered: true,
+                approvalStatus: existing.approvalStatus,
+                message: existing.approvalStatus === "pending"
+                    ? "This number is already registered and waiting for approval."
+                    : "This number is already registered. Please sign in instead.",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: { phone: verified.phone },
+            message: "Number verified",
+        });
+    } catch (error) {
+        console.error("Verify phone error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const lookupIfsc = async (code) => {
+    if (ifscCache.has(code)) return ifscCache.get(code);
+
+    try {
+        const { data } = await axios.get("https://ifsc.razorpay.com/" + code, { timeout: 8000 });
+        if (!data?.BANK) return null;
+
+        const result = { BANK: data.BANK, BRANCH: data.BRANCH, CITY: data.CITY, STATE: data.STATE };
+        ifscCache.set(code, result);
+        return result;
+    } catch (error) {
+        // A 404 means the code doesn't exist - that's an answer, not a failure
+        if (error.response?.status === 404) return null;
+        console.error("IFSC lookup failed:", error.message);
+        return null;
+    }
+};
+
+const checkIfsc = async (req, res) => {
+    const code = String(req.params.code || "").toUpperCase().trim();
+
+    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(code)) {
+        return res.status(400).json({ success: false, message: "IFSC codes are 11 characters, like SBIN0001234" });
+    }
+
+    const bank = await lookupIfsc(code);
+    if (!bank) {
+        return res.status(404).json({ success: false, message: "No branch found for that code" });
+    }
+
+    return res.status(200).json({
+        success: true,
+        data: { bank: bank.BANK, branch: bank.BRANCH, city: bank.CITY, state: bank.STATE },
+    });
+};
+
 
 const loginTechnician = async (req, res) => {
     try {
@@ -302,6 +446,30 @@ const updateTechProfile = async (req, res) => {
         if (state) updateData.state = String(state).trim();
         if (area) updateData.area = String(area).trim();
         if (pincode) updateData.pincode = String(pincode).trim();
+
+        if (req.body.accountHolderName && req.body.accountNumber && req.body.ifsc) {
+            const cleanAccount = String(req.body.accountNumber).replace(/\D/g, "");
+            const cleanIfsc = String(req.body.ifsc).toUpperCase().trim();
+
+            if (!/^\d{9,18}$/.test(cleanAccount)) {
+                return res.status(400).json({ success: false, message: "Invalid account number format" });
+            }
+
+            const bank = await lookupIfsc(cleanIfsc);
+            if (!bank) {
+                return res.status(400).json({ success: false, message: "Invalid IFSC code" });
+            }
+
+            updateData.bankDetails = {
+                accountHolderName: String(req.body.accountHolderName).trim(),
+                accountNumber: cleanAccount,
+                accountLast4: cleanAccount.slice(-4),
+                ifsc: cleanIfsc,
+                bankName: bank.BANK,
+                branch: bank.BRANCH,
+                verifiedAt: new Date(),
+            };
+        }
 
         if (req.file) {
             const uploadResult = await uploadImage(req.file.buffer, `tech_${techId}_${Date.now()}`);
@@ -1211,5 +1379,7 @@ module.exports = {
     getPaymentStatus,
     startScheduledNow,
     createWalletRecharge,
-    checkWalletRecharge
+    checkWalletRecharge,
+    verifyPhone,
+    checkIfsc
 };

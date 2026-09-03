@@ -12,6 +12,7 @@ const technicianSchema = new mongoose.Schema({
     pincode: { type: String, required: true, trim: true },
 
     profileImage: { type: String, default: "" },
+        email: { type: String, trim: true, lowercase: true },
     skills: [{ type: String }],
     hasVehicle: { type: Boolean, default: false },
     rating: { type: Number, default: 5.0, min: 0, max: 5 },
@@ -65,6 +66,25 @@ const technicianSchema = new mongoose.Schema({
 
     isAvailable: { type: Boolean, default: false },
     activeTicket: { type: mongoose.Schema.Types.ObjectId, ref: "Ticket", default: null },
+
+        // Where payouts go. The account number is select:false so it can never
+    // ride along in a response by accident - anything that needs it has to
+    // ask for it explicitly.
+    bankDetails: {
+        accountHolderName: { type: String, trim: true },
+        accountNumber: { type: String, select: false },
+        // Kept separately so the panel can show "ending 4417" without
+        // touching the full number
+        accountLast4: { type: String },
+        ifsc: { type: String, uppercase: true, trim: true },
+        bankName: { type: String },
+        branch: { type: String },
+        verifiedAt: { type: Date },
+    },
+
+    // Set from the Firebase token, never from the request body
+    phoneVerifiedAt: { type: Date },
+    firebaseUid: { type: String, index: true, sparse: true },
 
     isDeleted: { type: Boolean, default: false },
 }, { timestamps: true });

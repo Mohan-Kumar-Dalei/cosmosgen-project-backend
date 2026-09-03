@@ -1161,7 +1161,7 @@ const getTechnicianById = async (req, res) => {
 
         const [technician, activeTicket, scheduled, recentJobs, cashHeld, totalEarnings] = await Promise.all([
             technicianModel.findById(id)
-                .select("name phone profileImage skills rating completedJobs performanceLevel area state pincode isAvailable activeTicket hasVehicle lastLocationAt location isDeleted createdAt approvalStatus isBlacklisted blacklistReason rejectionReason approvedAt walletBalancePaise commissionRate")
+                .select("name phone email profileImage skills rating completedJobs performanceLevel area state pincode isAvailable activeTicket hasVehicle lastLocationAt location isDeleted createdAt approvalStatus isBlacklisted blacklistReason rejectionReason approvedAt walletBalancePaise commissionRate bankDetails.accountHolderName bankDetails.accountNumber bankDetails.accountLast4 bankDetails.ifsc bankDetails.bankName bankDetails.branch")
                 .lean(),
 
             ticketModel.findOne({ technician: id, status: { $in: ["Assigned", "In-Progress", "Payment-Pending"] } })
@@ -1633,17 +1633,53 @@ const getRevenueAnalytics = async (req, res) => {
                         (statusCounts["Payment-Pending"] || 0),
                 },
 
-                series: series.map((s) => ({
-                    period: s._id,
-                    gross: toRupees(s.grossPaise),
-                    commission: toRupees(s.commissionPaise),
-                    technicianShare: toRupees(s.technicianSharePaise),
-                    gatewayFee: toRupees(s.gatewayFeePaise),
-                    netCompany: toRupees(s.commissionPaise - s.gatewayFeePaise),
-                    cash: toRupees(s.cashPaise),
-                    online: toRupees(s.onlinePaise),
-                    jobs: s.jobs,
-                })),
+                series: (() => {
+                    const skeleton = [];
+                    const now = new Date();
+                    if (groupByMonth) {
+                        let curr = new Date(since);
+                        curr.setDate(1);
+                        while (curr <= now) {
+                            const id = curr.getFullYear() + "-" + String(curr.getMonth() + 1).padStart(2, "0");
+                            skeleton.push({ _id: id, grossPaise: 0, commissionPaise: 0, technicianSharePaise: 0, gatewayFeePaise: 0, cashPaise: 0, onlinePaise: 0, jobs: 0 });
+                            curr.setMonth(curr.getMonth() + 1);
+                        }
+                    } else {
+                        let curr = new Date(since);
+                        while (curr <= now) {
+                            const id = curr.getFullYear() + "-" + String(curr.getMonth() + 1).padStart(2, "0") + "-" + String(curr.getDate()).padStart(2, "0");
+                            skeleton.push({ _id: id, grossPaise: 0, commissionPaise: 0, technicianSharePaise: 0, gatewayFeePaise: 0, cashPaise: 0, onlinePaise: 0, jobs: 0 });
+                            curr.setDate(curr.getDate() + 1);
+                        }
+                    }
+                    
+                    const seriesMap = new Map(series.map(s => [s._id, s]));
+                    const fullSeries = skeleton.map(s => seriesMap.get(s._id) || s);
+
+                    // Crop leading empty days so the graph expands and looks bigger,
+                    // but keep at least 2 days so Recharts can draw an area.
+                    let firstIndex = fullSeries.findIndex(s => s.grossPaise > 0 || s.jobs > 0);
+                    if (firstIndex === -1) firstIndex = fullSeries.length - 1;
+                    if (firstIndex === fullSeries.length - 1) {
+                        firstIndex = Math.max(0, fullSeries.length - 7); // Show a week of context if only 1 day has data
+                    } else {
+                        firstIndex = Math.max(0, firstIndex - 1); // Give 1 day of padding before the first data point
+                    }
+
+                    const trimmedSeries = fullSeries.slice(firstIndex);
+
+                    return trimmedSeries.map((s) => ({
+                        period: s._id,
+                        gross: toRupees(s.grossPaise),
+                        commission: toRupees(s.commissionPaise),
+                        technicianShare: toRupees(s.technicianSharePaise),
+                        gatewayFee: toRupees(s.gatewayFeePaise),
+                        netCompany: toRupees(s.commissionPaise - s.gatewayFeePaise),
+                        cash: toRupees(s.cashPaise),
+                        online: toRupees(s.onlinePaise),
+                        jobs: s.jobs,
+                    }));
+                })(),
 
                 byTechnician: byTechnician.map((t) => ({
                     name: t.name || "Unknown",
