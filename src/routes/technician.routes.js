@@ -53,12 +53,27 @@ router.delete("/profile/delete", isTechAuthenticated, technicianController.delet
 /* ---------- STATUS ---------- */
 router.put("/status", isTechAuthenticated, technicianController.updateStatus);
 
+/* ---------- LOCATION ---------- */
+// Its own limiter: a technician on the road pings every 20-30 seconds, which
+// would blow through any of the limiters above within a minute. This is also
+// the only ride endpoint now - the route, the ETA and the arrival message are
+// all derived from these pings rather than from buttons in the panel.
+const locationLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    message: { success: false, message: "Too many location updates" },
+});
+router.post("/location", isTechAuthenticated, locationLimiter, technicianController.updateLocation);
+
 /* ---------- PRICING ---------- */
 router.get("/pricing", isTechAuthenticated, technicianController.getPricing);
 
 /* ---------- TICKETS ---------- */
 router.post("/tickets/:id/start-work", isTechAuthenticated, technicianController.startWork);
 router.post("/tickets/:id/release", isTechAuthenticated, technicianController.releaseTicket);
+router.post("/tickets/:id/refuse", isTechAuthenticated, technicianController.refuseTicket);
+router.post("/tickets/:id/visit-charge", isTechAuthenticated, technicianController.billVisitCharge);
+router.post("/tickets/:id/skip-visit-charge", isTechAuthenticated, technicianController.skipVisitCharge);
 router.post("/tickets/generateBill", isTechAuthenticated, technicianController.generateBill);
 router.post("/tickets/:id/collect-cash", isTechAuthenticated, technicianController.collectCash);
 router.get("/tickets/:id/payment-status", isTechAuthenticated, technicianController.getPaymentStatus);

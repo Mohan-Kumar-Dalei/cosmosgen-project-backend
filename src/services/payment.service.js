@@ -31,6 +31,8 @@ const buildBill = ({ catalogItems = [], customItems = [], workDone = "", priceMa
         lineItems.push({
             description: qty > 1 ? `${priced.name} x${qty}` : priced.name,
             amountPaise: priced.pricePaise * qty,
+            catalogItemId: String(entry.id),
+            qty,
         });
     }
 
@@ -48,7 +50,7 @@ const buildBill = ({ catalogItems = [], customItems = [], workDone = "", priceMa
             return { error: `"${description}" must be between ₹${LIMITS.MIN_ITEM_RUPEES} and ₹${LIMITS.MAX_ITEM_RUPEES}` };
         }
 
-        lineItems.push({ description, amountPaise: rupeesToPaise(rupees) });
+        lineItems.push({ description, amountPaise: rupeesToPaise(rupees), catalogItemId: null, qty: 1 });
     }
 
     if (lineItems.length === 0) {
@@ -124,6 +126,66 @@ const createPaymentLink = async ({ ticket, amountPaise, invoiceNumber }) => {
 };
 
 /**
+ * Kills a payment link that is no longer the right amount.
+ *
+ * A corrected bill needs a new link, and leaving the old one live means the
+ * customer can still open the WhatsApp message above it and pay the wrong
+ * figure. Best effort: if Razorpay refuses (already paid, already cancelled)
+ * the correction still goes through, because the new link is what the
+ * customer is told to use.
+ */
+const cancelPaymentLink = async (linkId) => {
+    if (!isConfigured() || !linkId) return false;
+
+    try {
+        await getRazorpay().paymentLink.cancel(linkId);
+        return true;
+    } catch (error) {
+        console.warn("Could not cancel payment link", linkId, "-", error?.error?.description || error.message);
+        return false;
+    }
+};
+
+/**
+ * A payment link for one specific amount, used when the whole bill is not
+ * what is being collected online - the split flow charges the customer only
+ * the company's commission and lets the technician take his share in cash.
+ */
+const createCommissionLink = async ({ ticket, amountPaise, invoiceNumber }) => {
+    if (!isConfigured()) return null;
+
+    try {
+        const customer = ticket.customerSnapshot || {};
+        const phone = String(customer.phone || "").replace(/\D/g, "");
+
+        const link = await getRazorpay().paymentLink.create({
+            amount: amountPaise,
+            currency: "INR",
+            description: "Service charge for " + ticket.ticketNumber,
+            customer: {
+                name: customer.name || "Customer",
+                contact: phone.length === 10 ? "+91" + phone : "+" + phone,
+            },
+            notify: { sms: true, email: false },
+            reminder_enable: true,
+            notes: {
+                ticketId: String(ticket._id),
+                ticketNumber: ticket.ticketNumber,
+                invoiceNumber,
+                type: "split_commission",
+            },
+            callback_url: process.env.PAYMENT_CALLBACK_URL || undefined,
+            callback_method: process.env.PAYMENT_CALLBACK_URL ? "get" : undefined,
+        });
+
+        return { linkId: link.id, linkUrl: link.short_url };
+    } catch (error) {
+        console.error("Razorpay commission link failed:", error?.error?.description || error.message);
+        return null;
+    }
+};
+
+/**
  * Live status check against Razorpay. The webhook is the source of truth for
  * closing tickets, but technicians need to see confirmation on their screen
  * without waiting - this gives them a pull-based check.
@@ -166,7 +228,7 @@ const createWalletRechargeLink = async ({ technician, amountPaise }) => {
         const link = await getRazorpay().paymentLink.create({
             amount: amountPaise,
             currency: "INR",
-            description: "Commission settlement - Cosmosgen",
+            description: "Commission settlement, Cosmosgen",
             customer: {
                 name: technician.name || "Technician",
                 contact: phone.length === 10 ? "+91" + phone : "+" + phone,
@@ -197,5 +259,6 @@ module.exports = {
     createWalletRechargeLink,
     LIMITS,
     isRazorpayActive: isConfigured,
-    
+    cancelPaymentLink,
+    createCommissionLink,
 };

@@ -8,6 +8,31 @@ const calculateCommission = (totalPaise, commissionRate) =>
     Math.round((totalPaise * commissionRate) / 100);
 
 /**
+ * Tells the technician's panel their balance moved.
+ *
+ * The panels no longer poll on a timer, so anything that changes a balance
+ * has to say so here or the screen sits on a stale number until someone
+ * presses refresh. That includes an office-recorded settlement, not just a
+ * payment the technician made themselves.
+ */
+const announceBalance = (technicianId, balanceAfterPaise, reason) => {
+    emitToRoom(techRoom(technicianId), "wallet:updated", {
+        balancePaise: balanceAfterPaise,
+        reason,
+    });
+
+    // The office has a wallet badge of its own - how many technicians are not
+    // square. A cash job or a settlement changes that number the moment it
+    // lands, and without this the badge only caught up when some other event
+    // happened to refresh the counts.
+    emitToRoom(adminRoom(), "wallet:updated", {
+        technicianId: String(technicianId),
+        balancePaise: balanceAfterPaise,
+        reason,
+    });
+};
+
+/**
  * Cash job: the technician holds the whole amount, so the company's
  * commission is owed back. Balance goes negative - that's the technician
  * owing us, and it's a normal state, not an error.
@@ -24,7 +49,7 @@ const deductCommissionForCashJob = async (technicianId, ticketId, ticketNumber, 
 
     if (!updatedTech) return null;
 
-    return WalletTransaction.create({
+    const txn = await WalletTransaction.create({
         technician: technicianId,
         type: "debit",
         amountPaise: commissionPaise,
@@ -33,6 +58,9 @@ const deductCommissionForCashJob = async (technicianId, ticketId, ticketNumber, 
         ticket: ticketId,
         description: "Commission (" + commissionRate + "%) on cash job #" + ticketNumber,
     });
+
+    announceBalance(technicianId, updatedTech.walletBalancePaise, "job_cash");
+    return txn;
 };
 
 /**
@@ -63,6 +91,7 @@ const addEarningsForOnlineJob = async (technicianId, ticketId, ticketNumber, tot
     });
 
     await autoVerifyCashPayments(technicianId);
+    announceBalance(technicianId, updatedTech.walletBalancePaise, "job_online");
     return txn;
 };
 
@@ -71,7 +100,7 @@ const addEarningsForOnlineJob = async (technicianId, ticketId, ticketNumber, tot
  * filter, not in a separate read - reading the balance first and then
  * decrementing is what lets a double click send the money twice.
  */
-const processPayout = async (technicianId, amountPaise, referenceNote) => {
+const processPayout = async (technicianId, amountPaise, referenceNote, method = null, reference = null) => {
     if (!referenceNote || String(referenceNote).trim().length < 3) {
         throw new Error("A payment reference (UTR or transaction id) is required");
     }
@@ -101,15 +130,20 @@ const processPayout = async (technicianId, amountPaise, referenceNote) => {
         throw new Error("Balance changed since you opened this. Refresh and try again.");
     }
 
-    return WalletTransaction.create({
+    const txn = await WalletTransaction.create({
         technician: technicianId,
         type: "debit",
         amountPaise: payoutAmount,
         balanceAfterPaise: updatedTech.walletBalancePaise,
         source: "payout",
         ticket: null,
+        method: method || null,
+        reference: reference || null,
         description: "Payout: Rs " + (payoutAmount / 100).toFixed(2) + " (" + String(referenceNote).trim() + ")",
     });
+
+    announceBalance(technicianId, updatedTech.walletBalancePaise, "payout");
+    return txn;
 };
 
 /**
@@ -170,7 +204,7 @@ const autoVerifyCashPayments = async (technicianId) => {
  * the office. Credits the wallet so the negative balance moves back
  * towards zero.
  */
-const recordRecharge = async (technicianId, amountPaise, referenceNote) => {
+const recordRecharge = async (technicianId, amountPaise, referenceNote, method = "Razorpay", description = null) => {
     const amount = Number(amountPaise);
     if (!Number.isFinite(amount) || amount <= 0) {
         throw new Error("Recharge amount must be positive");
@@ -191,10 +225,14 @@ const recordRecharge = async (technicianId, amountPaise, referenceNote) => {
         balanceAfterPaise: updatedTech.walletBalancePaise,
         source: "recharge",
         ticket: null,
-        description: "Settled: Rs " + (amount / 100).toFixed(2) + (referenceNote ? " (" + referenceNote + ")" : ""),
+        method: method || "Razorpay",
+        reference: referenceNote || null,
+        description: description
+            || "Settled: Rs " + (amount / 100).toFixed(2) + (referenceNote ? " (" + referenceNote + ")" : ""),
     });
 
     await autoVerifyCashPayments(technicianId);
+    announceBalance(technicianId, updatedTech.walletBalancePaise, "recharge");
     return txn;
 };
 
@@ -203,7 +241,7 @@ const recordRecharge = async (technicianId, amountPaise, referenceNote) => {
  * bounced, a cash amount counted wrong. Signed: positive credits,
  * negative debits.
  */
-const adjustBalance = async (technicianId, deltaPaise, reason) => {
+const adjustBalance = async (technicianId, deltaPaise, reason, method = null, reference = null) => {
     const delta = Number(deltaPaise);
     if (!Number.isFinite(delta) || delta === 0) {
         throw new Error("Adjustment amount must be a non-zero number");
@@ -227,12 +265,16 @@ const adjustBalance = async (technicianId, deltaPaise, reason) => {
         balanceAfterPaise: updatedTech.walletBalancePaise,
         source: "adjustment",
         ticket: null,
+        method: method || null,
+        reference: reference || null,
         description: "Manual adjustment: " + String(reason).trim(),
     });
 
     if (delta > 0) {
         await autoVerifyCashPayments(technicianId);
     }
+
+    announceBalance(technicianId, updatedTech.walletBalancePaise, "adjustment");
     return txn;
 };
 

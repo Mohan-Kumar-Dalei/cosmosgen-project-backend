@@ -1,3 +1,4 @@
+const routeService = require("./route.service");
 const whatsapp = require("./whatsapp.service");
 const Conversation = require("../models/conversation.model");
 const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
@@ -65,6 +66,32 @@ const notifyCustomerWorkStarted = async (ticket) => {
 
     await notifyCustomer({ ticket, text });
 };
+
+/**
+ * Technician has left for the job. The ETA here is read off the ticket, not
+ * recomputed - startRide already paid for that route call.
+ */
+const notifyCustomerTechnicianEnRoute = async (ticket) => {
+    const tech = ticket.technicianSnapshot || {};
+    const eta = routeService.formatEta(ticket.ride?.etaSeconds);
+
+    let text =
+        (tech.name || "Your technician") + " is on the way to you.\n\n" +
+        "Ticket: " + ticket.ticketNumber + "\n" +
+        "Service: " + ticket.serviceLabel + "\n";
+
+    // No ETA line at all when the route call failed. A vague "soon" reads as
+    // evasive, and a wrong number is worse than none.
+    if (eta) {
+        text += "Estimated arrival: " + eta + "\n";
+    }
+
+    text += "\nReply here if you need to reach us.";
+
+    await notifyCustomer({ ticket, text });
+};
+
+const notifyCustomerArrived = async (ticket) => { const text = (ticket.technicianSnapshot?.name || "Your technician") + " has arrived at your location.\n\nReply here if you need to reach us."; await notifyCustomer({ ticket, text }); };
 
 const notifyCustomerCancelled = async (ticket) => {
     const text =
@@ -198,6 +225,33 @@ const notifyTechnicianCashVerified = (technicianId, payment) => {
     });
 };
 
+/**
+ * The office has sent a technician his share of the online jobs.
+ *
+ * He is not sitting in the app waiting for it - the money lands in his bank
+ * days after the customer paid, and the first thing he does is ask the office
+ * whether it went out. So the confirmation goes to the number he registered
+ * with, with the reference on it, and that conversation stops happening.
+ */
+const notifyTechnicianPaidOnWhatsApp = async (technician, { amountDisplay, method, reference, balanceDisplay, owes }) => {
+    if (!technician?.phone) return;
+
+    const text =
+        "*Payment sent. Rs " + amountDisplay + "*\n\n" +
+        "This is your share of the jobs customers paid online.\n\n" +
+        (method ? "Sent by: " + method + "\n" : "") +
+        (reference ? "Reference: " + reference + "\n" : "") +
+        "\n" +
+        (owes
+            ? "Still to deposit with the office: Rs " + balanceDisplay
+            : Number(balanceDisplay) > 0
+                ? "Still with the office for you: Rs " + balanceDisplay
+                : "Your wallet is now clear - nothing pending either way.") +
+        "\n\nIt can take a few hours to show in your bank. Message us here if it does not arrive.";
+
+    await whatsapp.sendText(technician.phone, text);
+};
+
 const notifyTechnicianBlocked = (technicianId) => {
     emitToRoom(techRoom(technicianId), "account:blocked", {
         message: "This account has been blocked. Contact the office.",
@@ -243,6 +297,24 @@ const notifyAdminsTicketTaken = (ticketId, adminName) => {
     emitToRoom(adminRoom(), "ticket:taken", { ticketId: String(ticketId), by: adminName });
 };
 
+// Carries the polyline so the admin map can draw the same route the
+// technician is following, without spending a second route call.
+const notifyAdminsRideStarted = (ticket) => {
+    emitToRoom(adminRoom(), "ticket:ride-started", {
+        ticketId: String(ticket._id),
+        ticketNumber: ticket.ticketNumber,
+        technicianId: String(ticket.technician || ""),
+        technicianName: ticket.technicianSnapshot?.name,
+        customerName: ticket.customerSnapshot?.name,
+        origin: ticket.ride?.origin || null,
+        etaSeconds: ticket.ride?.etaSeconds ?? null,
+        distanceMeters: ticket.ride?.distanceMeters ?? null,
+        etaAt: ticket.ride?.etaAt || null,
+        encodedPolyline: ticket.ride?.encodedPolyline || null,
+        startedAt: ticket.ride?.startedAt || null,
+    });
+};
+
 // The badge counts read from dashboard stats, so any status change that
 // moves a ticket in or out of Pending has to tell the other panels to
 // refetch. Without these, a cancel or a reschedule left stale numbers on
@@ -268,6 +340,34 @@ const notifyAdminsTicketRescheduled = (ticket, adminName) => {
     });
 };
 
+/**
+ * The loudest thing the office gets, because a person is standing in someone's
+ * house waiting for an answer. Everything else here can be dealt with when
+ * somebody gets round to it; this one is costing a technician's time by the
+ * minute.
+ */
+const notifyAdminsCustomerRefused = (ticket, technicianName, reason) => {
+    emitToRoom(adminRoom(), "ticket:customer-refused", {
+        ticketId: String(ticket._id),
+        ticketNumber: ticket.ticketNumber,
+        customerName: ticket.customerSnapshot?.name,
+        customerPhone: ticket.customerSnapshot?.phone,
+        technicianName,
+        reason,
+    });
+};
+
+/** The office's answer, back to the technician still standing there. */
+const notifyTechnicianRefusalResolved = (ticket, decision, officeNote) => {
+    if (!ticket.technician) return;
+    emitToRoom(techRoom(ticket.technician), "refusal:resolved", {
+        ticketId: String(ticket._id),
+        ticketNumber: ticket.ticketNumber,
+        decision,
+        officeNote: officeNote || null,
+    });
+};
+
 const notifyAdminsPaymentCollected = (ticket, technicianName) => {
     emitToRoom(adminRoom(), "payment:collected", {
         ticketId: String(ticket._id),
@@ -285,6 +385,8 @@ module.exports = {
     notifyCustomer,
     notifyCustomerAssigned,
     notifyCustomerWorkStarted,
+    notifyCustomerTechnicianEnRoute,
+    notifyCustomerArrived,
     notifyCustomerCancelled,
     resetConversation,
     notifyTechnicianAssigned,
@@ -293,12 +395,16 @@ module.exports = {
     notifyTechnicianUnassigned,
     notifyTechnicianPaymentReceived,
     notifyTechnicianCashVerified,
+    notifyTechnicianPaidOnWhatsApp,
     notifyTechnicianBlocked,
     notifyAdminsNewTicket,
     notifyAdminsTicketRejected,
     notifyAdminsScheduledStartedEarly,
+    notifyAdminsRideStarted,
     notifyAdminsTicketTaken,
     notifyAdminsTicketCancelled,
     notifyAdminsTicketRescheduled,
     notifyAdminsPaymentCollected,
+    notifyAdminsCustomerRefused,
+    notifyTechnicianRefusalResolved,
 };

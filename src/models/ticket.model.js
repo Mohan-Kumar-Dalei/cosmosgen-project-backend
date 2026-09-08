@@ -70,6 +70,16 @@ const ticketSchema = new mongoose.Schema({
         reason: { type: String },
         rejectedAt: { type: Date },
         wasScheduled: { type: Boolean, default: false },
+
+        // "I can't reach this area today" and "the customer heard the price
+        // and said no" are not the same event. The first should go back in
+        // the queue for someone else; sending a second technician on the
+        // second one wastes another trip on a customer who already refused.
+        outcome: {
+            type: String,
+            enum: ["cannot_do", "customer_refused"],
+            default: "cannot_do",
+        },
     },
 
     status: {
@@ -87,6 +97,65 @@ const ticketSchema = new mongoose.Schema({
         at: { type: Date, default: Date.now },
     }],
 
+    // The ride is its own block, not a new status value. Adding "En-Route" to
+    // the enum above would mean auditing every $in filter in the codebase -
+    // dispatch, analytics, admin lists, technician queries - and a single
+    // missed array would silently hide live tickets from a screen. A ticket on
+    // the road is still "Assigned"; ride.startedAt is what says it has left.
+    ride: {
+        startedAt: { type: Date },
+        arrivedAt: { type: Date },
+
+        // Where the technician was when they hit start. Kept so we can tell a
+        // stale route from a fresh one if they restart the ride.
+        origin: {
+            lat: { type: Number },
+            lon: { type: Number },
+        },
+
+        // Snapshot of the Routes API answer at departure. Stored rather than
+        // recomputed so the AI can answer "kitni der lagegi" without spending
+        // another billed route call on every customer message.
+        etaSeconds: { type: Number },
+        distanceMeters: { type: Number },
+        etaAt: { type: Date },
+        encodedPolyline: { type: String },
+        computedAt: { type: Date },
+    },
+
+    /**
+     * The customer said no to the price while the technician was standing
+     * there, and the office is calling them back to find out why.
+     *
+     * Like `ride`, this is its own block rather than a new status value:
+     * adding one to the enum means auditing every $in filter in dispatch,
+     * analytics and the admin lists, and a single missed array would hide a
+     * live ticket from a screen. The technician stays assigned throughout -
+     * that is the point. He waits on site, so if the office talks the customer
+     * round he simply carries on, with no second trip to arrange.
+     */
+    refusal: {
+        raisedAt: { type: Date },
+        raisedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Technician" },
+        raisedByName: { type: String },
+        reason: { type: String },
+
+        status: {
+            type: String,
+            enum: ["awaiting_verification", "customer_agreed", "customer_declined"],
+        },
+
+        verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+        verifiedByName: { type: String },
+        verifiedAt: { type: Date },
+        officeNote: { type: String },
+
+        // Set once the technician has raised the visit charge for the wasted
+        // trip, so the ticket knows it is waiting on that rather than on a
+        // full job before it can be closed off.
+        visitChargeBilled: { type: Boolean, default: false },
+    },
+
     cancelReason: { type: String },
 
     billing: {
@@ -94,6 +163,13 @@ const ticketSchema = new mongoose.Schema({
         lineItems: [{
             description: { type: String },
             amountPaise: { type: Number },
+
+            // Which price-list row this came from, so a correction can put
+            // the same selection back on screen. Without it an edit would
+            // have to rebuild every line as free text, and a catalogue price
+            // the office controls would become a number the technician types.
+            catalogItemId: { type: String, default: null },
+            qty: { type: Number, default: 1 },
         }],
         workDone: { type: String },
         subtotalPaise: { type: Number, default: 0 },
@@ -110,6 +186,19 @@ const ticketSchema = new mongoose.Schema({
 
         createdByTechnician: { type: mongoose.Schema.Types.ObjectId, ref: "Technician" },
         billedAt: { type: Date },
+
+        // A bill used to be final the moment it was generated, so a
+        // technician who mistyped a line had to phone the office with the
+        // customer standing there. Corrections are allowed, capped, and kept
+        // - an honest slip looks nothing like a bill rewritten four times.
+        editCount: { type: Number, default: 0 },
+        editHistory: [{
+            at: { type: Date, default: Date.now },
+            byTechnician: { type: mongoose.Schema.Types.ObjectId, ref: "Technician" },
+            reason: { type: String },
+            fromTotalPaise: { type: Number },
+            toTotalPaise: { type: Number },
+        }],
     },
 
     payment: {
@@ -118,7 +207,24 @@ const ticketSchema = new mongoose.Schema({
             enum: ["Pending", "Collected", "Verified", "Failed"],
             default: "Pending",
         },
-        method: { type: String, enum: ["cash", "upi", "online"] },
+
+        // "split" is the cheapest way to take a bill. The technician takes
+        // his own share in cash straight from the customer, and the customer
+        // pays the company's commission through Razorpay. The gateway then
+        // charges 2% of the commission instead of 2% of the whole bill, and
+        // no money has to travel between company and technician afterwards -
+        // so there is no second gateway fee and nothing left to chase.
+        method: { type: String, enum: ["cash", "upi", "online", "split"] },
+
+        // Only used by "split". Two halves land separately and the job is
+        // not finished until both have.
+        split: {
+            technicianCashPaise: { type: Number },
+            companyOnlinePaise: { type: Number },
+            onlinePaidAt: { type: Date },
+            cashConfirmedAt: { type: Date },
+        },
+
         collectedAt: { type: Date },
         collectedNote: { type: String },
         verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },

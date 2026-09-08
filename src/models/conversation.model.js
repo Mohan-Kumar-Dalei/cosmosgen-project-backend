@@ -13,6 +13,8 @@ step: {
         enum: [
             "NEW",
             "AWAITING_LOCATION",
+            "AWAITING_LANGUAGE",
+            "AWAITING_NAME",
             "AWAITING_SERVICE",
             "AWAITING_APPLIANCE",
             "AWAITING_ISSUE",
@@ -25,6 +27,14 @@ step: {
 
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     profileName: { type: String },
+
+    // Which of the three the customer picked. Mirrored from the user record
+    // so the flow can check it without a lookup on every turn.
+    language: { type: String, enum: ["english", "hinglish", "odenglish"] },
+
+    // The name they typed, kept here so greetings can use it without
+    // reloading the user on every turn.
+    customerName: { type: String },
 
     selectedServiceKey: { type: String },
     // Which machine, for services that cover more than one

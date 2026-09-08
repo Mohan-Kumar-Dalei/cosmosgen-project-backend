@@ -11,8 +11,10 @@ const uploadImage = require("../utils/imagekit");
 const paymentService = require("../services/payment.service");
 const notification = require("../services/notification.service");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
-const { emitToRoom, userRoom } = require("../sockets/socket.instance");
+const rideService = require("../services/ride.service");
+const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
 const walletService = require("../services/wallet.service");
+const settingsService = require("../services/settings.service");
 const { estimateGatewayFee } = require("../config/razorpay");
 const { verifyPhoneToken } = require("../config/firebase");
 const isProd = process.env.NODE_ENV === "production";
@@ -159,6 +161,15 @@ const registerTechnician = async (req, res) => {
         }
 
         await newTech.save();
+
+        // The office has an Applications tab that this belongs in, and until
+        // somebody approves it the man cannot sign in - so it has to announce
+        // itself rather than wait to be found on the next page load.
+        emitToRoom(adminRoom(), "technician:new", {
+            _id: newTech._id,
+            name: newTech.name,
+            area: newTech.area,
+        });
 
         // No cookie - the account can't sign in until the office approves it
         return res.status(201).json({
@@ -340,7 +351,7 @@ const bootstrap = async (req, res) => {
         const [activeTicket, nextJobs, scheduledJobs, history, cashSummary] = await Promise.all([
             ticketModel
                 .findOne({ technician: techId, status: { $in: ACTIVE_STATUSES } })
-                .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot status billing payment scheduling createdAt assignedAt")
+                .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot location ride refusal status billing payment scheduling createdAt assignedAt")
                 .sort({ createdAt: -1 })
                 .lean(),
 
@@ -393,6 +404,10 @@ const bootstrap = async (req, res) => {
                     totalPaise: cashSummary[0]?.totalPaise || 0,
                     amountDisplay: paymentService.paiseToRupees(cashSummary[0]?.totalPaise || 0),
                 },
+
+                // Offered on the job card when a refusal is confirmed, so the
+                // technician sees the figure before he agrees to ask for it
+                visitChargePaise: (await settingsService.getSetting("VISIT_CHARGE_RUPEES")) * 100,
             },
         });
     } catch (error) {
@@ -547,7 +562,7 @@ const updateStatus = async (req, res) => {
     }
 };
 
-/* const updateLocation = async (req, res) => {
+const updateLocation = async (req, res) => {
     try {
         const lat = Number(req.body.lat);
         const lon = Number(req.body.lon ?? req.body.lng);
@@ -564,45 +579,29 @@ const updateStatus = async (req, res) => {
             { location: { type: "Point", coordinates: [lon, lat] }, lastLocationAt: new Date() }
         );
 
+        // The admin panel needs this live, not on the next poll. Scoped to the
+        // admin room only - no other technician has any business knowing where
+        // this one is.
+        emitToRoom(adminRoom(), "technician:location", {
+            technicianId: String(req.technician._id),
+            name: req.technician.name,
+            lat,
+            lon,
+            at: new Date(),
+        });
+
+        // Same ride handling as the socket ping, so a client that falls back
+        // to REST still gets its route, ETA and arrival message.
+        await rideService.syncRideProgress(req.technician, lat, lon);
+
         return res.status(200).json({ success: true });
     } catch (error) {
         console.error("Update location error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
-}; */
+};
 
 /* ================= TICKETS ================= */
-
-/* const getMyAssignedTicket = async (req, res) => {
-    try {
-        const activeTicket = await ticketModel
-            .findOne({ technician: req.technician._id, status: { $in: ACTIVE_STATUSES } })
-            .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot status billing payment createdAt assignedAt")
-            .sort({ createdAt: -1 })
-            .lean();
-
-        return res.status(200).json({ success: true, data: activeTicket || null });
-    } catch (error) {
-        console.error("Get assigned ticket error:", error);
-        return res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-}; */
-
-/* const getCompletedTickets = async (req, res) => {
-    try {
-        const history = await ticketModel
-            .find({ technician: req.technician._id, status: "Closed" })
-            .select("ticketNumber serviceLabel billing.totalPaise billing.invoiceNumber customerSnapshot payment.method payment.status updatedAt")
-            .sort({ updatedAt: -1 })
-            .limit(50)
-            .lean();
-
-        return res.status(200).json({ success: true, data: history });
-    } catch (error) {
-        console.error("Get history error:", error);
-        return res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
-}; */
 
 const startWork = async (req, res) => {
     try {
@@ -638,9 +637,26 @@ const startWork = async (req, res) => {
     }
 };
 
+/**
+ * The technician hands a job back.
+ *
+ * Two different things arrive here as one: "I cannot do this job" and "the
+ * customer heard the price and refused". Both leave this technician, but they
+ * are not the same event and the office needs to tell them apart - a refusal
+ * means someone should ring the customer before another technician is sent
+ * out to hear the same no.
+ *
+ * Neither one cancels the job. Closing a ticket is the office's decision, not
+ * the technician's: a refusal on the doorstep is often just a price the
+ * customer wants to talk about, and a technician who can cancel can also make
+ * a job disappear and finish it privately. The ticket goes back to the office
+ * flagged for what happened, and they choose - reassign, reschedule, or
+ * cancel.
+ */
 const releaseTicket = async (req, res) => {
     try {
         const { reason } = req.body;
+        const customerRefused = req.body.outcome === "customer_refused";
 
         if (!reason || String(reason).trim().length < 5) {
             return res.status(400).json({ success: false, message: "Please explain why you can't do this job" });
@@ -659,6 +675,8 @@ const releaseTicket = async (req, res) => {
         const wasActive = ticket.status !== "Queued";
         const wasScheduled = Boolean(ticket.scheduling?.scheduledFor);
 
+        // Both outcomes return the ticket to the office. Only the office can
+        // cancel one.
         const updated = await ticketModel.findByIdAndUpdate(
             ticket._id,
             {
@@ -673,14 +691,20 @@ const releaseTicket = async (req, res) => {
                     reason: String(reason).trim(),
                     rejectedAt: new Date(),
                     wasScheduled,
+                    outcome: customerRefused ? "customer_refused" : "cannot_do",
                 },
+                // The ride belongs to the technician who is walking away from
+                // this job. Leaving it behind makes the next technician's card
+                // open on "I have arrived", with a route drawn from a starting
+                // point that was never theirs.
+                $unset: { ride: 1 },
                 $push: {
                     statusHistory: {
                         from: ticket.status,
                         to: "Pending",
                         actorRole: "technician",
                         actorId: req.technician._id,
-                        reason: "Declined: " + String(reason).trim(),
+                        reason: (customerRefused ? "Customer refused: " : "Declined: ") + String(reason).trim(),
                         at: new Date(),
                     },
                 },
@@ -693,15 +717,267 @@ const releaseTicket = async (req, res) => {
             await promoteQueuedTicket(req.technician._id);
         }
 
-        notification.notifyAdminsTicketRejected(updated, req.technician.name, String(reason).trim());
+        notification.notifyAdminsTicketRejected(
+            updated,
+            req.technician.name,
+            (customerRefused ? "Customer refused: " : "") + String(reason).trim()
+        );
 
         return res.status(200).json({
             success: true,
-            message: "The office has been notified",
+            message: customerRefused
+                ? "Recorded. The office will speak to the customer before anyone else goes."
+                : "The office has been notified",
             data: updated,
         });
     } catch (error) {
         console.error("Release ticket error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/technician/tickets/:id/refuse
+ *
+ * The customer heard the price and said no, with the technician still on the
+ * doorstep. He does not leave and the job does not move: the office rings the
+ * customer to find out what the real objection was, and he waits for the
+ * answer. If they are talked round he simply carries on - the whole reason
+ * for holding him there is that a second visit costs another trip.
+ *
+ * He cannot end the job either way. All he can do is say what happened.
+ */
+const refuseTicket = async (req, res) => {
+    try {
+        const { reason } = req.body;
+
+        if (!reason || String(reason).trim().length < 5) {
+            return res.status(400).json({ success: false, message: "Say why the customer refused" });
+        }
+
+        const updated = await ticketModel.findOneAndUpdate(
+            {
+                _id: req.params.id,
+                technician: req.technician._id,
+                status: { $in: ["Assigned", "In-Progress"] },
+                "refusal.status": { $ne: "awaiting_verification" },
+            },
+            {
+                refusal: {
+                    raisedAt: new Date(),
+                    raisedBy: req.technician._id,
+                    raisedByName: req.technician.name,
+                    reason: String(reason).trim(),
+                    status: "awaiting_verification",
+                    visitChargeBilled: false,
+                },
+                $push: {
+                    statusHistory: {
+                        from: "In-Progress",
+                        to: "In-Progress",
+                        actorRole: "technician",
+                        actorId: req.technician._id,
+                        reason: "Customer refused the quote: " + String(reason).trim(),
+                        at: new Date(),
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
+        if (!updated) {
+            return res.status(404).json({
+                success: false,
+                message: "Job not found, not yours, or already waiting on the office",
+            });
+        }
+
+        notification.notifyAdminsCustomerRefused(updated, req.technician.name, String(reason).trim());
+
+        return res.status(200).json({
+            success: true,
+            message: "The office is calling the customer. Please wait there.",
+            data: updated,
+        });
+    } catch (error) {
+        console.error("Refuse ticket error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/technician/tickets/:id/visit-charge
+ *
+ * The office confirmed the customer will not go ahead, so the trip is billed
+ * on its own. The commission on it is whatever the owner has set - zero by
+ * default, because the technician burned the fuel and taking a share of the
+ * only thing he earned on a wasted trip costs more in goodwill than it makes.
+ */
+const billVisitCharge = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+            status: { $in: ["Assigned", "In-Progress"] },
+            "refusal.status": "customer_declined",
+        });
+
+        if (!ticket) {
+            return res.status(404).json({
+                success: false,
+                message: "This job isn't waiting on a visit charge",
+            });
+        }
+
+        if (ticket.refusal?.visitChargeBilled) {
+            return res.status(400).json({ success: false, message: "The visit charge is already raised" });
+        }
+
+        const rupees = await settingsService.getSetting("VISIT_CHARGE_RUPEES");
+        const commissionPercent = await settingsService.getSetting("VISIT_COMMISSION_PERCENT");
+
+        if (!rupees || rupees <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "No visit charge is set up. Ask the office.",
+            });
+        }
+
+        const bill = paymentService.buildBill({
+            customItems: [{ description: "Visit charge", amountRupees: rupees }],
+            workDone: "Visited and quoted. Customer did not go ahead.",
+            priceMap: new Map(),
+        });
+
+        if (bill.error) {
+            return res.status(400).json({ success: false, message: bill.error });
+        }
+
+        const invoiceNumber = await paymentService.generateInvoiceNumber();
+        const commissionPaise = walletService.calculateCommission(bill.totalPaise, commissionPercent);
+
+        ticket.billing = {
+            invoiceNumber,
+            lineItems: bill.lineItems,
+            workDone: bill.workDone,
+            subtotalPaise: bill.subtotalPaise,
+            gstPercent: bill.gstPercent,
+            gstPaise: bill.gstPaise,
+            totalPaise: bill.totalPaise,
+            commissionPercent,
+            commissionPaise,
+            technicianSharePaise: bill.totalPaise - commissionPaise,
+            createdByTechnician: req.technician._id,
+            billedAt: new Date(),
+            editCount: 0,
+            editHistory: [],
+        };
+
+        // Cash only. Sending a payment link to a customer who just refused to
+        // spend anything, and then waiting on the doorstep for them to open
+        // it, is not a thing to build a flow around.
+        ticket.payment = { status: "Pending", method: "cash" };
+        ticket.status = "Payment-Pending";
+        ticket.refusal.visitChargeBilled = true;
+        ticket.statusHistory.push({
+            from: "In-Progress",
+            to: "Payment-Pending",
+            actorRole: "technician",
+            actorId: req.technician._id,
+            reason: "Visit charge raised after the customer declined",
+            at: new Date(),
+        });
+
+        await ticket.save();
+
+        await Payment.findOneAndUpdate(
+            { ticket: ticket._id },
+            {
+                ticket: ticket._id,
+                ticketNumber: ticket.ticketNumber,
+                invoiceNumber,
+                amountPaise: bill.totalPaise,
+                method: "cash",
+                status: "pending",
+                isVisitCharge: true,
+                commissionPercent,
+                commissionPaise,
+                technicianSharePaise: bill.totalPaise - commissionPaise,
+            },
+            { upsert: true }
+        );
+
+        await notification.notifyCustomer({
+            ticket,
+            text:
+                "*VISIT CHARGE " + invoiceNumber + "*\n" +
+                "Ticket: " + ticket.ticketNumber + "\n\n" +
+                "Our technician visited and checked the problem. As you have decided not to " +
+                "go ahead, only the visit charge applies.\n\n" +
+                "*Total: Rs " + paymentService.paiseToRupees(bill.totalPaise) + "*\n\n" +
+                "Please pay this in cash to the technician.",
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Visit charge raised. Collect Rs " + paymentService.paiseToRupees(bill.totalPaise),
+            data: {
+                invoiceNumber,
+                totalDisplay: paymentService.paiseToRupees(bill.totalPaise),
+                yoursDisplay: paymentService.paiseToRupees(bill.totalPaise - commissionPaise),
+                commissionPercent,
+            },
+        });
+    } catch (error) {
+        console.error("Visit charge error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/technician/tickets/:id/skip-visit-charge
+ *
+ * He decided not to ask for it. The job is over either way - the office has
+ * already confirmed the customer is not going ahead - so this closes it off
+ * with nothing charged.
+ */
+const skipVisitCharge = async (req, res) => {
+    try {
+        const updated = await ticketModel.findOneAndUpdate(
+            {
+                _id: req.params.id,
+                technician: req.technician._id,
+                status: { $in: ["Assigned", "In-Progress"] },
+                "refusal.status": "customer_declined",
+            },
+            {
+                status: "Cancelled",
+                cancelReason: "Customer declined after the quote. No visit charge taken.",
+                $push: {
+                    statusHistory: {
+                        from: "In-Progress",
+                        to: "Cancelled",
+                        actorRole: "technician",
+                        actorId: req.technician._id,
+                        reason: "Customer declined, technician waived the visit charge",
+                        at: new Date(),
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
+        if (!updated) {
+            return res.status(404).json({ success: false, message: "This job isn't waiting on a visit charge" });
+        }
+
+        await technicianModel.updateOne({ _id: req.technician._id }, { activeTicket: null, isAvailable: true });
+        await promoteQueuedTicket(req.technician._id);
+        notification.notifyAdminsTicketCancelled(updated, req.technician.name, "Customer declined, no visit charge");
+
+        return res.status(200).json({ success: true, message: "Closed with nothing charged", data: updated });
+    } catch (error) {
+        console.error("Skip visit charge error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
@@ -765,7 +1041,7 @@ const startScheduledNow = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            message: "Job started - it's now in My Job",
+            message: "Job started. It is now in My Job.",
             data: updated,
         });
     } catch (error) {
@@ -793,6 +1069,12 @@ const getPricing = async (req, res) => {
                 .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name)),
             limits: paymentService.LIMITS,
             onlinePaymentAvailable: paymentService.isRazorpayActive(),
+
+            // So the bill screen can show what a split would look like before
+            // the technician commits to it
+            commissionPercent: req.technician.commissionRate
+                ?? parseInt(process.env.DEFAULT_COMMISSION_RATE) ?? 20,
+            billEditLimit: await settingsService.getSetting("BILL_EDIT_LIMIT"),
         });
     } catch (error) {
         console.error("Get pricing error:", error);
@@ -800,25 +1082,77 @@ const getPricing = async (req, res) => {
     }
 };
 
- // POST /api/technician/tickets/generateBill
+/**
+ * POST /api/technician/tickets/generateBill
+ *
+ * Writes the bill, and re-writes it when the technician got something wrong.
+ *
+ * A bill used to be final the instant it was generated, so a mistyped line
+ * meant phoning the office with the customer standing there. Corrections are
+ * allowed while the money is still untouched, capped at a number the owner
+ * controls, and every one of them is kept.
+ *
+ * Three ways to take the money:
+ *   cash   - technician holds the lot and owes the commission back
+ *   online - customer pays the whole bill through Razorpay
+ *   split  - technician takes his own share in cash and the customer pays the
+ *            company's commission through Razorpay. The gateway charges 2% of
+ *            the commission instead of 2% of the whole bill, and no money has
+ *            to travel between company and technician afterwards, so there is
+ *            no second fee and no balance left to chase.
+ */
+const BILL_METHODS = ["cash", "online", "split"];
+
 const generateBill = async (req, res) => {
     try {
-        const { ticketId, catalogItems, customItems, workDone, paymentMethod, serviceKey } = req.body;
+        const { ticketId, catalogItems, customItems, workDone, paymentMethod, serviceKey, editReason } = req.body;
 
         if (!ticketId) {
             return res.status(400).json({ success: false, message: "ticketId is required" });
         }
 
-        const method = paymentMethod === "cash" ? "cash" : "online";
+        const method = BILL_METHODS.includes(paymentMethod) ? paymentMethod : "online";
 
         const ticket = await ticketModel.findOne({
             _id: ticketId,
             technician: req.technician._id,
-            status: { $in: ["Assigned", "In-Progress"] },
+            status: { $in: ["Assigned", "In-Progress", "Payment-Pending"] },
         });
 
         if (!ticket) {
-            return res.status(404).json({ success: false, message: "Ticket not found or bill already generated" });
+            return res.status(404).json({ success: false, message: "Job not found, or it is no longer yours" });
+        }
+
+        // ---- correcting a bill that already exists -------------------------
+        const isEdit = ticket.status === "Payment-Pending" && Boolean(ticket.billing?.invoiceNumber);
+
+        if (isEdit) {
+            // Once any money has moved the bill is history. Changing it then
+            // is a refund, not a correction, and that goes through the office.
+            if (ticket.payment?.status !== "Pending") {
+                return res.status(400).json({
+                    success: false,
+                    message: "The customer has already paid this bill. Ask the office to raise a refund instead.",
+                });
+            }
+
+            const limit = await settingsService.getSetting("BILL_EDIT_LIMIT");
+            const used = ticket.billing.editCount || 0;
+
+            if (used >= limit) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This bill has already been corrected " + used + " time" + (used === 1 ? "" : "s") +
+                        ". Ask the office to change it.",
+                });
+            }
+
+            if (!editReason || String(editReason).trim().length < 5) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Say what you are correcting, so the office can see why the amount changed",
+                });
+            }
         }
 
         const finalServiceKey = serviceKey || ticket.serviceKey;
@@ -828,7 +1162,6 @@ const generateBill = async (req, res) => {
             if (srv) {
                 ticket.serviceKey = srv.key;
                 ticket.serviceLabel = srv.label;
-                await ticket.save();
             }
         }
 
@@ -851,13 +1184,55 @@ const generateBill = async (req, res) => {
             return res.status(400).json({ success: false, message: bill.error });
         }
 
-        const invoiceNumber = await paymentService.generateInvoiceNumber();
+        // A correction keeps its invoice number. The customer already has it,
+        // and burning a fresh one for every typo makes the books unreadable.
+        const invoiceNumber = isEdit
+            ? ticket.billing.invoiceNumber
+            : await paymentService.generateInvoiceNumber();
+
+        // Freeze the commission split at billing time. If the rate changes
+        // next month, this job's numbers must not move with it.
+        const techData = await technicianModel.findById(req.technician._id).select("commissionRate").lean();
+        const commissionPercent = techData?.commissionRate ?? parseInt(process.env.DEFAULT_COMMISSION_RATE) ?? 20;
+        let commissionPaise = walletService.calculateCommission(bill.totalPaise, commissionPercent);
+        let technicianSharePaise = bill.totalPaise - commissionPaise;
+
+        // On a split the technician is handed physical notes, so his half is
+        // rounded down to a whole rupee - nobody counts out 30 paise on a
+        // doorstep. The remainder rides along with the company's half, which
+        // goes through Razorpay and can be any amount. Rs 799 at 30% becomes
+        // Rs 559 in his hand and Rs 240.00 online, not Rs 559.30 and 239.70.
+        //
+        // The stored commission is then the figure actually collected, not
+        // the theoretical one, so the books and the money agree exactly.
+        if (method === "split") {
+            technicianSharePaise = Math.floor(technicianSharePaise / 100) * 100;
+            commissionPaise = bill.totalPaise - technicianSharePaise;
+        }
+
+        if (method === "split" && commissionPaise <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "There is no commission on this job, so take the whole amount in cash instead.",
+            });
+        }
+
+        // The old link is for the old amount. Leaving it live lets the
+        // customer scroll up in WhatsApp and pay the figure we just corrected.
+        if (isEdit && ticket.payment?.razorpayLinkId) {
+            await paymentService.cancelPaymentLink(ticket.payment.razorpayLinkId);
+        }
+
+        // Online takes the whole bill; split takes only the company's cut.
+        const onlineAmountPaise = method === "online" ? bill.totalPaise
+            : method === "split" ? commissionPaise
+            : 0;
 
         let link = null;
-        if (method === "online") {
-            link = await paymentService.createPaymentLink({
-                ticket, amountPaise: bill.totalPaise, invoiceNumber,
-            });
+        if (onlineAmountPaise > 0) {
+            link = method === "split"
+                ? await paymentService.createCommissionLink({ ticket, amountPaise: onlineAmountPaise, invoiceNumber })
+                : await paymentService.createPaymentLink({ ticket, amountPaise: onlineAmountPaise, invoiceNumber });
 
             if (!link) {
                 return res.status(502).json({
@@ -867,14 +1242,8 @@ const generateBill = async (req, res) => {
             }
         }
 
-        // Freeze the commission split at billing time. If the rate changes
-        // next month, this job's numbers must not move with it.
-        const techData = await technicianModel.findById(req.technician._id).select("commissionRate").lean();
-        const commissionPercent = techData?.commissionRate ?? parseInt(process.env.DEFAULT_COMMISSION_RATE) ?? 20;
-        const commissionPaise = walletService.calculateCommission(bill.totalPaise, commissionPercent);
-        const technicianSharePaise = bill.totalPaise - commissionPaise;
-
         const previousStatus = ticket.status;
+        const previousTotal = ticket.billing?.totalPaise || 0;
 
         ticket.billing = {
             invoiceNumber,
@@ -888,46 +1257,74 @@ const generateBill = async (req, res) => {
             commissionPaise,
             technicianSharePaise,
             createdByTechnician: req.technician._id,
-            billedAt: new Date(),
+            billedAt: ticket.billing?.billedAt || new Date(),
+            editCount: isEdit ? (ticket.billing.editCount || 0) + 1 : 0,
+            editHistory: [
+                ...(ticket.billing?.editHistory || []),
+                ...(isEdit ? [{
+                    at: new Date(),
+                    byTechnician: req.technician._id,
+                    reason: String(editReason).trim(),
+                    fromTotalPaise: previousTotal,
+                    toTotalPaise: bill.totalPaise,
+                }] : []),
+            ],
         };
+
         ticket.payment = {
             status: "Pending",
             method,
+            ...(method === "split" ? {
+                split: {
+                    technicianCashPaise: technicianSharePaise,
+                    companyOnlinePaise: commissionPaise,
+                },
+            } : {}),
             ...(link ? { razorpayLinkId: link.linkId, razorpayLinkUrl: link.linkUrl } : {}),
         };
+
         ticket.status = "Payment-Pending";
         ticket.statusHistory.push({
             from: previousStatus,
             to: "Payment-Pending",
             actorRole: "technician",
             actorId: req.technician._id,
+            reason: isEdit ? "Bill corrected: " + String(editReason).trim() : undefined,
             at: new Date(),
         });
 
         await ticket.save();
 
-        await Payment.create({
-            ticket: ticket._id,
-            ticketNumber: ticket.ticketNumber,
-            invoiceNumber,
-            amountPaise: bill.totalPaise,
-            method,
-            status: "pending",
-            // Copied onto the payment so revenue reporting doesn't have to
-            // join back to the ticket for every row
-            commissionPercent,
-            commissionPaise,
-            technicianSharePaise,
-            ...(link ? { razorpayLinkId: link.linkId, razorpayLinkUrl: link.linkUrl } : {}),
-        });
+        // One payment row per bill. A correction rewrites it rather than
+        // leaving the old amount behind for revenue to double-count.
+        await Payment.findOneAndUpdate(
+            { ticket: ticket._id },
+            {
+                ticket: ticket._id,
+                ticketNumber: ticket.ticketNumber,
+                invoiceNumber,
+                amountPaise: bill.totalPaise,
+                method,
+                status: "pending",
+                // Copied onto the payment so revenue reporting doesn't have to
+                // join back to the ticket for every row
+                commissionPercent,
+                commissionPaise,
+                technicianSharePaise,
+                razorpayLinkId: link?.linkId || null,
+                razorpayLinkUrl: link?.linkUrl || null,
+            },
+            { upsert: true }
+        );
 
         const itemLines = bill.lineItems
             .map((l) => l.description + " - Rs " + paymentService.paiseToRupees(l.amountPaise))
             .join("\n");
 
         let message =
-            "*INVOICE " + invoiceNumber + "*\n" +
+            (isEdit ? "*CORRECTED INVOICE " : "*INVOICE ") + invoiceNumber + "*\n" +
             "Ticket: " + ticket.ticketNumber + "\n" +
+            (isEdit ? "\nThe earlier bill was wrong. This one replaces it.\n" : "") +
             (bill.workDone ? "\nWork done: " + bill.workDone + "\n" : "") +
             "\n" + itemLines + "\n\n";
 
@@ -936,19 +1333,39 @@ const generateBill = async (req, res) => {
             message += "GST (" + bill.gstPercent + "%): Rs " + paymentService.paiseToRupees(bill.gstPaise) + "\n";
         }
         message += "*Total: Rs " + paymentService.paiseToRupees(bill.totalPaise) + "*\n\n";
-        message += link
-            ? "Pay here:\n" + link.linkUrl
-            : "Please pay Rs " + paymentService.paiseToRupees(bill.totalPaise) + " in cash to the technician.";
+
+        if (method === "split") {
+            message +=
+                "Please pay in two parts:\n\n" +
+                "1) Service charge Rs " + paymentService.paiseToRupees(commissionPaise) +
+                " - pay online here:\n" + link.linkUrl + "\n\n" +
+                "2) Rs " + paymentService.paiseToRupees(technicianSharePaise) + " in cash to the technician.";
+        } else if (link) {
+            message += "Pay here:\n" + link.linkUrl;
+        } else {
+            message += "Please pay Rs " + paymentService.paiseToRupees(bill.totalPaise) + " in cash to the technician.";
+        }
 
         await notification.notifyCustomer({ ticket, text: message });
 
+        const editLimit = await settingsService.getSetting("BILL_EDIT_LIMIT");
+
         return res.status(200).json({
             success: true,
-            message: link ? "Invoice sent to customer" : "Invoice generated - collect the cash",
+            message: isEdit
+                ? "Corrected invoice sent to the customer"
+                : method === "cash"
+                    ? "Invoice generated - collect the cash"
+                    : "Invoice sent to customer",
             data: {
                 invoiceNumber,
                 method,
+                isEdit,
+                editsUsed: ticket.billing.editCount,
+                editsLeft: Math.max(0, editLimit - ticket.billing.editCount),
                 totalDisplay: paymentService.paiseToRupees(bill.totalPaise),
+                commissionDisplay: paymentService.paiseToRupees(commissionPaise),
+                technicianShareDisplay: paymentService.paiseToRupees(technicianSharePaise),
                 paymentLink: link?.linkUrl || null,
             },
         });
@@ -958,8 +1375,6 @@ const generateBill = async (req, res) => {
     }
 };
 
- // POST /api/technician/tickets/:id/collect-cash
-
 const collectCash = async (req, res) => {
     try {
         const { note } = req.body;
@@ -968,7 +1383,7 @@ const collectCash = async (req, res) => {
             _id: req.params.id,
             technician: req.technician._id,
             status: "Payment-Pending",
-            "payment.method": "cash",
+            "payment.method": { $in: ["cash", "split"] },
         }).lean();
 
         if (!ticket) {
@@ -978,18 +1393,61 @@ const collectCash = async (req, res) => {
             });
         }
 
+        const isSplit = ticket.payment?.method === "split";
+
+        // On a split the technician takes his own share and the customer pays
+        // the company's commission online. Letting him close the job before
+        // that link is paid would hand him his money and leave the company
+        // with nothing to chase - the customer has already gone.
+        if (isSplit && !ticket.payment?.split?.onlinePaidAt) {
+            return res.status(400).json({
+                success: false,
+                message: "The customer has not paid the Rs " +
+                    paymentService.paiseToRupees(ticket.payment?.split?.companyOnlinePaise) +
+                    " service charge yet. Get that done first, then take your cash.",
+            });
+        }
+
+        // He only ever holds his own share on a split, never the whole bill
+        const cashTakenPaise = isSplit
+            ? (ticket.payment?.split?.technicianCashPaise || 0)
+            : (ticket.billing?.totalPaise || 0);
+
+        // A visit charge is what is left of a job that did not happen, so it
+        // ends as Cancelled with the trip paid for - not as a completed job.
+        const wasRefused = ticket.refusal?.status === "customer_declined";
+
+        // With no commission there is nothing owed and nothing to reconcile -
+        // the technician put the money straight in his pocket and the
+        // company's share of it is zero.
+        const nothingToSettle = (ticket.billing?.commissionPaise || 0) === 0;
+
+        // A visit charge is the exception. No money is owed either way, but
+        // the office still checks the figure - otherwise a technician could
+        // come back from any wasted trip with whatever number he liked. It is
+        // an amount being confirmed, not money being collected.
+        const needsAmountCheck = wasRefused;
+
         const updated = await ticketModel.findOneAndUpdate(
             { _id: ticket._id, status: "Payment-Pending" },
             {
-                status: "Closed",
+                status: wasRefused ? "Cancelled" : "Closed",
+                ...(wasRefused
+                    ? { cancelReason: "Customer declined after the quote. Visit charge collected." }
+                    : {}),
                 "payment.status": "Collected",
                 "payment.collectedAt": new Date(),
                 "payment.collectedNote": note ? String(note).trim().slice(0, 200) : undefined,
+                ...(isSplit ? { "payment.split.cashConfirmedAt": new Date() } : {}),
                 $push: {
                     statusHistory: {
-                        from: "Payment-Pending", to: "Closed",
+                        from: "Payment-Pending", to: wasRefused ? "Cancelled" : "Closed",
                         actorRole: "technician", actorId: req.technician._id,
-                        reason: "Cash collected from customer",
+                        reason: wasRefused
+                            ? "Visit charge collected - customer did not go ahead"
+                            : isSplit
+                            ? "Technician's share collected in cash - commission already paid online"
+                            : "Cash collected from customer",
                         at: new Date(),
                     },
                 },
@@ -1004,49 +1462,73 @@ const collectCash = async (req, res) => {
         }
 
         await Payment.findOneAndUpdate(
-            { ticket: ticket._id, status: "pending" },
+            { ticket: ticket._id },
             {
-                status: "collected",
+                status: needsAmountCheck ? "collected" : (isSplit || nothingToSettle) ? "verified" : "collected",
                 collectedBy: req.technician._id,
                 collectedAt: new Date(),
                 note: note ? String(note).trim().slice(0, 200) : undefined,
             }
         );
 
-        // Use the rate frozen on the invoice, not the technician's current
-        // rate - the customer was billed against that split
-        const commissionPercent = updated.billing?.commissionPercent ?? 20;
+        // A split leaves nothing outstanding in either direction: the technician has
+        // exactly his share and the company has exactly its commission. There
+        // is no balance to move, which is the whole point of taking it this
+        // way - no settlement to chase and no second gateway fee.
+        if (!isSplit && !nothingToSettle) {
+            // Use the rate frozen on the invoice, not the technician's current
+            // rate - the customer was billed against that split
+            const commissionPercent = updated.billing?.commissionPercent ?? 20;
 
-        try {
-            await walletService.deductCommissionForCashJob(
-                req.technician._id,
-                updated._id,
-                updated.ticketNumber,
-                updated.billing?.totalPaise || 0,
-                commissionPercent
-            );
-        } catch (walletErr) {
-            console.error("Wallet debit failed for", updated.ticketNumber, walletErr.message);
+            try {
+                await walletService.deductCommissionForCashJob(
+                    req.technician._id,
+                    updated._id,
+                    updated.ticketNumber,
+                    updated.billing?.totalPaise || 0,
+                    commissionPercent
+                );
+            } catch (walletErr) {
+                console.error("Wallet debit failed for", updated.ticketNumber, walletErr.message);
+            }
         }
 
-        await technicianModel.updateOne(
-            { _id: req.technician._id },
-            { $inc: { completedJobs: 1 } }
-        );
+        if (!wasRefused) {
+            await technicianModel.updateOne(
+                { _id: req.technician._id },
+                { $inc: { completedJobs: 1 } }
+            );
+        }
 
         await promoteQueuedTicket(req.technician._id);
 
         await notification.notifyCustomer({
             ticket: updated,
-            text:
-                "Payment received - Rs " + paymentService.paiseToRupees(updated.billing?.totalPaise) + "\n" +
+            text: wasRefused
+                ? "Visit charge received. Rs " + paymentService.paiseToRupees(updated.billing?.totalPaise) + "\n" +
+                  "Invoice: " + updated.billing?.invoiceNumber + "\n\n" +
+                  "Thank you for your time. Ticket " + updated.ticketNumber + " is now closed. " +
+                  "message us any time if you change your mind."
+                : "Payment received. Rs " + paymentService.paiseToRupees(updated.billing?.totalPaise) + "\n" +
+                (isSplit
+                    ? "(Rs " + paymentService.paiseToRupees(cashTakenPaise) + " cash + Rs " +
+                      paymentService.paiseToRupees(updated.payment?.split?.companyOnlinePaise) + " online)\n"
+                    : "") +
                 "Invoice: " + updated.billing?.invoiceNumber + "\n\n" +
                 "Thank you for choosing Cosmosgen. Ticket " + updated.ticketNumber + " is now closed.",
         });
 
         notification.notifyAdminsPaymentCollected(updated, req.technician.name);
 
-        return res.status(200).json({ success: true, message: "Cash recorded, job closed", data: updated });
+        return res.status(200).json({
+            success: true,
+            message: wasRefused
+                ? "Rs " + paymentService.paiseToRupees(cashTakenPaise) + " is yours. Nothing to deposit."
+                : isSplit
+                    ? "Your share is recorded and the job is closed - fully settled"
+                    : "Cash recorded, job closed",
+            data: updated,
+        });
     } catch (error) {
         console.error("Collect cash error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
@@ -1065,7 +1547,7 @@ const getWallet = async (req, res) => {
         const days = Math.min(365, Math.max(7, Number(req.query.days) || 90));
         const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-        const [tech, transactions, periodTotals, lifetimeOnline, cashJobsValue] = await Promise.all([
+        const [tech, transactions, periodTotals, lifetimeOnline, cashJobsValue, splitJobs] = await Promise.all([
             technicianModel.findById(techId).select("walletBalancePaise commissionRate completedJobs").lean(),
 
             WalletTransaction.find({ technician: techId })
@@ -1087,17 +1569,52 @@ const getWallet = async (req, res) => {
                 { $group: { _id: null, total: { $sum: "$amountPaise" } } },
             ]),
 
+            // Cancelled is in here on purpose: a visit charge closes its
+            // ticket as cancelled - the job never happened - but the money was
+            // still collected and it is still his earning.
             ticketModel.aggregate([
                 {
                     $match: {
                         technician: techId,
-                        status: "Closed",
+                        status: { $in: ["Closed", "Cancelled"] },
                         "payment.method": "cash",
+                        "payment.status": { $in: ["Collected", "Verified"] },
+                        // Visit charges are counted with the other jobs that
+                        // left no ledger entry, below - not here as well
+                        "refusal.visitChargeBilled": { $ne: true },
                         updatedAt: { $gte: since },
                     },
                 },
-                { $group: { _id: null, total: { $sum: "$billing.totalPaise" } } },
+                { $group: { _id: null, total: { $sum: "$billing.totalPaise" }, count: { $sum: 1 } } },
             ]),
+
+            // Jobs that moved no balance, so they wrote nothing to the ledger:
+            // a split, where he took his share and the customer paid the
+            // company directly, and a visit charge with no commission on it,
+            // which is entirely his. Correct for the balance, and wrong for
+            // the earnings screen - without this the money he actually
+            // pocketed on those jobs appears nowhere at all.
+            ticketModel
+                .find({
+                    technician: techId,
+                    status: { $in: ["Closed", "Cancelled"] },
+                    updatedAt: { $gte: since },
+                    $or: [
+                        {
+                            "payment.method": "split",
+                            "payment.split.cashConfirmedAt": { $ne: null },
+                        },
+                        {
+                            "refusal.visitChargeBilled": true,
+                            "payment.status": { $in: ["Collected", "Verified"] },
+                            "billing.commissionPaise": 0,
+                        },
+                    ],
+                })
+                .select("ticketNumber serviceLabel refusal.visitChargeBilled billing.technicianSharePaise billing.totalPaise payment.method updatedAt")
+                .sort({ updatedAt: -1 })
+                .limit(50)
+                .lean(),
         ]);
 
         const bySource = {};
@@ -1108,21 +1625,111 @@ const getWallet = async (req, res) => {
         // earning there is the job value minus that commission.
         const onlineEarnedPaise = bySource.job_online?.total || 0;
         const cashCommissionPaise = bySource.job_cash?.total || 0;
-        const cashEarnedPaise = (cashJobsValue[0]?.total || 0) - cashCommissionPaise;
+
+        // Two ways cash ends up in his pocket, and both belong on this line:
+        // a plain cash job where he held the whole bill and owes the
+        // commission back, and a split where he only ever held his own share.
+        const plainCashEarnedPaise = (cashJobsValue[0]?.total || 0) - cashCommissionPaise;
+        const splitEarnedPaise = splitJobs.reduce((sum, t) => sum + (t.billing?.technicianSharePaise || 0), 0);
+        const visitEarnedPaise = splitJobs
+            .filter((t) => t.refusal?.visitChargeBilled)
+            .reduce((sum, t) => sum + (t.billing?.technicianSharePaise || 0), 0);
+        const cashEarnedPaise = plainCashEarnedPaise + splitEarnedPaise;
+
         const totalEarnedPaise = onlineEarnedPaise + cashEarnedPaise;
 
         const balance = tech?.walletBalancePaise || 0;
         const owedPaise = Math.abs(Math.min(0, balance));
+
+        // Money he has already sent that the office has not recorded yet.
+        //
+        // The gateway confirming a payment and the office recording it
+        // against a ticket are two different moments, and the balance only
+        // moves on the second. Without this the technician pays, sees the
+        // same due sitting there, and pays again.
+        //
+        // Only while he actually owes something. With a square balance there
+        // is no due for a settlement to clear, so "your balance clears once
+        // they record it" would be telling him about money already dealt
+        // with - which is what it did after a visit charge, where the whole
+        // amount is his and he owes nothing at all.
+        const pendingSettlements = owedPaise > 0
+            ? await Payment.find({
+                collectedBy: techId,
+                ticket: null,
+                status: "collected",
+            }).select("amountPaise createdAt").lean()
+            : [];
+
+        const settlementPending = pendingSettlements.length
+            ? {
+                count: pendingSettlements.length,
+                amountDisplay: paymentService.paiseToRupees(
+                    pendingSettlements.reduce((n, r) => n + (r.amountPaise || 0), 0)
+                ),
+                sentAt: pendingSettlements[0].createdAt,
+            }
+            : null;
+
+        // When the office's transfer should reach his bank.
+        //
+        // On an online job the customer's money goes to Razorpay, not to the
+        // company, and Razorpay only settles it into the company account
+        // several days later - the office cannot send on what it has not
+        // received. A technician who finishes a job at six and sees a credit
+        // here the same evening, with nothing in his bank, assumes the app is
+        // broken. The date is the answer, and it is the question the office
+        // fields most often.
+        //
+        // Counted from the oldest credit that has not been paid out yet, so
+        // the promise is about the money that has been waiting longest rather
+        // than the newest job to land.
+        let payoutExpected = null;
+        if (balance > 0) {
+            const payoutDays = await settingsService.getSetting("PAYOUT_DAYS");
+
+            const lastPayout = await WalletTransaction.findOne({ technician: techId, source: "payout" })
+                .sort({ createdAt: -1 })
+                .select("createdAt")
+                .lean();
+
+            const oldestUnpaid = await WalletTransaction.findOne({
+                technician: techId,
+                source: "job_online",
+                ...(lastPayout ? { createdAt: { $gt: lastPayout.createdAt } } : {}),
+            })
+                .sort({ createdAt: 1 })
+                .select("createdAt")
+                .lean();
+
+            if (oldestUnpaid) {
+                const dueAt = new Date(new Date(oldestUnpaid.createdAt).getTime() + payoutDays * 86400000);
+                payoutExpected = {
+                    days: payoutDays,
+                    waitingSince: oldestUnpaid.createdAt,
+                    expectedBy: dueAt,
+                    overdue: Date.now() > dueAt.getTime(),
+                };
+            }
+        }
 
         return res.status(200).json({
             success: true,
             data: {
                 balancePaise: balance,
                 balanceDisplay: paymentService.paiseToRupees(Math.abs(balance)),
-                direction: balance >= 0 ? "company_owes" : "you_owe",
+                // Zero is its own state, not a debt in either direction.
+                // Folding it in with "company owes" made a fully settled
+                // technician read "Office will pay you Rs 0.00".
+                direction: balance === 0 ? "settled" : balance > 0 ? "company_owes" : "you_owe",
 
                 owedPaise,
-                canPayOnline: owedPaise > 0 && paymentService.isRazorpayActive(),
+                // Nothing to pay twice while one transfer is still being
+                // checked by the office
+                canPayOnline: owedPaise > 0 && !settlementPending && paymentService.isRazorpayActive(),
+                settlementPending,
+
+                payoutExpected,
 
                 limitPaise: CREDIT_LIMIT_PAISE,
                 limitDisplay: paymentService.paiseToRupees(Math.abs(CREDIT_LIMIT_PAISE)),
@@ -1138,7 +1745,11 @@ const getWallet = async (req, res) => {
                     commissionPaidDisplay: paymentService.paiseToRupees(cashCommissionPaise),
                     settledDisplay: paymentService.paiseToRupees(bySource.recharge?.total || 0),
                     payoutsDisplay: paymentService.paiseToRupees(bySource.payout?.total || 0),
-                    jobsCount: (bySource.job_online?.count || 0) + (bySource.job_cash?.count || 0),
+                    splitEarnedDisplay: paymentService.paiseToRupees(splitEarnedPaise - visitEarnedPaise),
+                    visitEarnedDisplay: paymentService.paiseToRupees(visitEarnedPaise),
+                    jobsCount: (bySource.job_online?.count || 0)
+                        + (bySource.job_cash?.count || 0)
+                        + splitJobs.length,
                 },
 
                 lifetime: {
@@ -1146,11 +1757,33 @@ const getWallet = async (req, res) => {
                     completedJobs: tech?.completedJobs || 0,
                 },
 
-                transactions: transactions.map((t) => ({
-                    ...t,
-                    amountDisplay: paymentService.paiseToRupees(t.amountPaise),
-                    balanceAfterDisplay: paymentService.paiseToRupees(Math.abs(t.balanceAfterPaise)),
-                })),
+                // Ledger rows and split jobs, newest first. A split has no
+                // ledger row of its own because nothing was owed either way,
+                // so it is folded in here rather than left invisible - and
+                // marked, so the screen does not print a running balance
+                // against an entry that never moved one.
+                transactions: [
+                    ...transactions.map((t) => ({
+                        ...t,
+                        amountDisplay: paymentService.paiseToRupees(t.amountPaise),
+                        balanceAfterDisplay: paymentService.paiseToRupees(Math.abs(t.balanceAfterPaise)),
+                    })),
+                    ...splitJobs.map((t) => ({
+                        _id: "settled-" + t._id,
+                        type: "credit",
+                        source: t.refusal?.visitChargeBilled ? "job_visit" : "job_split",
+                        movesBalance: false,
+                        amountPaise: t.billing?.technicianSharePaise || 0,
+                        amountDisplay: paymentService.paiseToRupees(t.billing?.technicianSharePaise || 0),
+                        description: t.refusal?.visitChargeBilled
+                            ? "Visit charge for #" + t.ticketNumber +
+                              " - customer did not go ahead, all yours"
+                            : "Your share of " + (t.serviceLabel || "a job") +
+                              " #" + t.ticketNumber + " - taken in cash, fully settled",
+                        ticket: { ticketNumber: t.ticketNumber, serviceLabel: t.serviceLabel },
+                        createdAt: t.updatedAt,
+                    })),
+                ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50),
             },
         });
     } catch (error) {
@@ -1177,6 +1810,8 @@ const getPaymentStatus = async (req, res) => {
                 success: true,
                 data: {
                     isPaid: true,
+                    isSplit: ticket.payment?.method === "split",
+                    officePaid: true,
                     status: "paid",
                     paymentId: ticket.payment?.razorpayPaymentId,
                     method: ticket.payment?.method,
@@ -1194,6 +1829,62 @@ const getPaymentStatus = async (req, res) => {
         const status = await paymentService.fetchPaymentLinkStatus(linkId);
         if (!status) {
             return res.status(502).json({ success: false, message: "Could not reach the payment gateway" });
+        }
+
+        // A split link only covers the company's half. Running the full-online
+        // path on it would close the job and credit the technician a share he
+        // is about to take in cash as well - paying him twice.
+        //
+        // This is also the only way a split gets confirmed at all when the
+        // Razorpay webhook cannot reach the server, which is the normal state
+        // during development: the gateway has no route to localhost.
+        if (ticket.payment?.method === "split") {
+            const alreadyPaid = Boolean(ticket.payment?.split?.onlinePaidAt);
+
+            if (status.isPaid && !alreadyPaid) {
+                const marked = await ticketModel.findOneAndUpdate(
+                    { _id: ticket._id, status: "Payment-Pending", "payment.split.onlinePaidAt": null },
+                    {
+                        "payment.split.onlinePaidAt": status.paidAt || new Date(),
+                        "payment.razorpayPaymentId": status.paymentId,
+                        $push: {
+                            statusHistory: {
+                                from: "Payment-Pending", to: "Payment-Pending",
+                                actorRole: "system",
+                                reason: "Service charge confirmed via gateway status check",
+                                at: new Date(),
+                            },
+                        },
+                    },
+                    { returnDocument: "after" }
+                ).lean();
+
+                if (marked) {
+                    const { feePaise, taxPaise } = estimateGatewayFee(ticket.payment?.split?.companyOnlinePaise || 0);
+                    await Payment.updateOne(
+                        { ticket: ticket._id },
+                        {
+                            razorpayPaymentId: status.paymentId,
+                            gatewayFeePaise: feePaise,
+                            gatewayTaxPaise: taxPaise,
+                        }
+                    );
+                }
+            }
+
+            return res.status(200).json({
+                success: true,
+                data: {
+                    ...status,
+                    isSplit: true,
+                    // "Paid" on a split means the company's half only - the
+                    // job is not done until the technician has his cash.
+                    officePaid: status.isPaid || alreadyPaid,
+                    officeAmountDisplay: paymentService.paiseToRupees(ticket.payment?.split?.companyOnlinePaise),
+                    technicianCashDisplay: paymentService.paiseToRupees(ticket.payment?.split?.technicianCashPaise),
+                    amountDisplay: paymentService.paiseToRupees(ticket.billing?.totalPaise),
+                },
+            });
         }
 
         if (status.isPaid && ticket.status === "Payment-Pending") {
@@ -1327,6 +2018,24 @@ const createWalletRecharge = async (req, res) => {
             });
         }
 
+        // The link is written down before he pays it.
+        //
+        // Until now it existed only in his browser tab, so the only thing that
+        // could ever tell us he had paid was the webhook. When the webhook did
+        // not arrive - and on a local server it never does - the office had no
+        // way to look: the money was at Razorpay under an id nobody here had.
+        // This row is the office's handle on it.
+        await Payment.create({
+            ticket: null,
+            amountPaise,
+            method: "online",
+            status: "pending",
+            collectedBy: tech._id,
+            razorpayLinkId: link.linkId,
+            razorpayLinkUrl: link.linkUrl,
+            note: "Technician commission settlement",
+        });
+
         return res.status(200).json({
             success: true,
             data: {
@@ -1342,13 +2051,76 @@ const createWalletRecharge = async (req, res) => {
 };
 
 // GET /api/technician/wallet/recharge/:linkId
-// Polled while the payment window is open so the panel updates without
-// waiting for the technician to refresh
+// Asked once when the technician presses "Check now", and whenever the socket
+// that would have announced the payment does not arrive
 const checkWalletRecharge = async (req, res) => {
     try {
         const status = await paymentService.fetchPaymentLinkStatus(req.params.linkId);
         if (!status) {
             return res.status(502).json({ success: false, message: "Could not reach the payment gateway" });
+        }
+
+        // Write it down ourselves rather than waiting on the webhook.
+        //
+        // Until now this only asked and reported. The webhook was the one
+        // thing that could turn "a link was sent to him" into a settlement
+        // the office can record - and on a local server it never arrives, so
+        // the technician paid, the panel found the money at the gateway, and
+        // then showed him "Clear your dues online" all over again as though
+        // the payment had failed. Which is how a man pays twice.
+        //
+        // Same atomic upsert on the payment id that the webhook uses, so
+        // whichever of the two gets here first wins and the other finds the
+        // row already made. The wallet is NOT credited: the office still
+        // checks the reference and records it against the job, and that is
+        // the step that clears the due.
+        if (status.isPaid && status.paymentId) {
+            let existing;
+            try {
+                existing = await Payment.findOneAndUpdate(
+                    { ticket: null, razorpayPaymentId: status.paymentId },
+                    {
+                        $setOnInsert: {
+                            ticket: null,
+                            amountPaise: status.amountPaidPaise || 0,
+                            method: "online",
+                            status: "collected",
+                            collectedBy: req.technician._id,
+                            collectedAt: status.paidAt || new Date(),
+                            razorpayPaymentId: status.paymentId,
+                            razorpayLinkId: req.params.linkId,
+                            note: "Technician commission settlement",
+                        },
+                    },
+                    { upsert: true, returnDocument: "before" }
+                );
+            } catch (err) {
+                // A webhook landing at the same instant took the row first
+                if (err.code !== 11000) throw err;
+                existing = {};
+            }
+
+            if (!existing) {
+                // The row that only recorded "a link was sent to him" has
+                // served its purpose now the real payment is here
+                await Payment.deleteOne({
+                    ticket: null,
+                    razorpayLinkId: req.params.linkId,
+                    status: "pending",
+                });
+
+                emitToRoom(adminRoom(), "payment:collected", {
+                    technicianName: req.technician.name,
+                    invoiceNumber: "commission settlement",
+                    amountDisplay: paymentService.paiseToRupees(status.amountPaidPaise || 0),
+                });
+
+                emitToRoom(techRoom(req.technician._id), "settlement:received", {
+                    amountPaise: status.amountPaidPaise || 0,
+                    amountDisplay: paymentService.paiseToRupees(status.amountPaidPaise || 0),
+                    reference: status.paymentId,
+                });
+            }
         }
 
         const tech = await technicianModel.findById(req.technician._id)
@@ -1380,12 +2152,13 @@ module.exports = {
     updateTechProfile,
     deleteTechProfile,
     updateStatus,
-    // updateLocation,
-    // getMyAssignedTicket,
-    // getCompletedTickets,
+    updateLocation,
     startWork,
     getWallet,
     releaseTicket,
+    refuseTicket,
+    billVisitCharge,
+    skipVisitCharge,
     getPricing,
     generateBill,
     collectCash,

@@ -30,6 +30,7 @@ router.post("/tickets/:id/unassign", isAdminAuthenticated, adminController.unass
 router.post("/tickets/:id/reassign", isAdminAuthenticated, adminController.reassignTicket);
 router.post("/tickets/:id/reschedule", isAdminAuthenticated, adminController.rescheduleTicket);
 router.post("/tickets/:id/cancel", isAdminAuthenticated, adminController.cancelTicket);
+router.post("/tickets/:id/refusal", isAdminAuthenticated, adminController.resolveRefusal);
 
 // Technicians - reviewing applications is daily backoffice work
 router.get("/technicians", isAdminAuthenticated, adminController.getAllTechnicians);
@@ -45,11 +46,17 @@ router.delete("/pricing/:serviceKey/items/:itemId", isAdminAuthenticated, adminC
 
 // Payments - counting cash a technician hands in is counter work, not owner work
 router.get("/payments", isAdminAuthenticated, adminController.getPayments);
+router.post("/payments/check-reference", isAdminAuthenticated, adminController.checkPaymentReference);
+router.post("/payments/:id/check", isAdminAuthenticated, adminController.checkPaymentMoney);
 router.post("/payments/:id/verify", isAdminAuthenticated, adminController.verifyPayment);
 //wallet
 // Wallet - moving money is owner work, not counter work
+router.get("/settings", isAdminAuthenticated, adminController.getSettings);
+router.patch("/settings/:key", isAdminAuthenticated, isSuperAdmin, adminController.updateSetting);
+router.get("/settlements", isAdminAuthenticated, adminController.getSettlements);
 router.get("/wallets", isAdminAuthenticated, adminController.getWalletSummary);
 router.get("/wallets/:technicianId", isAdminAuthenticated, adminController.getTechnicianWallet);
+router.get("/wallets/:technicianId/references", isAdminAuthenticated, adminController.getTechnicianPaymentReferences);
 router.post("/technicians/payout", isAdminAuthenticated, isSuperAdmin, adminController.issueTechnicianPayout);
 router.post("/wallets/:technicianId/collect", isAdminAuthenticated, isSuperAdmin, adminController.collectFromTechnician);
 

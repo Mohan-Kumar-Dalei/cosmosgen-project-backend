@@ -3,6 +3,11 @@ const mongoose = require("mongoose");
 const userSchema = new mongoose.Schema({
     phone: { type: String, required: true, unique: true, trim: true },
     name: { type: String, default: "", trim: true },
+
+    // WhatsApp hands us a profile nickname - "VICKY", emoji and all - which
+    // is what used to land on tickets and invoices. This marks a name the
+    // customer typed out themselves, so we only ever ask once.
+    nameConfirmedAt: { type: Date },
     address: { type: String, default: "" },
 
     state: { type: String, default: "", trim: true },
@@ -14,6 +19,18 @@ const userSchema = new mongoose.Schema({
         type: { type: String, enum: ["Point"], default: "Point" },
         coordinates: { type: [Number], default: undefined }, // [lon, lat]
     },
+    // Odia is the house language, so a customer who never picks one still
+    // gets served in it rather than in English.
+    language: {
+        type: String,
+        enum: ["english", "hinglish", "odenglish"],
+        default: "odenglish",
+    },
+
+    // The default above means language is never empty, so it cannot double
+    // as "have they chosen yet". This is what says they picked it.
+    languageConfirmedAt: { type: Date },
+
     role: { type: String, default: "customer" },
 }, { timestamps: true });
 

@@ -6,6 +6,7 @@ const notification = require("../services/notification.service");
 const { paiseToRupees } = require("../services/payment.service");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
 const walletService = require("../services/wallet.service");
+const { emitToRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
 
 /**
  * POST /api/webhook/razorpay
@@ -71,36 +72,97 @@ const handleRazorpayEvent = async (event) => {
     // already owed. Handling it before the ticket lookup keeps the two flows
     // from tripping over each other.
     if (notes.type === "wallet_recharge" && notes.technicianId) {
-        const alreadyDone = await Payment.exists({ processedEventIds: eventId });
-        if (alreadyDone) {
-            console.log("Recharge event already processed:", eventId);
+        const amountPaise = Number(payment?.amount) || Number(link?.amount) || 0;
+
+        // Razorpay sends TWO events for one payment-link payment -
+        // payment.captured and payment_link.paid - each with its own event id.
+        // Keying on the event id let both through, so a single settlement was
+        // credited twice and left the technician holding a balance the company
+        // then paid out. The payment id is the same on both, so claim on that.
+        //
+        // The claim is one atomic upsert: whichever event arrives first
+        // inserts the row and credits the wallet, and the other one finds the
+        // row already there and stops. Crediting first and recording after
+        // leaves exactly the window this bug fell through.
+        const claimKey = paymentId || linkId;
+
+        if (!claimKey) {
+            console.warn("Recharge webhook carries no payment or link id, skipping");
             return;
         }
 
-        const amountPaise = Number(payment?.amount) || Number(link?.amount) || 0;
-
+        let existing;
         try {
-            await walletService.recordRecharge(notes.technicianId, amountPaise, paymentId || linkId);
-
-            // A Payment row purely to hold the event id, so a retry of the
-            // same webhook can't credit the wallet twice
-            await Payment.create({
-                ticket: null,
-                amountPaise,
-                method: "online",
-                status: "verified",
-                collectedBy: notes.technicianId,
-                collectedAt: new Date(),
-                razorpayPaymentId: paymentId,
-                razorpayLinkId: linkId,
-                note: "Technician commission settlement",
-                processedEventIds: [eventId],
-            });
-
-            console.log("Wallet recharge credited:", notes.technicianId, amountPaise);
+            existing = await Payment.findOneAndUpdate(
+                { ticket: null, razorpayPaymentId: claimKey },
+                {
+                    $setOnInsert: {
+                        ticket: null,
+                        amountPaise,
+                        method: "online",
+                        // Not verified. The office checks the reference
+                        // against Razorpay and then records it against the
+                        // right ticket in the wallet - that is what clears
+                        // the due. Marking it verified here skipped both
+                        // steps, so the settlement never appeared in the
+                        // queue and nobody ever looked at it.
+                        status: "collected",
+                        collectedBy: notes.technicianId,
+                        collectedAt: new Date(),
+                        razorpayPaymentId: claimKey,
+                        razorpayLinkId: linkId,
+                        note: "Technician commission settlement",
+                    },
+                    $addToSet: { processedEventIds: eventId },
+                },
+                { upsert: true, returnDocument: "before" }
+            );
         } catch (err) {
-            console.error("Wallet recharge failed:", err.message);
+            // The unique index rejected a genuinely simultaneous delivery
+            if (err.code === 11000) {
+                console.log("Recharge already claimed by the other event:", claimKey);
+                return;
+            }
+            throw err;
         }
+
+        if (existing) {
+            console.log("Settlement already recorded for", claimKey, "- ignoring", eventType);
+            return;
+        }
+
+        // The wallet is NOT credited here. The office verifies the reference
+        // and records it against the ticket, and that is the step that clears
+        // the due - crediting it now would leave nothing for them to record
+        // and no record of which job the money was for.
+        //
+        // Both ends are told instead: the office so it lands in the queue,
+        // and the technician so he can see it arrived and does not pay twice
+        // while waiting for someone to confirm it.
+        // The row that only recorded "a link was sent to him" has served its
+        // purpose now that the real payment is here.
+        if (linkId) {
+            await Payment.deleteOne({ ticket: null, razorpayLinkId: linkId, status: "pending" });
+        }
+
+        const payer = await technicianModel
+            .findById(notes.technicianId)
+            .select("name")
+            .lean();
+
+        emitToRoom(adminRoom(), "payment:collected", {
+            technicianName: payer?.name || "A technician",
+            invoiceNumber: "commission settlement",
+            amountDisplay: paiseToRupees(amountPaise),
+        });
+
+        emitToRoom(techRoom(notes.technicianId), "settlement:received", {
+            amountPaise,
+            amountDisplay: paiseToRupees(amountPaise),
+            reference: claimKey,
+        });
+
+        console.log("Commission settlement received, awaiting office check:", claimKey);
         return;
     }
 
@@ -114,6 +176,63 @@ const handleRazorpayEvent = async (event) => {
     // call per payment.
     const feePaise = Number(payment?.fee) || 0;
     const taxPaise = Number(payment?.tax) || 0;
+
+    // A split bill is only half settled by this webhook. The customer has
+    // paid the company's commission; the technician still has to confirm he
+    // took his own share in cash. Closing the ticket here would let him walk
+    // away without recording it, and would credit him a share the company
+    // never held.
+    if (notes.type === "split_commission") {
+        const splitTicket = await ticketModel.findOneAndUpdate(
+            {
+                _id: ticketId,
+                status: "Payment-Pending",
+                "payment.method": "split",
+                "payment.split.onlinePaidAt": null,
+            },
+            {
+                "payment.split.onlinePaidAt": new Date(),
+                "payment.razorpayPaymentId": paymentId,
+                $push: {
+                    statusHistory: {
+                        from: "Payment-Pending",
+                        to: "Payment-Pending",
+                        actorRole: "system",
+                        reason: "Service charge paid online by the customer",
+                        at: new Date(),
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
+        if (!splitTicket) {
+            console.log("Split commission already recorded, or ticket not waiting:", ticketId);
+            return;
+        }
+
+        // The gateway fee lands on the commission, not on the whole bill -
+        // which is the entire reason for taking a job this way.
+        await Payment.updateOne(
+            { ticket: ticketId },
+            {
+                razorpayPaymentId: paymentId,
+                gatewayFeePaise: feePaise,
+                gatewayTaxPaise: taxPaise,
+                $addToSet: { processedEventIds: eventId },
+            }
+        );
+
+        if (splitTicket.technician) {
+            emitToRoom(techRoom(splitTicket.technician), "split:commission-paid", {
+                ticketId: String(splitTicket._id),
+                ticketNumber: splitTicket.ticketNumber,
+            });
+        }
+
+        console.log("Split commission received for", splitTicket.ticketNumber);
+        return;
+    }
 
     // Idempotency - the $ne filter makes this atomic, so two parallel
     // deliveries of the same event can't both process
@@ -204,7 +323,7 @@ const handleRazorpayEvent = async (event) => {
     await notification.notifyCustomer({
         ticket,
         text:
-            "Payment received - Rs " + paiseToRupees(ticket.billing?.totalPaise || 0) + "\n" +
+            "Payment received. Rs " + paiseToRupees(ticket.billing?.totalPaise || 0) + "\n" +
             "Invoice: " + ticket.billing?.invoiceNumber + "\n\n" +
             "Thank you for choosing Cosmosgen. Ticket " + ticket.ticketNumber + " is now closed.",
     });

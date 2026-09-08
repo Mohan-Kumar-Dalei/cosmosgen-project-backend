@@ -45,6 +45,36 @@ const sendText = async (to, body) => {
     }
 };
 
+/**
+ * Blue ticks, and the "typing..." bubble while the model thinks.
+ *
+ * Both ride on the same call. The typing indicator is a newer field, so a
+ * rejection falls back to a plain receipt rather than costing us the tick as
+ * well. Callers must not await this: a read receipt that arrives late is
+ * harmless, one that delays the reply is not.
+ */
+const markAsRead = async (messageId) => {
+    if (!isConfigured() || !messageId) return null;
+
+    const receipt = { messaging_product: "whatsapp", status: "read", message_id: messageId };
+
+    try {
+        const { data } = await client().post("/messages", {
+            ...receipt,
+            typing_indicator: { type: "text" },
+        });
+        return data;
+    } catch {
+        try {
+            const { data } = await client().post("/messages", receipt);
+            return data;
+        } catch (error) {
+            console.error("[WA] Mark read failed:", error.response?.data || error.message);
+            return null;
+        }
+    }
+};
+
 // Interactive list - services ya issues dikhane ke liye.
 // User ko kuch type nahi karna padta, bas select karta hai.
 // NOTE: WhatsApp limit - max 10 rows, title max 24 chars, description max 72 chars
@@ -126,4 +156,4 @@ const sendLocationRequest = async (to, body) => {
     }
 };
 
-module.exports = { sendText, sendList, sendButtons, sendLocationRequest, formatPhone, isConfigured };
+module.exports = { sendText, sendList, sendButtons, sendLocationRequest, markAsRead, formatPhone, isConfigured };

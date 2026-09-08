@@ -8,6 +8,7 @@ const adminModel = require("../models/admin.model");
 const messageModel = require("../models/message.model");
 const aiService = require("../services/ai.service");
 const { createMemory, queryMemory } = require("../services/vector.service");
+const rideService = require("../services/ride.service");
 const { setIo, userRoom, techRoom, adminRoom } = require("./socket.instance");
 
 const parseCookies = (header = "") => {
@@ -180,6 +181,12 @@ function registerTechnicianHandlers(socket, techId) {
         } catch (err) {
             console.error("[SOCKET] tech:location write failed:", err.message);
         }
+
+        // The whole ride hangs off this ping - the route, the ETA and the
+        // arrival message all come from it, which is why the panel has no ride
+        // buttons any more. It swallows its own errors, so a failed sync never
+        // costs the technician the location write above.
+        await rideService.syncRideProgress({ _id: techId }, lat, lon);
     });
 }
 
