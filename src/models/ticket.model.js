@@ -124,6 +124,82 @@ const ticketSchema = new mongoose.Schema({
     },
 
     /**
+     * The call placed before anybody is sent out.
+     *
+     * A technician who arrives at an empty house has cost the company a trip
+     * and the customer their slot, so the answer to "will you be in" is worth
+     * knowing before the job is assigned rather than after.
+     */
+    availabilityCheck: {
+        calledAt: { type: Date },
+        available: { type: Boolean },
+        // Free text rather than a parsed date - the office reads this and picks
+        // a slot, and a model guessing at an exact timestamp would book the
+        // wrong one. Written in English even when the call was in Odia or
+        // Hindi, because this is read on an English screen.
+        preferredDay: { type: String, default: "" },
+        preferredTime: { type: String, default: "" },
+        wantsCancel: { type: Boolean, default: false },
+        note: { type: String, default: "" },
+    },
+
+    /**
+     * The call placed after the job closed.
+     *
+     * Two separate questions on purpose: whether the work was actually done,
+     * and how the vendor behaved. A vendor can fix an air conditioner
+     * perfectly and still be somebody the company should not send back.
+     */
+    feedback: {
+        calledAt: { type: Date },
+        rating: { type: Number, min: 0, max: 5, default: 0 },
+        workOk: { type: Boolean },
+        behaviourOk: { type: Boolean },
+        complaint: { type: String, default: "" },
+        note: { type: String, default: "" },
+    },
+
+    /**
+     * The customer's own window onto the job.
+     *
+     * A random token rather than the ticket id, because this link is sent
+     * over WhatsApp and forwarded on: anyone holding it can watch the
+     * technician approach, so it must not be guessable from a ticket number,
+     * and it must be revocable without touching the ticket itself.
+     */
+    tracking: {
+        token: { type: String, index: true, sparse: true },
+        issuedAt: { type: Date },
+    },
+
+    /**
+     * The codes the customer reads out at the door.
+     *
+     * Two of them, because two moments matter. `start` stops a job being
+     * marked as begun from the car park, and `close` stops one being finished
+     * without the person who is paying for it agreeing that it is. Both are
+     * sent to the customer, so the technician has to be in front of them.
+     *
+     * Kept on the ticket rather than in a codes collection: they are worth
+     * nothing once the job moves on, and having them here means the audit of
+     * who verified what reads in one place.
+     */
+    otp: {
+        start: {
+            code: { type: String },
+            sentAt: { type: Date },
+            verifiedAt: { type: Date },
+            attempts: { type: Number, default: 0 },
+        },
+        close: {
+            code: { type: String },
+            sentAt: { type: Date },
+            verifiedAt: { type: Date },
+            attempts: { type: Number, default: 0 },
+        },
+    },
+
+    /**
      * The customer said no to the price while the technician was standing
      * there, and the office is calling them back to find out why.
      *

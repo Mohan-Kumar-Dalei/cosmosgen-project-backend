@@ -10,6 +10,8 @@ const WalletTransaction = require("../models/walletTransaction.model");
 const uploadImage = require("../utils/imagekit");
 const paymentService = require("../services/payment.service");
 const notification = require("../services/notification.service");
+const otpService = require("../services/otp.service");
+const voiceController = require("./voice.controller");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
 const rideService = require("../services/ride.service");
 const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
@@ -492,7 +494,7 @@ const updateTechProfile = async (req, res) => {
         }
 
         const updatedTech = await technicianModel
-            .findByIdAndUpdate(techId, updateData, { new: true, runValidators: true })
+            .findByIdAndUpdate(techId, updateData, { returnDocument: "after", runValidators: true })
             .select(PUBLIC_FIELDS)
             .lean();
 
@@ -549,11 +551,25 @@ const updateStatus = async (req, res) => {
         }
 
         const updatedTech = await technicianModel
-            .findByIdAndUpdate(req.technician._id, { isAvailable }, { new: true })
+            .findByIdAndUpdate(req.technician._id, { isAvailable }, { returnDocument: "after" })
             .select(PUBLIC_FIELDS)
             .lean();
 
         emitToRoom("admins", "tech:status", updatedTech);
+
+        // Going offline should cost us nothing to keep alive.
+        //
+        // The panel holding this socket is told to drop it, and so is any
+        // other tab or phone the same vendor left signed in - otherwise a
+        // forgotten open tab keeps a connection on the server for a man who
+        // stopped working hours ago. The client disconnects itself rather
+        // than being cut off, because a socket the server drops is one the
+        // client immediately tries to reconnect.
+        if (!isAvailable) {
+            emitToRoom(techRoom(req.technician._id), "session:offline", {
+                reason: "You are offline. The panel will reconnect when you go back online.",
+            });
+        }
 
         return res.status(200).json({ success: true, data: updatedTech });
     } catch (error) {
@@ -603,8 +619,123 @@ const updateLocation = async (req, res) => {
 
 /* ================= TICKETS ================= */
 
+/**
+ * Rings the customer about a finished job.
+ *
+ * Held back a few minutes on purpose. A feedback call the instant the
+ * technician takes the cash reaches a customer with him still standing in the
+ * doorway, and nobody says what they actually think in front of the person
+ * they are rating.
+ *
+ * A timer in the web process is the weak part of this: a restart before it
+ * fires loses the call. It is the right trade for now - a dropped feedback
+ * call costs a rating, not a booking - but this is the piece to move onto a
+ * proper queue first.
+ */
+const scheduleFeedbackCall = (ticket) => {
+    if (!ticket || ticket.status !== "Closed") return;
+
+    const delayMs = (Number(process.env.FEEDBACK_CALL_DELAY_MIN) || 10) * 60 * 1000;
+
+    setTimeout(() => {
+        voiceController
+            .placeCall({ ticket, purpose: "feedback" })
+            .catch((err) => console.error("[VOICE] feedback call failed:", err.message));
+    }, delayMs).unref?.();
+};
+
+/* ================= DOOR CODES ================= */
+
+/**
+ * POST /api/technician/tickets/:id/otp/:purpose   (purpose: start | close)
+ *
+ * Sends the customer a six digit code. The technician never sees it - he has
+ * to be in front of them to be told it, which is the entire point: it is what
+ * stops a job being started from the car park or closed from the road.
+ */
+const sendJobOtp = async (req, res) => {
+    try {
+        const purpose = req.params.purpose === "close" ? "close" : "start";
+
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+            status: { $in: ["Assigned", "In-Progress"] },
+        });
+
+        if (!ticket) {
+            return res.status(404).json({ success: false, message: "Job not found, or it is not yours to work on." });
+        }
+
+        if (purpose === "close" && ticket.status !== "In-Progress") {
+            return res.status(400).json({ success: false, message: "Start the job before asking to close it." });
+        }
+
+        const block = otpService.issue();
+        ticket.otp = ticket.otp || {};
+        ticket.otp[purpose] = block;
+        await ticket.save();
+
+        await notification.sendCustomerOtp(ticket, block.code, purpose);
+
+        return res.status(200).json({
+            success: true,
+            message: "Code sent to the customer on WhatsApp. Ask them to read it out.",
+            data: { sentAt: block.sentAt, purpose },
+        });
+    } catch (error) {
+        console.error("Send job OTP error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * Checks a code and records the attempt on the ticket.
+ *
+ * Returns null when it passed, or a ready-made response when it did not, so a
+ * caller can guard itself in one line and every gate answers the technician
+ * the same way.
+ */
+const guardOtp = async (ticket, purpose, entered) => {
+    const block = ticket.otp?.[purpose];
+    const result = otpService.check(block, entered);
+
+    if (result.ok) {
+        if (!block.verifiedAt) {
+            await ticketModel.updateOne(
+                { _id: ticket._id },
+                { $set: { ["otp." + purpose + ".verifiedAt"]: new Date() } }
+            );
+        }
+        return null;
+    }
+
+    // A wrong or malformed code costs an attempt; a code that was never sent,
+    // or one that has already expired, is not the technician failing a check.
+    if (result.reason === "mismatch" || result.reason === "malformed") {
+        await ticketModel.updateOne({ _id: ticket._id }, { $inc: { ["otp." + purpose + ".attempts"]: 1 } });
+    }
+
+    return { status: 400, body: { success: false, message: result.message, reason: result.reason } };
+};
+
 const startWork = async (req, res) => {
     try {
+        // The customer has to say the word before the clock starts. Checked
+        // against the ticket before anything is written, so a wrong code
+        // leaves the job exactly where it was.
+        const before = await ticketModel
+            .findOne({ _id: req.params.id, technician: req.technician._id, status: "Assigned" })
+            .select("otp")
+            .lean();
+
+        if (!before) {
+            return res.status(404).json({ success: false, message: "Ticket not found or already started" });
+        }
+
+        const blocked = await guardOtp(before, "start", req.body?.otp);
+        if (blocked) return res.status(blocked.status).json(blocked.body);
+
         const ticket = await ticketModel.findOneAndUpdate(
             { _id: req.params.id, technician: req.technician._id, status: "Assigned" },
             {
@@ -1119,6 +1250,15 @@ const generateBill = async (req, res) => {
             status: { $in: ["Assigned", "In-Progress", "Payment-Pending"] },
         });
 
+        // Raising a bill is the technician saying the work is done, so the
+        // customer confirms that before a figure exists. An edit to a bill
+        // that was already agreed does not ask again - the code is about the
+        // work being finished, not about the arithmetic.
+        if (ticket && !ticket.billing?.invoiceNumber) {
+            const blocked = await guardOtp(ticket, "close", req.body?.otp);
+            if (blocked) return res.status(blocked.status).json(blocked.body);
+        }
+
         if (!ticket) {
             return res.status(404).json({ success: false, message: "Job not found, or it is no longer yours" });
         }
@@ -1454,6 +1594,10 @@ const collectCash = async (req, res) => {
             },
             { returnDocument: "after" }
         ).lean();
+
+        // Both close paths ring the customer afterwards, and both go through
+        // the same helper so the delay and the guard are stated once.
+        scheduleFeedbackCall(updated);
 
         // Null means someone closed it first - stop before touching the
         // wallet, or the commission gets deducted twice
@@ -1912,6 +2056,8 @@ const getPaymentStatus = async (req, res) => {
                 { returnDocument: "after" }
             ).lean();
 
+            scheduleFeedbackCall(closed);
+
             if (!closed) {
                 // Webhook got here first - it has already done all of this
                 return res.status(200).json({
@@ -2154,6 +2300,7 @@ module.exports = {
     updateStatus,
     updateLocation,
     startWork,
+    sendJobOtp,
     getWallet,
     releaseTicket,
     refuseTicket,

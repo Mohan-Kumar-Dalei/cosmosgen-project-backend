@@ -4,12 +4,13 @@ const jwt = require("jsonwebtoken");
 
 const userModel = require("../models/user.model");
 const technicianModel = require("../models/technician.model");
+const ticketModel = require("../models/ticket.model");
 const adminModel = require("../models/admin.model");
 const messageModel = require("../models/message.model");
 const aiService = require("../services/ai.service");
 const { createMemory, queryMemory } = require("../services/vector.service");
 const rideService = require("../services/ride.service");
-const { setIo, userRoom, techRoom, adminRoom } = require("./socket.instance");
+const { setIo, userRoom, techRoom, trackRoom, adminRoom } = require("./socket.instance");
 
 const parseCookies = (header = "") => {
     const fn = cookie.parseCookie || cookie.parse;
@@ -56,6 +57,32 @@ function initSocketServer(httpServer) {
         try {
             const cookies = parseCookies(socket.handshake.headers?.cookie || "");
             const requestedRole = socket.handshake.auth?.role;
+
+            /**
+             * The customer watching a job has no account and no cookie - they
+             * followed a link from WhatsApp. The token in that link is the
+             * credential, so it is checked against a real ticket here and the
+             * connection gets nothing but that one job's room.
+             *
+             * Handled before the cookie check on purpose: this is the one
+             * caller that legitimately arrives without a session.
+             */
+            if (requestedRole === "track") {
+                const token = String(socket.handshake.auth?.token || "").trim();
+                if (token.length !== 32) return next(new Error("Invalid tracking link"));
+
+                const ticket = await ticketModel
+                    .findOne({ "tracking.token": token })
+                    .select("_id")
+                    .lean();
+
+                if (!ticket) return next(new Error("Invalid tracking link"));
+
+                socket.role = "track";
+                socket.trackToken = token;
+                socket.actor = { _id: ticket._id };
+                return next();
+            }
 
             if (!Object.keys(cookies).length) {
                 console.warn("[SOCKET] Auth failed: no cookies sent. Check withCredentials on the client.");
@@ -136,6 +163,11 @@ function initSocketServer(httpServer) {
     io.on("connection", (socket) => {
         const actorId = String(socket.actor._id);
         console.log(`[SOCKET] Connected: role=${socket.role} id=${actorId}`);
+
+        if (socket.role === "track") {
+            socket.join(trackRoom(socket.trackToken));
+            return;
+        }
 
         if (socket.role === "admin") {
             socket.join(adminRoom());

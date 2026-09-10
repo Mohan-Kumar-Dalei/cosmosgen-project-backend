@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const Conversation = require("../models/conversation.model");
 const userModel = require("../models/user.model");
+const registration = require("../services/registration.service");
 const messageModel = require("../models/message.model");
 const Ticket = require("../models/ticket.model");
 const whatsapp = require("../services/whatsapp.service");
@@ -339,6 +340,16 @@ const handleLanguagePick = async (convo, id) => {
  * customer who came in before either existed gets caught here on their next
  * message rather than carrying a WhatsApp nickname onto every future invoice.
  */
+/**
+ * Picks up wherever this customer actually is.
+ *
+ * The test is the customer record, not this conversation, and that is the
+ * point: somebody who registered on the web app and then messages us here is
+ * already known, so asking for their name and language again would be the
+ * product forgetting them between two of its own doors. Registered means
+ * greeted and straight to the service list; anything else means asking for
+ * the one thing still missing, and nothing more.
+ */
 const resumeOnboarding = async (convo) => {
     if (!convo.user) {
         await sendServiceMenu(convo, { greet: true });
@@ -347,21 +358,32 @@ const resumeOnboarding = async (convo) => {
 
     const onFile = await userModel
         .findById(convo.user)
-        .select("name language nameConfirmedAt languageConfirmedAt")
+        .select("name phone language nameConfirmedAt languageConfirmedAt lat lon pincode")
         .lean();
 
-    if (!onFile?.languageConfirmedAt) {
-        await askForLanguage(convo);
-        return;
-    }
-    convo.language = onFile.language;
+    if (onFile?.language) convo.language = onFile.language;
 
-    if (!onFile.nameConfirmedAt) {
-        await askForName(convo);
-        return;
+    // A customer from before we resolved pins into addresses has coordinates
+    // and no pincode. That is ours to fix, not theirs to be asked about, so it
+    // is filled in from the pin we already hold and nobody is interrupted.
+    if (onFile && registration.missingFrom(onFile) === "address") {
+        registration
+            .applyLocation(onFile.phone, { lat: onFile.lat, lon: onFile.lon })
+            .catch((err) => console.error("[ONBOARD] address backfill failed:", err.message));
     }
+
+    switch (registration.missingFrom(onFile)) {
+        case "language":
+            await askForLanguage(convo);
+            return;
+        case "name":
+            await askForName(convo);
+            return;
+        default:
+            break;
+    }
+
     convo.customerName = onFile.name;
-
     await sendServiceMenu(convo, { greet: true });
 };
 
@@ -446,22 +468,15 @@ const saveLocation = async (convo, location) => {
     // without an OTP step of our own
     const plainPhone = convo.phone.replace(/^91/, "");
 
-    const user = await userModel.findOneAndUpdate(
-        { phone: plainPhone },
-        {
-            $set: {
-                lat: location.latitude,
-                lon: location.longitude,
-                address: location.address || location.name,
-                location: { type: "Point", coordinates: [location.longitude, location.latitude] },
-            },
-            // The WhatsApp nickname is a placeholder until they type a real
-            // name. Setting it on every location update would overwrite the
-            // one they gave us the first time round.
-            $setOnInsert: { phone: plainPhone, name: convo.profileName || "WhatsApp customer" },
-        },
-        { returnDocument: "after", upsert: true }
-    ).lean();
+    // The pin is resolved into a full address, state and pincode on the way
+    // in. WhatsApp never sends those, and they are the first things the
+    // office asks for when a pin turns out to be a few streets off.
+    const user = await registration.applyLocation(plainPhone, {
+        lat: location.latitude,
+        lon: location.longitude,
+        fallbackAddress: location.address || location.name,
+        name: convo.profileName,
+    });
 
     convo.user = user._id;
 

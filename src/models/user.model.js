@@ -12,6 +12,12 @@ const userSchema = new mongoose.Schema({
 
     state: { type: String, default: "", trim: true },
     area: { type: String, default: "", trim: true },
+
+    // Worked out from the pin, not typed. These are what the office reads
+    // back when a dropped pin lands a few streets off and somebody has to
+    // ring the customer to sort it out.
+    city: { type: String, default: "", trim: true },
+    pincode: { type: String, default: "", trim: true },
     lat: { type: Number },
     lon: { type: Number },
 

@@ -11,6 +11,7 @@ const ServicePricing = require("../models/servicePricing.model");
 const { buildSkillRegex, escapeRegex } = require("../config/services");
 const { metresBetween } = require("../services/ride.service");
 const { lookupPlace } = require("./map.controller");
+const voiceController = require("./voice.controller");
 const { SERVICE_CATALOG } = require("../config/services");
 const notification = require("../services/notification.service");
 const paymentService = require("../services/payment.service");
@@ -695,7 +696,7 @@ const assignTicket = async (req, res) => {
                 // ride left on it describes a different technician's drive.
                 $unset: { ride: 1 },
             },
-            { new: true }
+            { returnDocument: "after" }
         ).lean();
 
         if (!ticket) {
@@ -777,7 +778,7 @@ const unassignTicket = async (req, res) => {
                     },
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
         ).lean();
 
         if (oldTechnicianId) {
@@ -842,7 +843,7 @@ const reassignTicket = async (req, res) => {
             const locked = await technicianModel.findOneAndUpdate(
                 { _id: technicianId, activeTicket: null, isDeleted: false },
                 { isAvailable: false, activeTicket: ticket._id },
-                { new: true }
+                { returnDocument: "after" }
             ).lean();
             if (!locked) {
                 return res.status(409).json({ success: false, message: "Selected vendor is no longer available" });
@@ -876,7 +877,7 @@ const reassignTicket = async (req, res) => {
                     },
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
         ).lean();
 
         // Free the old technician and pull in their next queued job
@@ -911,6 +912,57 @@ const reassignTicket = async (req, res) => {
  * A rescheduled ticket always ends up Queued with a date - never Pending.
  * That keeps the technician free today while the job waits for its date.
  */
+/**
+ * Rings the customer about one ticket and asks whether today suits them.
+ *
+ * Started by hand from the ticket rather than fired when the booking lands:
+ * the office decides which bookings are worth confirming by phone, and a call
+ * placed automatically on every one of them is a cost and a nuisance.
+ *
+ * Returns as soon as the call is dialling. The conversation takes a minute and
+ * its answer arrives on the ticket over the socket, so holding the request
+ * open would only leave the admin watching a spinner.
+ */
+const callCustomer = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            status: { $in: ["Pending", "Queued", "Assigned"] },
+        }).lean();
+
+        if (!ticket) {
+            return res.status(404).json({ success: false, message: "Ticket not found or already closed" });
+        }
+
+        const phone = ticket.customerSnapshot?.phone;
+        if (!phone) {
+            return res.status(400).json({ success: false, message: "This ticket has no phone number" });
+        }
+
+        const call = await voiceController.placeCall({ ticket, purpose: "availability" });
+
+        if (!call) {
+            return res.status(502).json({
+                success: false,
+                message: "The call could not be placed. Check the voice settings.",
+            });
+        }
+
+        await ticketModel.updateOne(
+            { _id: ticket._id },
+            { $set: { "availabilityCheck.calledAt": new Date(), "availabilityCheck.available": null } }
+        );
+
+        return res.status(202).json({
+            success: true,
+            message: "Calling " + phone + " now. The answer will appear on this ticket.",
+        });
+    } catch (err) {
+        console.error("callCustomer error:", err.message);
+        return res.status(500).json({ success: false, message: "Could not place the call" });
+    }
+};
+
 const rescheduleTicket = async (req, res) => {
     try {
         const { scheduledFor, slotWindow, reason, technicianId } = req.body;
@@ -1166,7 +1218,7 @@ const forceCloseTicket = async (req, res) => {
                     },
                 },
             },
-            { new: true }
+            { returnDocument: "after" }
         ).lean();
 
         if (!ticket) {
@@ -2494,7 +2546,7 @@ const toggleStaffActive = async (req, res) => {
         }
 
         const updated = await adminModel
-            .findByIdAndUpdate(id, { isActive: !staff.isActive }, { new: true })
+            .findByIdAndUpdate(id, { isActive: !staff.isActive }, { returnDocument: "after" })
             .select("name email role isActive")
             .lean();
 
@@ -2896,7 +2948,7 @@ const addPricingItem = async (req, res) => {
                 $set: { serviceLabel: service.label, updatedBy: req.admin._id },
                 $push: { itemsList: item },
             },
-            { new: true, upsert: true }
+            { returnDocument: "after", upsert: true }
         ).lean();
 
         return res.status(201).json({ success: true, message: "Item added", data: doc });
@@ -2931,7 +2983,7 @@ const updatePricingItem = async (req, res) => {
         const doc = await ServicePricing.findOneAndUpdate(
             { serviceKey, "itemsList._id": itemId },
             { $set: set },
-            { new: true }
+            { returnDocument: "after" }
         ).lean();
 
         if (!doc) {
@@ -2955,7 +3007,7 @@ const deletePricingItem = async (req, res) => {
         const doc = await ServicePricing.findOneAndUpdate(
             { serviceKey },
             { $pull: { itemsList: { _id: itemId } }, $set: { updatedBy: req.admin._id } },
-            { new: true }
+            { returnDocument: "after" }
         ).lean();
 
         if (!doc) {
@@ -3798,6 +3850,7 @@ module.exports = {
     unassignTicket,
     reassignTicket,
     rescheduleTicket,
+    callCustomer,
     cancelTicket,
     forceCloseTicket,
     getAllTechnicians,

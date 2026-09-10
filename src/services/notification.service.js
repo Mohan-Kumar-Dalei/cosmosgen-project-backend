@@ -1,5 +1,7 @@
 const routeService = require("./route.service");
 const whatsapp = require("./whatsapp.service");
+const ticketModel = require("../models/ticket.model");
+const trackController = require("../controllers/track.controller");
 const Conversation = require("../models/conversation.model");
 const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
 
@@ -41,8 +43,45 @@ const notifyCustomer = async ({ ticket, text }) => {
     await whatsapp.sendText(phone, text);
 };
 
+/**
+ * Where a customer can watch their job.
+ *
+ * The first origin in CLIENT_ORIGINS is the real site; the rest of that list
+ * exists for CORS during development, so taking [0] rather than joining them
+ * is deliberate.
+ */
+const publicOrigin = () =>
+    (process.env.CLIENT_ORIGINS || "http://localhost:5173").split(",")[0].trim();
+
+/**
+ * Gives a ticket its tracking link, once.
+ *
+ * Issued here rather than at assignment because this is the moment the
+ * customer is told about the job at all - a link that exists before anyone
+ * has been sent one is a secret with no owner. Re-assigning does not mint a
+ * new one, so a customer who scrolled back to the first message still has a
+ * link that works.
+ */
+const ensureTrackingLink = async (ticket) => {
+    if (ticket.tracking?.token) return publicOrigin() + "/track/" + ticket.tracking.token;
+
+    const token = trackController.issueToken();
+
+    await ticketModel.updateOne(
+        { _id: ticket._id, "tracking.token": { $in: [null, ""] } },
+        { $set: { "tracking.token": token, "tracking.issuedAt": new Date() } }
+    );
+
+    // Another assignment in the same instant may have won the write, so read
+    // back rather than trusting the token we generated
+    const saved = await ticketModel.findById(ticket._id).select("tracking.token").lean();
+    return publicOrigin() + "/track/" + (saved?.tracking?.token || token);
+};
+
 const notifyCustomerAssigned = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
+    const link = await ensureTrackingLink(ticket);
+
     const text =
         "Your technician has been assigned.\n\n" +
         "Ticket: " + ticket.ticketNumber + "\n" +
@@ -50,8 +89,28 @@ const notifyCustomerAssigned = async (ticket) => {
         "Technician: " + tech.name + "\n" +
         "Phone: " + tech.phone + "\n" +
         "Rating: " + (tech.rating ? Number(tech.rating).toFixed(1) : "5.0") + "\n\n" +
+        "Track them live here:\n" + link + "\n\n" +
         "They will reach your address soon. Feel free to call them directly " +
         "if you need anything.";
+
+    await notifyCustomer({ ticket, text });
+};
+
+/**
+ * The code the technician has to be told before he can start, or close.
+ *
+ * Sent to the customer, never to the technician - the whole point is that he
+ * has to be standing in front of them to learn it.
+ */
+const sendCustomerOtp = async (ticket, code, purpose) => {
+    const text =
+        purpose === "close"
+            ? "*" + code + "* is your code to confirm the work is finished.\n\n" +
+              "Ticket: " + ticket.ticketNumber + "\n\n" +
+              "Share it with the technician only once you are happy the job is done."
+            : "*" + code + "* is your code to let the technician start.\n\n" +
+              "Ticket: " + ticket.ticketNumber + "\n\n" +
+              "Share it with them when they are at your door.";
 
     await notifyCustomer({ ticket, text });
 };
@@ -384,6 +443,8 @@ module.exports = {
     buildPinUrl,
     notifyCustomer,
     notifyCustomerAssigned,
+    sendCustomerOtp,
+    ensureTrackingLink,
     notifyCustomerWorkStarted,
     notifyCustomerTechnicianEnRoute,
     notifyCustomerArrived,

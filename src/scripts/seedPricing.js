@@ -36,7 +36,7 @@ const run = async () => {
         await ServicePricing.findOneAndUpdate(
             { code: item.code },
             { $set: item },
-            { upsert: true, new: true }
+            { upsert: true, returnDocument: "after" }
         );
         console.log(`${item.code} - Rs ${item.pricePaise / 100}`);
     }

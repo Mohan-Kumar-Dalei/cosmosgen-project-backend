@@ -7,6 +7,8 @@ const rateLimit = require("express-rate-limit");
 
 const authRoutes = require("./routes/auth.route");
 const technicianRoutes = require("./routes/technician.routes");
+const trackRoutes = require("./routes/track.routes");
+const voiceRoutes = require("./routes/voice.routes");
 const mapRoutes = require("./routes/map.routes");
 const adminRoutes = require("./routes/admin.routes");
 const webhookRoutes = require("./routes/webhook.routes");
@@ -42,6 +44,10 @@ app.use(cors({
 /* fails. Each of these routers applies express.raw() itself.           */
 /* ------------------------------------------------------------------ */
 app.use("/api/webhook", webhookRoutes);
+// Twilio, like the payment webhooks, cannot sign in and must not be
+// rate limited alongside ordinary browser traffic - a busy afternoon of
+// calls would otherwise start dropping mid-conversation.
+app.use("/api/voice", voiceRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 
 /* ------------------------------------------------------------------ */
@@ -64,6 +70,7 @@ app.get("/", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/track", trackRoutes);
 app.use("/api/technician", technicianRoutes);
 app.use("/api/map", mapRoutes);
 app.use("/api/admin", adminRoutes);

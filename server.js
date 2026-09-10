@@ -4,6 +4,7 @@ const { createServer } = require("http");
 const app = require("./src/app");
 const connectDB = require("./src/config/db");
 const initSocketServer = require("./src/sockets/socketManager");
+const initVoicebotServer = require("./src/sockets/voicebot.socket");
 const { promoteDueScheduledTickets } = require("./src/services/dispatch.service");
 
 const PORT = process.env.PORT || 3000;
@@ -13,6 +14,10 @@ const startServer = async () => {
     // DB first - otherwise the server accepts requests it can't answer
     await connectDB();
     initSocketServer(httpServer);
+
+    // Exotel talks to the voicebot over a raw WebSocket on its own path, so it
+    // sits beside socket.io on the same server rather than inside it
+    initVoicebotServer(httpServer);
 
     httpServer.listen(PORT, () => {
         console.log("Server + socket.io running on port " + PORT);

@@ -4,6 +4,7 @@ const UserModel = require("../models/user.model");
 const { SERVICE_CATALOG, getServiceByKey } = require("../config/services");
 const { copyFor } = require("../config/copy");
 const notification = require("./notification.service");
+const voiceController = require("../controllers/voice.controller");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 // Configurable because it is the single biggest lever on how well the
@@ -514,6 +515,21 @@ const handleCreateTicket = async (args, userData, userLocation) => {
     });
 
     notification.notifyAdminsNewTicket(ticket);
+
+    /**
+     * Ring them straight away, before anybody is committed to the job.
+     *
+     * The whole point of this call is to find out whether somebody will be at
+     * the address, so it has to happen while the ticket is still unassigned -
+     * a call placed after a technician is on it has missed its purpose.
+     *
+     * Not awaited: the customer is waiting on this reply in WhatsApp, and a
+     * phone call takes a minute. The answer lands on the ticket by the time
+     * the office looks at it, and the phone button there does the same thing
+     * by hand for a booking worth confirming twice.
+     */
+    voiceController.placeCall({ ticket, purpose: "availability" })
+        .catch((err) => console.error("[VOICE] availability call failed:", err.message));
 
     return {
         status: "success",

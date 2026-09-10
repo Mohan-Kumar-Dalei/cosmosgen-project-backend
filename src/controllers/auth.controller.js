@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const userModel = require("../models/user.model");
+const registration = require("../services/registration.service");
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -30,20 +31,47 @@ const registerUser = async (req, res) => {
         const numLon = Number(lon);
         const hasCoords = Number.isFinite(numLat) && Number.isFinite(numLon);
 
-        const updateData = { name, address, state, area };
-        if (hasCoords) {
-            updateData.lat = numLat;
-            updateData.lon = numLon;
-            updateData.location = { type: "Point", coordinates: [numLon, numLat] };
+        // Nobody reaches the assistant without a name and a place, on any
+        // channel. Dispatch cannot find the nearest vendor without the
+        // coordinates, so letting somebody through and asking later only
+        // moves the dead end further into the conversation.
+        if (!String(name || "").trim()) {
+            return res.status(400).json({ success: false, message: "Please tell us your name" });
+        }
+        if (!hasCoords) {
+            return res.status(400).json({
+                success: false,
+                message: "We need your location to find someone near you",
+            });
         }
 
         // Upsert - purana user dobara aaye to error nahi, session wapas mil jayega.
         // (Phase 2 mein ye OTP verification ke peeche jayega.)
+        //
+        // The pin is resolved into a full address, state and pincode here,
+        // exactly as it is on WhatsApp, so a customer registered on one door
+        // is registered at all of them.
+        await registration.applyLocation(cleanPhone, {
+            lat: numLat,
+            lon: numLon,
+            fallbackAddress: address,
+            name: String(name).trim(),
+        });
+
+        const typed = {
+            name: String(name).trim(),
+            // Their own words win over anything worked out from the pin
+            ...(String(address || "").trim() ? { address: String(address).trim() } : {}),
+            ...(String(state || "").trim() ? { state: String(state).trim() } : {}),
+            ...(String(area || "").trim() ? { area: String(area).trim() } : {}),
+            nameConfirmedAt: new Date(),
+        };
+
         const user = await userModel
             .findOneAndUpdate(
                 { phone: cleanPhone },
-                { $set: updateData, $setOnInsert: { phone: cleanPhone } },
-                { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+                { $set: typed },
+                { returnDocument: "after", runValidators: true }
             )
             .lean();
 

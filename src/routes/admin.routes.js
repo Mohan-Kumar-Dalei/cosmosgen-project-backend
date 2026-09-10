@@ -29,6 +29,7 @@ router.post("/tickets/:id/assign", isAdminAuthenticated, adminController.assignT
 router.post("/tickets/:id/unassign", isAdminAuthenticated, adminController.unassignTicket);
 router.post("/tickets/:id/reassign", isAdminAuthenticated, adminController.reassignTicket);
 router.post("/tickets/:id/reschedule", isAdminAuthenticated, adminController.rescheduleTicket);
+router.post("/tickets/:id/call", isAdminAuthenticated, adminController.callCustomer);
 router.post("/tickets/:id/cancel", isAdminAuthenticated, adminController.cancelTicket);
 router.post("/tickets/:id/refusal", isAdminAuthenticated, adminController.resolveRefusal);
 

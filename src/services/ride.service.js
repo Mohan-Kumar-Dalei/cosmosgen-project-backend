@@ -1,7 +1,7 @@
 const ticketModel = require("../models/ticket.model");
 const routeService = require("./route.service");
 const notification = require("./notification.service");
-const { emitToRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
+const { emitToRoom, techRoom, trackRoom, adminRoom } = require("../sockets/socket.instance");
 
 /**
  * How close the technician has to get before we tell the customer they have
@@ -122,6 +122,20 @@ const syncRideProgress = async (technician, lat, lon) => {
         await ticket.save();
 
         const plain = ticket.toObject();
+
+        // The customer's page moves on this, not on a timer. Every fix that
+        // reaches the server reaches them, which is what makes the marker
+        // crawl rather than jump.
+        if (ticket.tracking?.token) {
+            emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
+                technicianAt: { lat, lon, at: now },
+                stage: hasArrived ? "arrived" : "on_the_way",
+                etaSeconds: ticket.ride?.etaSeconds ?? null,
+                etaAt: ticket.ride?.etaAt || null,
+                distanceMeters: ticket.ride?.distanceMeters ?? null,
+                encodedPolyline: ticket.ride?.encodedPolyline || null,
+            });
+        }
 
         // Both messages go out only once each: the en-route branch runs on the
         // first fix and the arrival branch flips arrivedAt, which is the guard
