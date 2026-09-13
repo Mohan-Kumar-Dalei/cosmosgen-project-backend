@@ -21,8 +21,21 @@ const userSchema = new mongoose.Schema({
     lat: { type: Number },
     lon: { type: Number },
 
+    /*
+     * No default on `type`.
+     *
+     * It used to default to "Point", and on an upsert with
+     * setDefaultsOnInsert that produced `location: { type: "Point" }` with no
+     * coordinates at all - a shape the 2dsphere index below refuses, so the
+     * insert failed and the customer's first sign-in came back a 500. It only
+     * ever bit a brand new customer, which is why it survived a laptop and
+     * showed up on the first day of real traffic.
+     *
+     * A point with no coordinates is not a point. The field is written whole,
+     * both parts at once, when a customer sets their address.
+     */
     location: {
-        type: { type: String, enum: ["Point"], default: "Point" },
+        type: { type: String, enum: ["Point"] },
         coordinates: { type: [Number], default: undefined }, // [lon, lat]
     },
     // Odia is the house language, so a customer who never picks one still
