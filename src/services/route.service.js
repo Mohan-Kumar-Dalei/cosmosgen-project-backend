@@ -1,8 +1,13 @@
 const axios = require("axios");
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+const keyring = require("./keyring.service");
 
 const ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
+const MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix";
+
+/** Never ask for more than this many at once - see computeRouteMatrix. */
+const MATRIX_MAX = 5;
 
 /**
  * One route call, reused everywhere.
@@ -32,6 +37,7 @@ const computeRoute = async (origin, destination) => {
     }
 
     try {
+        keyring.count("google");
         const response = await axios.post(
             ROUTES_URL,
             {
@@ -98,4 +104,104 @@ const formatEta = (seconds) => {
     return "about " + hours + "h " + rem + "m";
 };
 
-module.exports = { computeRoute, formatEta };
+
+/**
+ * Real road distance from one point to a handful of others, in one request.
+ *
+ * The assignment screen ranks technicians by straight line, which is free,
+ * instant and almost always the same order a road would give. What it cannot
+ * do is tell the office how far somebody really is: a technician eight
+ * hundred metres away across a river is not the nearest one. So the ranking
+ * stays as it is and the top few get a real road figure to show.
+ *
+ * One request, not one per technician - Route Matrix bills per pair, so five
+ * technicians in one call costs what five separate calls would, minus four
+ * round trips. The cap is the whole point of the design: without it, an
+ * office opening a screen that lists twenty people would bill twenty pairs
+ * every time, for rows nobody was going to pick.
+ *
+ * Returns an array the same length and order as `destinations`, each entry
+ * either a figure or null. Never throws: a screen without road distances is
+ * the screen we had yesterday, and that is a fine thing to fall back to.
+ */
+const computeRouteMatrix = async (origin, destinations = []) => {
+    if (!API_KEY || !destinations.length) return [];
+
+    const oLat = Number(origin?.lat);
+    const oLon = Number(origin?.lon);
+    if (![oLat, oLon].every(Number.isFinite)) return destinations.map(() => null);
+
+    const wanted = destinations.slice(0, MATRIX_MAX);
+    const out = destinations.map(() => null);
+
+    const points = wanted.map((d) => ({
+        lat: Number(d?.lat),
+        lon: Number(d?.lon),
+    }));
+
+    if (points.some((p) => ![p.lat, p.lon].every(Number.isFinite))) {
+        return out;
+    }
+
+    try {
+        keyring.count("google");
+
+        const response = await axios.post(
+            MATRIX_URL,
+            {
+                origins: [{
+                    waypoint: { location: { latLng: { latitude: oLat, longitude: oLon } } },
+                }],
+                destinations: points.map((p) => ({
+                    waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lon } } },
+                })),
+                travelMode: "DRIVE",
+                // The same trade the single route call makes: an ETA that
+                // ignores traffic is worse than none, because the office
+                // dispatches on it.
+                routingPreference: "TRAFFIC_AWARE",
+            },
+            {
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-Goog-Api-Key": API_KEY,
+                    // Nothing beyond this, or the request climbs a SKU for
+                    // data the screen does not draw
+                    "X-Goog-FieldMask":
+                        "originIndex,destinationIndex,duration,distanceMeters,condition",
+                },
+                timeout: 8000,
+            }
+        );
+
+        for (const cell of response.data || []) {
+            if (cell?.condition !== "ROUTE_EXISTS") continue;
+
+            const at = cell.destinationIndex;
+            if (!Number.isInteger(at) || at >= out.length) continue;
+
+            /*
+             * Zero is a real answer here, and it arrives as nothing.
+             *
+             * Protobuf JSON leaves a field out when it holds its default, so
+             * a technician standing at the customer's door comes back with no
+             * distanceMeters at all. Read as "missing" that turned into a
+             * null and the row fell back to straight line - the one case
+             * where the road figure was certainly right. The condition above
+             * already said the route exists, so absent means nought.
+             */
+            const seconds = Number(String(cell.duration ?? "0s").replace("s", ""));
+
+            out[at] = {
+                durationSeconds: Number.isFinite(seconds) ? seconds : null,
+                distanceMeters: cell.distanceMeters ?? 0,
+            };
+        }
+    } catch (error) {
+        console.error("[ROUTE] matrix failed:", error.response?.data || error.message);
+    }
+
+    return out;
+};
+
+module.exports = { computeRoute, computeRouteMatrix, formatEta, MATRIX_MAX };

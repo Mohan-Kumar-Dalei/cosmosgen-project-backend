@@ -196,6 +196,32 @@ const assertLabelLengths = () => {
 
 assertLabelLengths();
 
+/**
+ * Replace the catalogue with what the database now holds.
+ *
+ * Mutated in place, never reassigned: several modules captured this array when
+ * they were first required, and handing back a new one would leave every one
+ * of them reading a stale copy for the life of the process.
+ *
+ * Labels are clipped rather than rejected here. The assertion above exists to
+ * stop a developer shipping a clipped WhatsApp row; this path is the office
+ * adding a service through a form at two in the afternoon, and refusing their
+ * data outright would take the whole catalogue down with it.
+ */
+const setCatalog = (entries) => {
+    const clip = (value) => (typeof value === "string" && value.length > 24 ? value.slice(0, 24).trim() : value);
+
+    const tidy = (item) => ({ ...item, en: clip(item.en), hinglish: clip(item.hinglish), odenglish: clip(item.odenglish) });
+
+    SERVICE_CATALOG.length = 0;
+
+    entries.forEach((entry) => SERVICE_CATALOG.push({
+        ...entry,
+        issues: (entry.issues || []).map(tidy),
+        appliances: (entry.appliances || []).map((a) => ({ ...a, issues: (a.issues || []).map(tidy) })),
+    }));
+};
+
 const getServiceByKey = (key) => SERVICE_CATALOG.find((s) => s.key === key) || null;
 
 const getServiceByLabel = (label) => {
@@ -224,6 +250,7 @@ const buildSkillRegex = (serviceKey) => {
 
 module.exports = {
     SERVICE_CATALOG,
+    setCatalog,
     getServiceByKey,
     getServiceByLabel,
     getAppliance,

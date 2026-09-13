@@ -84,9 +84,19 @@ function initSocketServer(httpServer) {
                 return next();
             }
 
-            if (!Object.keys(cookies).length) {
-                console.warn("[SOCKET] Auth failed: no cookies sent. Check withCredentials on the client.");
-                return next(new Error("Authentication error: no cookies sent"));
+            /**
+             * A cookie from the browser, a token from the phone.
+             *
+             * The mobile app has no cookie jar worth relying on, so it signs
+             * in over REST, keeps the token, and hands it over here the same
+             * way the tracking link does. Same token, same secret, same checks
+             * below - only the way it arrives differs.
+             */
+            const handed = String(socket.handshake.auth?.token || "").trim();
+
+            if (!Object.keys(cookies).length && !handed) {
+                console.warn("[SOCKET] Auth failed: no cookie and no token. Check the client.");
+                return next(new Error("Authentication error: no credentials sent"));
             }
 
             if (requestedRole === "admin") {
@@ -100,8 +110,10 @@ function initSocketServer(httpServer) {
             }
 
             if (requestedRole === "technician") {
-                if (!cookies.techToken) return next(new Error("No technician session"));
-                const decoded = jwt.verify(cookies.techToken, process.env.JWT_SECRET);
+                const techToken = cookies.techToken || handed;
+                if (!techToken) return next(new Error("No technician session"));
+
+                const decoded = jwt.verify(techToken, process.env.JWT_SECRET);
                 const tech = await technicianModel.findById(decoded.techId).select("_id name").lean();
                 if (!tech) return next(new Error("Technician not found"));
                 socket.role = "technician";
@@ -110,8 +122,12 @@ function initSocketServer(httpServer) {
             }
 
             if (requestedRole === "customer") {
-                if (!cookies.token) return next(new Error("No customer session"));
-                const decoded = jwt.verify(cookies.token, process.env.JWT_SECRET);
+                // The customer app signs in over REST and keeps the token, the
+                // same way the vendor app does - so it arrives in the
+                // handshake rather than in a cookie the phone does not have.
+                const custToken = cookies.token || handed;
+                if (!custToken) return next(new Error("No customer session"));
+                const decoded = jwt.verify(custToken, process.env.JWT_SECRET);
                 const user = await userModel
                     .findById(decoded.userId || decoded.id)
                     .select("_id name phone area state lat lon")

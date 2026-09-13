@@ -5,35 +5,20 @@ const Call = require("../models/call.model");
 const ticketModel = require("../models/ticket.model");
 const userModel = require("../models/user.model");
 const voice = require("../services/voice.service");
+const keyring = require("../services/keyring.service");
 const { emitToRoom, adminRoom } = require("../sockets/socket.instance");
 
 /**
  * The phone line.
  *
- * Twilio carries the call and this file is the only place that knows it. The
- * turn taking is deliberately simple: we say a line, record their answer, and
- * Twilio posts the recording back. No media streams, no websocket - a
- * thirty-second availability check does not need them, and every extra moving
- * part on a phone call is another way for the customer to hear silence.
+ * Exotel carries the call and this file is the only place that knows it: it
+ * dials, it hands the flow the pieces it asks for, and it writes down how the
+ * call ended. The conversation itself happens over the voicebot socket.
  *
  * Everything the call decides comes from voice.service, which knows nothing
- * about Twilio. This file is plumbing.
+ * about any carrier. This file is plumbing.
  */
 
-const SID = process.env.TWILIO_ACCOUNT_SID;
-const TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const FROM = process.env.TWILIO_FROM_NUMBER;
-const PUBLIC_URL = (process.env.PUBLIC_API_URL || "").replace(/\/+$/, "");
-
-/**
- * Exotel, when it is configured, otherwise Twilio.
- *
- * Exotel is the one that matters for this business: its numbers are Indian, so
- * a customer sees a local caller id rather than a foreign one they will not
- * answer, and outbound voice to Indian mobiles is theirs to be compliant
- * about. Twilio stays as the fallback because the trial is easier to stand up
- * abroad and the two are one function apart.
- */
 const EXO = {
     sid: process.env.EXOTEL_SID,
     key: process.env.EXOTEL_API_KEY,
@@ -44,112 +29,29 @@ const EXO = {
 };
 
 const exotelConfigured = () => Boolean(EXO.sid && EXO.key && EXO.token && EXO.callerId && EXO.appId);
-const twilioConfigured = () => Boolean(SID && TOKEN && FROM);
 
-const provider = () => (exotelConfigured() ? "exotel" : twilioConfigured() ? "twilio" : null);
+/*
+ * One carrier now.
+ *
+ * Twilio was here as the fallback, on the grounds that its trial is easier to
+ * stand up abroad. That reason never applied to this company: the customers
+ * are in Odisha, they do not answer foreign numbers, and the second provider
+ * bought nothing but a whole parallel call flow to keep working - TwiML, a
+ * signature check, a webhook per turn and a place to park audio for it to
+ * fetch back. All of it is gone; Exotel drives the call over the voicebot
+ * socket instead.
+ */
+const provider = () => (exotelConfigured() ? "exotel" : null);
 
 const isTelephonyReady = () => Boolean(provider() && PUBLIC_URL && voice.isVoiceReady());
 
 /**
- * Lines we have already turned into speech, waiting to be fetched by Twilio.
- *
- * In memory on purpose. A clip is wanted once, seconds after it is made, and
- * writing a few hundred kilobytes of wav into Mongo for every sentence of
- * every call would cost more than it saves. A restart mid-call loses the clip
- * and the call falls back to Twilio's own voice, which is a fair trade.
- */
-const clips = new Map();
-const CLIP_TTL_MS = 5 * 60 * 1000;
-
-const stashClip = (base64) => {
-    const id = crypto.randomBytes(8).toString("hex");
-    clips.set(id, { base64, at: Date.now() });
-
-    // Swept on write rather than on a timer - the map only grows when calls
-    // are happening, so that is the only time it needs clearing
-    for (const [key, value] of clips) {
-        if (Date.now() - value.at > CLIP_TTL_MS) clips.delete(key);
-    }
-
-    return id;
-};
-
-/* ================= TWIML ================= */
-
-const escapeXml = (s) =>
-    String(s || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
-/** Twilio's own voice, used only when Sarvam could not produce a clip. */
-const TWILIO_VOICE_LANG = {
-    english: "en-IN",
-    hinglish: "hi-IN",
-    odenglish: "hi-IN",
-};
-
-/**
- * Say a line, then listen.
- *
- * The recording stops on three seconds of silence rather than after a fixed
- * spell, because "haan" and "kal sakaal e asantu" are not the same length and
- * cutting somebody off mid-sentence is how a call turns into a complaint.
- */
-const sayAndListen = ({ text, clipId, callId, language, hangup = false }) => {
-    const play = clipId
-        ? `<Play>${PUBLIC_URL}/api/voice/clip/${clipId}</Play>`
-        : `<Say language="${TWILIO_VOICE_LANG[language] || "hi-IN"}">${escapeXml(text)}</Say>`;
-
-    const after = hangup
-        ? "<Hangup/>"
-        : `<Record action="${PUBLIC_URL}/api/voice/turn/${callId}" method="POST" ` +
-          `maxLength="20" timeout="3" playBeep="false" trim="trim-silence" />`;
-
-    return `<?xml version="1.0" encoding="UTF-8"?><Response>${play}${after}</Response>`;
-};
-
-const sendTwiml = (res, xml) => {
-    res.set("Content-Type", "text/xml");
-    return res.send(xml);
-};
-
-/* ================= SECURITY ================= */
-
-/**
- * Twilio signs every webhook. Without checking it, anybody who learns a call
- * id could post fake answers and change what a customer supposedly said - and
- * one of those answers reschedules a real visit.
- */
-const signatureValid = (req) => {
-    if (!TOKEN) return false;
-
-    const signature = req.get("X-Twilio-Signature");
-    if (!signature) return false;
-
-    const url = PUBLIC_URL + req.originalUrl;
-    const body = req.body || {};
-    const payload = Object.keys(body)
-        .sort()
-        .reduce((acc, key) => acc + key + body[key], url);
-
-    const expected = crypto.createHmac("sha1", TOKEN).update(Buffer.from(payload, "utf-8")).digest("base64");
-
-    const a = Buffer.from(signature);
-    const b = Buffer.from(expected);
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
-};
-
-/* ================= PLACING A CALL ================= */
-
-/**
  * Exotel, on their v1 API - v2 is not enabled on this account.
  *
- * Their model is not Twilio's. Twilio asks our server what to say at every
- * turn; Exotel runs a Flow built in their console and our server supplies the
- * pieces it asks for. So `Url` here points at the Flow, not at us, and the
- * conversation is driven from inside that Flow.
+ * Exotel runs a Flow built in their console and our server supplies the
+ * pieces it asks for, rather than being asked what to say at every turn. So
+ * `Url` here points at the Flow, not at us, and the conversation is driven
+ * from inside that Flow.
  *
  * "From" is the person who gets rung first, which on a one-legged call to a
  * flow is the customer. CallerId is the Exophone they see.
@@ -159,6 +61,9 @@ const dialExotel = async (call, phone, callerId) => {
     const from = callerId || EXO.callerId;
 
     console.log("[VOICE] exotel: ringing " + to + " from " + from);
+
+    // One placed call, on the developer platform's meter for this provider
+    keyring.count("exotel");
 
     const res = await axios.post(
         "https://" + EXO.subdomain + "/v1/Accounts/" + EXO.sid + "/Calls/connect.json",
@@ -184,24 +89,6 @@ const dialExotel = async (call, phone, callerId) => {
     );
 
     return { sid: res.data?.Call?.Sid || res.data?.Call?.sid };
-};
-
-const dialTwilio = async (call, phone) => {
-    const res = await axios.post(
-        "https://api.twilio.com/2010-04-01/Accounts/" + SID + "/Calls.json",
-        new URLSearchParams({
-            To: phone.startsWith("+") ? phone : "+91" + phone.replace(/^91/, ""),
-            From: FROM,
-            Url: PUBLIC_URL + "/api/voice/answer/" + call._id,
-            Method: "POST",
-            StatusCallback: PUBLIC_URL + "/api/voice/status/" + call._id,
-            StatusCallbackMethod: "POST",
-            Timeout: "20",
-        }),
-        { auth: { username: SID, password: TOKEN }, timeout: 10000 }
-    );
-
-    return { sid: res.data?.sid };
 };
 
 /**
@@ -230,7 +117,7 @@ const prepareOpening = async (call, ticket) => {
 /**
  * Rings a customer about one ticket.
  *
- * Never throws. A call is an extra - if Twilio is not configured, or the
+ * Never throws. A call is an extra - if the carrier is not configured, or the
  * number is unreachable, the booking still has to go through, so this reports
  * and returns null rather than taking the caller down with it.
  */
@@ -261,9 +148,7 @@ const placeCall = async ({ ticket, purpose, to, callerId }) => {
     });
 
     try {
-        const res = provider() === "exotel"
-            ? await dialExotel(call, phone, callerId)
-            : await dialTwilio(call, phone);
+        const res = await dialExotel(call, phone, callerId);
 
         call.providerCallSid = res.sid;
         call.status = "ringing";
@@ -290,16 +175,6 @@ const placeCall = async ({ ticket, purpose, to, callerId }) => {
                 "in the Exotel dashboard to call anyone else.");
         }
 
-        // Twilio answers a trial account with one generic line whatever the
-        // real cause, so the two that actually bite are named here rather
-        // than left to be rediscovered.
-        if (/trial account/i.test(detail)) {
-            console.error(
-                "[VOICE] on a Twilio trial this usually means one of two things: " +
-                "TWILIO_FROM_NUMBER is not a number this account owns, or the " +
-                "destination has not been added under Verified Caller IDs."
-            );
-        }
         call.status = "failed";
         call.lastError = detail;
         await call.save();
@@ -347,72 +222,6 @@ const turnsFor = (call) => {
     return said.length
         ? said
         : [{ role: "user", parts: [{ text: "(the customer has just answered the phone)" }] }];
-};
-
-/**
- * Works out the next line, speaks it, and returns the TwiML for it.
- *
- * One place for both the opening line and every reply after it, so a change to
- * how the call sounds only has to be made once.
- */
-const respond = async (call, res) => {
-    const ticket = await ticketModel
-        .findById(call.ticket)
-        .select("ticketNumber serviceLabel customerSnapshot technicianSnapshot")
-        .lean();
-
-    if (!ticket) {
-        return sendTwiml(res, sayAndListen({
-            text: "Sorry, we cannot find your booking. The office will call you back.",
-            callId: call._id,
-            language: call.language,
-            hangup: true,
-        }));
-    }
-
-    const { text, outcome, failed } = await voice.nextTurn({
-        purpose: call.purpose,
-        turns: turnsFor(call),
-        context: contextFor(ticket, call.purpose),
-        language: call.language,
-    });
-
-    // The brain is down. Ending politely beats a line that goes quiet.
-    if (failed || (!text && !outcome)) {
-        call.status = "failed";
-        call.lastError = "assistant did not answer";
-        call.endedAt = new Date();
-        await call.save();
-
-        return sendTwiml(res, sayAndListen({
-            text: "Sorry, we are having trouble. The office will call you back shortly.",
-            callId: call._id,
-            language: call.language,
-            hangup: true,
-        }));
-    }
-
-    if (text) call.turns.push({ role: "assistant", text });
-
-    if (outcome) {
-        call.outcome = outcome;
-        call.status = "completed";
-        call.endedAt = new Date();
-        await call.save();
-        await applyOutcome(call, ticket);
-    } else {
-        await call.save();
-    }
-
-    const clip = await voice.speak(text, call.language);
-
-    return sendTwiml(res, sayAndListen({
-        text,
-        clipId: clip ? stashClip(clip) : null,
-        callId: call._id,
-        language: call.language,
-        hangup: Boolean(outcome),
-    }));
 };
 
 /**
@@ -474,9 +283,9 @@ const applyOutcome = async (call, ticket) => {
 /* ================= EXOTEL FLOW ================= */
 
 /**
- * Exotel does not hand us the call the way Twilio does.
+ * Exotel does not hand us the call the way a webhook-driven carrier would.
  *
- * Twilio asks our server what to say at every turn. Exotel runs a Flow built
+ * A webhook carrier asks our server what to say at every turn. Exotel runs a Flow built
  * in their console and the applets in it call out to us: a Greeting applet
  * fetches audio from `/exotel/say`, and whatever records the customer posts
  * the recording to `/exotel/heard`. The loop lives in their builder; these two
@@ -619,69 +428,41 @@ const exotelHeard = async (req, res) => {
 
 /* ================= WEBHOOKS ================= */
 
-// POST /api/voice/answer/:callId - they picked up
-const onAnswer = async (req, res) => {
-    if (!signatureValid(req)) return res.status(403).send("Forbidden");
+/*
+ * One webhook left.
+ *
+ * There were four: two Twilio called at every turn of the conversation, one
+ * it used to fetch the audio back, and this. Exotel does not work that way -
+ * the conversation runs over the voicebot socket - so this is the only thing
+ * the carrier still posts to us, and it is how a call nobody answered stops
+ * being "ringing" in our records.
+ */
 
-    const call = await Call.findById(req.params.callId);
-    if (!call) return res.status(404).send("Not found");
-
-    call.status = "talking";
-    call.startedAt = call.startedAt || new Date();
-    await call.save();
-
-    return respond(call, res);
-};
-
-// POST /api/voice/turn/:callId - they said something
-const onTurn = async (req, res) => {
-    if (!signatureValid(req)) return res.status(403).send("Forbidden");
-
-    const call = await Call.findById(req.params.callId);
-    if (!call) return res.status(404).send("Not found");
-
-    const recordingUrl = req.body?.RecordingUrl;
-    let heard = "";
-
-    if (recordingUrl) {
-        try {
-            // Twilio serves the wav a moment after posting the URL, and the
-            // file is behind the same account credentials
-            const audio = await axios.get(recordingUrl + ".wav", {
-                responseType: "arraybuffer",
-                auth: { username: SID, password: TOKEN },
-                timeout: 15000,
-            });
-            heard = await voice.transcribe(Buffer.from(audio.data), call.language);
-        } catch (err) {
-            console.error("[VOICE] could not fetch the recording:", err.message);
-        }
-    }
-
-    if (!heard) {
-        // Not treated as a turn. Adding an empty line to the history teaches
-        // the model that silence is an answer, and it starts filling it in.
-        const clip = await voice.speak("Sorry, I did not catch that. Could you say it again?", call.language);
-        return sendTwiml(res, sayAndListen({
-            text: "Sorry, I did not catch that. Could you say it again?",
-            clipId: clip ? stashClip(clip) : null,
-            callId: call._id,
-            language: call.language,
-        }));
-    }
-
-    call.turns.push({ role: "customer", text: heard });
-    await call.save();
-
-    return respond(call, res);
-};
-
-// POST /api/voice/status/:callId - Twilio reporting how it ended
+/**
+ * POST /api/voice/status/:callId - the carrier reporting how it ended.
+ *
+ * This used to demand an X-Twilio-Signature, and returned false whenever
+ * there was no Twilio token to check one against - so with Exotel carrying
+ * the calls, every one of these was answered with 403 and the call stayed
+ * "ringing" in our records for ever. Twenty of forty-two were sitting like
+ * that. Removing Twilio is the moment that shows up, because the check no
+ * longer has anything it could be checking.
+ *
+ * What replaces it needs no shared secret: the carrier hands back the call id
+ * it was given when we dialled, and we already stored that against this
+ * record. A stranger would have to know both the record's id and the
+ * carrier's - and if they did, the worst they could do is mark a finished
+ * call as finished.
+ */
 const onStatus = async (req, res) => {
-    if (!signatureValid(req)) return res.status(403).send("Forbidden");
+    const state = req.body?.CallStatus || req.body?.Status;
+    const sid = req.body?.CallSid || req.body?.Sid;
 
-    const state = req.body?.CallStatus;
     const call = await Call.findById(req.params.callId);
+
+    if (call?.providerCallSid && sid && call.providerCallSid !== sid) {
+        return res.status(403).send("Forbidden");
+    }
 
     if (call && call.status !== "completed") {
         if (["no-answer", "busy"].includes(state)) call.status = "no_answer";
@@ -695,15 +476,6 @@ const onStatus = async (req, res) => {
     return res.sendStatus(204);
 };
 
-// GET /api/voice/clip/:id - Twilio fetching a line to play
-const getClip = (req, res) => {
-    const clip = clips.get(req.params.id);
-    if (!clip) return res.sendStatus(404);
-
-    res.set("Content-Type", "audio/wav");
-    return res.send(Buffer.from(clip.base64, "base64"));
-};
-
 module.exports = {
     placeCall,
     isTelephonyReady,
@@ -713,8 +485,5 @@ module.exports = {
     applyOutcome,
     exotelSay,
     exotelHeard,
-    onAnswer,
-    onTurn,
     onStatus,
-    getClip,
 };

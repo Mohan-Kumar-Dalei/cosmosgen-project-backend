@@ -1,4 +1,5 @@
 const Razorpay = require("razorpay");
+const keyring = require("../services/keyring.service");
 
 let instance = null;
 
@@ -9,6 +10,10 @@ const getRazorpay = () => {
     if (!isConfigured()) {
         throw new Error("Razorpay keys missing in .env");
     }
+
+    // Fetched once per payment link, refund or lookup, which makes this the
+    // count of what the gateway is being asked for
+    keyring.count("razorpay");
     if (!instance) {
         instance = new Razorpay({
             key_id: process.env.RAZORPAY_KEY_ID,

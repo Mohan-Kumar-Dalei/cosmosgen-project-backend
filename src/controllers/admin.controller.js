@@ -11,6 +11,7 @@ const ServicePricing = require("../models/servicePricing.model");
 const { buildSkillRegex, escapeRegex } = require("../config/services");
 const { metresBetween } = require("../services/ride.service");
 const { lookupPlace } = require("./map.controller");
+const routeService = require("../services/route.service");
 const voiceController = require("./voice.controller");
 const { SERVICE_CATALOG } = require("../config/services");
 const notification = require("../services/notification.service");
@@ -531,7 +532,7 @@ const getNearbyTechnicians = async (req, res) => {
                 const tLat = t.location?.coordinates?.[1];
                 if (!hasCoords || !Number.isFinite(tLat) || !Number.isFinite(tLon)) return t;
                 const metres = Math.round(metresBetween(lat, lon, tLat, tLon));
-                return { ...t, location: undefined, distanceInMeters: metres, distanceKm: Math.round(metres / 10) / 100 };
+                return { ...t, distanceInMeters: metres, distanceKm: Math.round(metres / 10) / 100 };
             });
         } else {
             if (!hasCoords) {
@@ -555,6 +556,10 @@ const getNearbyTechnicians = async (req, res) => {
                 {
                     $project: {
                         ...PROJECTION,
+                        // Kept only long enough to ask for a road distance
+                        // below, then dropped - the panel has no use for a
+                        // technician's exact position and should not carry it
+                        location: 1,
                         distanceInMeters: { $round: ["$distanceInMeters", 0] },
                         distanceKm: { $round: [{ $divide: ["$distanceInMeters", 1000] }, 2] },
                     },
@@ -577,6 +582,52 @@ const getNearbyTechnicians = async (req, res) => {
             liveStatus: t.activeTicket ? "on_job" : t.isAvailable ? "available" : "offline",
             scheduledJobs: queueMap.get(String(t._id)) || 0,
         }));
+
+        /*
+         * A real road figure for the few the office will actually look at.
+         *
+         * The ranking above is straight line, which is free and almost always
+         * the same order. It is a poor thing to dispatch on, though - eight
+         * hundred metres away across a river is not near - so the nearest
+         * handful get an actual driving distance and time, in one request.
+         *
+         * Capped on purpose. Route Matrix bills per pair, so asking for all
+         * twenty rows would bill twenty every time this screen opened, for
+         * names nobody was going to click. Five is what fits on the screen
+         * without scrolling, which is the same five somebody chooses from.
+         */
+        const measurable = withStatus
+            .map((t, at) => ({ at, t }))
+            .filter(({ t }) =>
+                Number.isFinite(t.location?.coordinates?.[1])
+                && Number.isFinite(t.location?.coordinates?.[0]))
+            .sort((a, b) =>
+                (a.t.distanceInMeters ?? Infinity) - (b.t.distanceInMeters ?? Infinity))
+            .slice(0, routeService.MATRIX_MAX);
+
+        if (hasCoords && measurable.length) {
+            const roads = await routeService.computeRouteMatrix(
+                { lat, lon },
+                measurable.map(({ t }) => ({
+                    lat: t.location.coordinates[1],
+                    lon: t.location.coordinates[0],
+                }))
+            );
+
+            measurable.forEach(({ at }, i) => {
+                const road = roads[i];
+                if (!road) return;
+
+                withStatus[at].roadMeters = road.distanceMeters;
+                withStatus[at].roadSeconds = road.durationSeconds;
+                withStatus[at].roadKm = Number.isFinite(road.distanceMeters)
+                    ? Math.round(road.distanceMeters / 10) / 100
+                    : null;
+            });
+        }
+
+        // And the positions go no further than this function
+        for (const row of withStatus) delete row.location;
 
         const noLocationCount = await technicianModel.countDocuments({
             isDeleted: false,
@@ -1295,7 +1346,7 @@ const getAllTechnicians = async (req, res) => {
         const [technicians, total] = await Promise.all([
             technicianModel
                 .find(filter)
-                .select("name phone profileImage skills rating completedJobs performanceLevel area state isAvailable activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted createdAt")
+                .select("name phone profileImage skills rating completedJobs performanceLevel area state isAvailable availabilitySince lastAwayMs activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted createdAt")
                 .sort({ createdAt: -1 })
                 .skip((page - 1) * limit)
                 .limit(limit)
@@ -2057,7 +2108,9 @@ const claimPaidRecharges = async (technicianId) => {
 const checkPaymentMoney = async (req, res) => {
     try {
         const payment = await Payment.findById(req.params.id)
-            .select("method status amountPaise commissionPaise razorpayPaymentId ticket collectedBy isVisitCharge")
+            // collectedAt is when the cash was taken, which is what a
+            // settlement has to come after to be for this job
+            .select("method status amountPaise commissionPaise razorpayPaymentId ticket collectedBy isVisitCharge collectedAt createdAt")
             .lean();
 
         if (!payment) {
@@ -2143,19 +2196,51 @@ const checkPaymentMoney = async (req, res) => {
                 .limit(10)
                 .lean();
 
-            // The one still waiting to be recorded is the one being asked
-            // about; if they have all been recorded, show the latest anyway
-            // so the answer is never a blank screen.
-            const unrecorded = settlements.filter((x) => x.status === "collected");
+            /*
+             * Which of his payments could actually be for this job.
+             *
+             * Two filters, and this answered wrongly without either of them -
+             * a cash job closed today was reported settled by a payment made
+             * four days earlier that had already cleared a different job. The
+             * amounts happened to match, and matching amounts was the whole
+             * test.
+             *
+             * First: a settlement already written into the ledger is spent. Its
+             * row is supposed to be closed when the office records it, but
+             * every row written before that was fixed is still sitting at
+             * "collected", so the status alone cannot be trusted - the ledger
+             * is asked instead, which repairs the old ones as a side effect.
+             *
+             * Second: money cannot pay for work that had not happened yet. A
+             * settlement sent before this job was closed belongs to an earlier
+             * one, whatever it is worth.
+             */
+            const spent = new Set(
+                (await WalletTransaction.find({
+                    technician: technicianId,
+                    source: "recharge",
+                    reference: { $in: settlements.map((x) => x.razorpayPaymentId).filter(Boolean) },
+                }).select("reference").lean()).map((x) => x.reference)
+            );
+
+            const jobClosedAt = payment.collectedAt || payment.createdAt;
+
+            const unrecorded = settlements.filter((x) =>
+                x.status === "collected"
+                && !spent.has(x.razorpayPaymentId)
+                && (!jobClosedAt || !x.collectedAt || new Date(x.collectedAt) >= new Date(jobClosedAt))
+            );
+
             const waiting = unrecorded.find((x) => x.amountPaise === (payment.commissionPaise || 0))
-                || unrecorded[0]
-                || settlements[0];
+                || unrecorded[0];
+
             alsoWaiting = Math.max(0, unrecorded.length - 1);
 
             if (!waiting) {
                 return res.status(200).json({
                     success: true,
-                    message: "Nothing has come in from this vendor yet. Check again once he says he has paid.",
+                    message: "Nothing has come in for this job yet. Anything this vendor sent earlier has"
+                        + " already been recorded against older work. Check again once he says he has paid.",
                     data: { found: false, kind: "settlement", expectPaise: payment.commissionPaise || 0 },
                 });
             }
@@ -3116,7 +3201,10 @@ const getTechnicianPaymentReferences = async (req, res) => {
                 "billing.commissionPaise": { $gt: 0 },
                 status: { $in: ["Closed", "Cancelled"] },
             })
-            .select("ticketNumber status billing.invoiceNumber billing.totalPaise billing.commissionPaise payment.method payment.status updatedAt")
+            // The customer and the service come along so the office can tell
+            // two identically priced jobs apart. A list of ticket numbers and
+            // amounts is a list nobody can check against anything.
+            .select("ticketNumber status serviceLabel customerSnapshot.name billing.invoiceNumber billing.totalPaise billing.commissionPaise payment.method payment.status updatedAt")
             .sort({ updatedAt: -1 })
             .limit(25)
             .lean();
@@ -3124,6 +3212,12 @@ const getTechnicianPaymentReferences = async (req, res) => {
         const jobs = cashJobs.map((t) => ({
             ticketNumber: t.ticketNumber,
             invoiceNumber: t.billing?.invoiceNumber || null,
+            customerName: t.customerSnapshot?.name || null,
+            serviceLabel: t.serviceLabel || null,
+            // The figure as well as the formatted string: the dialog totals
+            // these up, and adding up display strings is how rounding errors
+            // get into a screen about money
+            billPaise: t.billing?.totalPaise || 0,
             billDisplay: paiseToRupees(t.billing?.totalPaise || 0),
             method: t.payment?.method || "cash",
             commissionPaise: t.billing?.commissionPaise || 0,
@@ -3756,6 +3850,37 @@ const collectFromTechnician = async (req, res) => {
                 + (reference ? " (" + reference + ")" : "")
                 + (covers.length ? " for " + covers.join(", ") : "")
         );
+
+        /*
+         * The settlement the technician sent is now closed, not just credited.
+         *
+         * The webhook writes a Payment row for an in-app settlement and
+         * deliberately leaves it "collected", because the office still has to
+         * check the reference and record it. This is that recording - so the
+         * row has to be closed here too. It was not, and the consequences ran
+         * on for ever: the wallet screen keeps reporting a settlement waiting
+         * to be verified, and `canPayOnline` is false while one is waiting, so
+         * a technician who settled once online could never settle online
+         * again. Both panels showed him "Rs X received, waiting for the
+         * office" sitting on top of a completely different, unpaid due.
+         *
+         * Matched on the reference the office just typed, which is the
+         * Razorpay payment id the row was created with. Nothing is closed on
+         * a guess: a cash settlement has no row of its own, and closing the
+         * oldest pending one would write off an online payment that is still
+         * genuinely waiting to be checked.
+         */
+        if (reference.length >= 3) {
+            await Payment.updateMany(
+                {
+                    collectedBy: req.params.technicianId,
+                    ticket: null,
+                    status: "collected",
+                    $or: [{ razorpayPaymentId: reference }, { razorpayLinkId: reference }],
+                },
+                { status: "verified", verifiedBy: req.admin._id, verifiedAt: new Date() }
+            );
+        }
 
         return res.status(200).json({
             success: true,

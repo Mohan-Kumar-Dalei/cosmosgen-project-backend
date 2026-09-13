@@ -65,6 +65,23 @@ const technicianSchema = new mongoose.Schema({
     blacklistReason: { type: String },
 
     isAvailable: { type: Boolean, default: false },
+
+    /*
+     * When the current answer to `isAvailable` began, and how long the last
+     * absence lasted.
+     *
+     * The flag on its own says whether somebody is on duty now and nothing
+     * about the shape of their week, which is the thing the office is
+     * actually judging: a vendor who went offline an hour ago is having a
+     * break, and one who has been offline since Tuesday is a vendor you
+     * should stop sending work to. Two numbers answer both - how long this
+     * stretch has run, and how long the one before it did.
+     *
+     * Only the vendor's own switch moves these. Being assigned a job also
+     * clears `isAvailable`, and that is not an absence - it is work.
+     */
+    availabilitySince: { type: Date },
+    lastAwayMs: { type: Number },
     activeTicket: { type: mongoose.Schema.Types.ObjectId, ref: "Ticket", default: null },
 
         // Where payouts go. The account number is select:false so it can never
@@ -82,9 +99,6 @@ const technicianSchema = new mongoose.Schema({
         verifiedAt: { type: Date },
     },
 
-    // Set from the Firebase token, never from the request body
-    phoneVerifiedAt: { type: Date },
-    firebaseUid: { type: String, index: true, sparse: true },
 
     isDeleted: { type: Boolean, default: false },
 }, { timestamps: true });

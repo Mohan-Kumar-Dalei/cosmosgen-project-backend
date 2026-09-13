@@ -11,6 +11,8 @@ const uploadImage = require("../utils/imagekit");
 const paymentService = require("../services/payment.service");
 const notification = require("../services/notification.service");
 const otpService = require("../services/otp.service");
+const signupOtpService = require("../services/signupOtp.service");
+const whatsapp = require("../services/whatsapp.service");
 const voiceController = require("./voice.controller");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
 const rideService = require("../services/ride.service");
@@ -18,7 +20,6 @@ const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket
 const walletService = require("../services/wallet.service");
 const settingsService = require("../services/settings.service");
 const { estimateGatewayFee } = require("../config/razorpay");
-const { verifyPhoneToken } = require("../config/firebase");
 const isProd = process.env.NODE_ENV === "production";
 
 const cookieOptions = {
@@ -37,7 +38,7 @@ const clearOptions = {
 };
 
 const PUBLIC_FIELDS =
-    "_id name phone state area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel createdAt";
+    "_id name phone state area pincode skills profileImage rating isAvailable availabilitySince lastAwayMs activeTicket completedJobs performanceLevel createdAt";
 
 const ACTIVE_STATUSES = ["Assigned", "In-Progress", "Payment-Pending"];
 
@@ -53,13 +54,13 @@ const ifscCache = new Map();
 const registerTechnician = async (req, res) => {
     try {
         const {
-            idToken, name, password, email,
+            phoneToken, name, password, email,
             pincode, state, area, lat, lon,
             skills, hasVehicle,
             accountHolderName, accountNumber, ifsc,
         } = req.body;
 
-        const verified = await verifyPhoneToken(idToken);
+        const verified = await verifiedSignupPhone({ phoneToken });
         if (!verified) {
             return res.status(401).json({
                 success: false,
@@ -122,7 +123,6 @@ const registerTechnician = async (req, res) => {
             hasVehicle: hasVehicle === 'true' || hasVehicle === true,
             approvalStatus: "pending",
             phoneVerifiedAt: new Date(),
-            firebaseUid: verified.uid,
             bankDetails: {
                 accountHolderName: String(accountHolderName).trim(),
                 accountNumber: cleanAccount,
@@ -189,56 +189,163 @@ const registerTechnician = async (req, res) => {
 };
 
 /**
- * POST /api/technician/verify-phone
- * body: { idToken }
+ * Whether this number is free to register, said once so every route that
+ * asks gives the same answer.
  *
- * Phase 1 of registration. The client has already done the OTP dance with
- * Firebase; this confirms the resulting token is real and tells them whether
- * that number can go on to register.
+ * Returns a response body to send back, or null when the number is clear.
  */
-const verifyPhone = async (req, res) => {
-    try {
-        const verified = await verifyPhoneToken(req.body.idToken);
+const signupBlockedFor = async (phone) => {
+    const existing = await technicianModel
+        .findOne({ phone })
+        .select("_id isBlacklisted approvalStatus")
+        .lean();
 
-        if (!verified) {
-            return res.status(401).json({
-                success: false,
-                message: "Could not verify that number. Please request a new code.",
-            });
-        }
-
-        const existing = await technicianModel
-            .findOne({ phone: verified.phone })
-            .select("_id isBlacklisted approvalStatus name")
-            .lean();
-
-        if (existing?.isBlacklisted) {
-            return res.status(403).json({
+    if (existing?.isBlacklisted) {
+        return {
+            status: 403,
+            body: {
                 success: false,
                 message: "This number cannot be registered. Contact the office if you think this is a mistake.",
-            });
-        }
+            },
+        };
+    }
 
-        if (existing) {
-            return res.status(409).json({
+    if (existing) {
+        return {
+            status: 409,
+            body: {
                 success: false,
                 alreadyRegistered: true,
                 approvalStatus: existing.approvalStatus,
                 message: existing.approvalStatus === "pending"
                     ? "This number is already registered and waiting for approval."
                     : "This number is already registered. Please sign in instead.",
+            },
+        };
+    }
+
+    return null;
+};
+
+/**
+ * POST /api/technician/signup-otp
+ * body: { phone }
+ *
+ * Phase 1, for the app and the web panel alike. WhatsApp is already the
+ * channel every customer on this platform is reached on, so the code goes
+ * there rather than by SMS, and the button says so.
+ */
+const sendSignupOtp = async (req, res) => {
+    try {
+        const phone = String(req.body.phone || "").replace(/\D/g, "").slice(-10);
+
+        if (!/^[6-9]\d{9}$/.test(phone)) {
+            return res.status(400).json({ success: false, message: "Enter a valid 10 digit mobile number" });
+        }
+
+        const blocked = await signupBlockedFor(phone);
+        if (blocked) return res.status(blocked.status).json(blocked.body);
+
+        const issued = signupOtpService.issue(phone);
+        if (issued.wait) {
+            return res.status(429).json({
+                success: false,
+                retryAfter: issued.wait,
+                message: "A code has just gone out. Wait " + issued.wait + " seconds before asking again.",
+            });
+        }
+
+        const sent = await whatsapp.sendText(
+            phone,
+            "Your Cosmosgen vendor code is *" + issued.code + "*\n\n" +
+            "Type it into the app to confirm this number. It is good for ten minutes.\n\n" +
+            "If you did not ask to register, ignore this message."
+        );
+
+        if (!sent) {
+            return res.status(502).json({
+                success: false,
+                message: "Could not send the code on WhatsApp. Try again, or call the office.",
             });
         }
 
         return res.status(200).json({
             success: true,
-            data: { phone: verified.phone },
+            retryAfter: Math.ceil(signupOtpService.RESEND_AFTER_MS / 1000),
+            message: "Code sent on WhatsApp",
+        });
+    } catch (error) {
+        console.error("Send signup OTP error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/technician/signup-otp/verify
+ * body: { phone, code }
+ *
+ * Hands back a short-lived signed token rather than a "verified" flag. The
+ * registration request that follows carries it, so the number on the new
+ * account is one this server itself sent a code to - not one typed into the
+ * final form.
+ */
+const verifySignupOtp = async (req, res) => {
+    try {
+        const phone = String(req.body.phone || "").replace(/\D/g, "").slice(-10);
+        const result = signupOtpService.check(phone, req.body.code);
+
+        if (!result.ok) {
+            return res.status(400).json({ success: false, message: result.message });
+        }
+
+        const blocked = await signupBlockedFor(phone);
+        if (blocked) return res.status(blocked.status).json(blocked.body);
+
+        const phoneToken = jwt.sign(
+            { phone, purpose: "tech-signup" },
+            process.env.JWT_SECRET,
+            { expiresIn: "30m" }
+        );
+
+        return res.status(200).json({
+            success: true,
+            data: { phone, phoneToken },
             message: "Number verified",
         });
     } catch (error) {
-        console.error("Verify phone error:", error);
+        console.error("Verify signup OTP error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
+};
+
+/**
+ * The number behind a completed registration.
+ *
+ * There used to be two ways in: Firebase phone auth for the web panel and our
+ * own WhatsApp code for the app, each ending in a different kind of token and
+ * a different definition of "this number is really yours". Two answers to one
+ * question is one more than a signup should have, and the Firebase half
+ * carried an SMS bill, a reCAPTCHA on the page and a second vendor account to
+ * keep alive - for a number we were already proving ourselves.
+ *
+ * Both surfaces send the same six digits over WhatsApp now and come back with
+ * the same short-lived token, signed here. Nothing trusts a phone number that
+ * simply arrived in the request body.
+ */
+const verifiedSignupPhone = async ({ phoneToken }) => {
+    if (!phoneToken) return null;
+
+    try {
+        const decoded = jwt.verify(phoneToken, process.env.JWT_SECRET);
+
+        if (decoded?.purpose === "tech-signup" && decoded.phone) {
+            return { phone: decoded.phone };
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
 };
 
 const lookupIfsc = async (code) => {
@@ -324,10 +431,14 @@ const loginTechnician = async (req, res) => {
             });
         }
 
-        res.cookie("techToken", signToken(technician._id), cookieOptions);
+        const token = signToken(technician._id);
+        res.cookie("techToken", token, cookieOptions);
 
         const data = await technicianModel.findById(technician._id).select(PUBLIC_FIELDS).lean();
-        return res.status(200).json({ success: true, message: "Login successful", data });
+
+        // The browser ignores this and uses the cookie above; the mobile app
+        // stores it and sends it as a bearer header, having no cookie jar.
+        return res.status(200).json({ success: true, message: "Login successful", data, token });
     } catch (error) {
         console.error("Login error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
@@ -550,8 +661,38 @@ const updateStatus = async (req, res) => {
             return res.status(400).json({ success: false, message: "You cannot change status while on an active job" });
         }
 
+        /*
+         * The clock only moves when the answer does.
+         *
+         * Writing the timestamp on every call would mean a vendor who presses
+         * the switch twice by accident looks like they only just came back,
+         * and the office loses the one thing it wanted to know. So the stretch
+         * starts when the state actually changes, and the length of the
+         * absence just ended is kept on the way back in - that is the figure
+         * nobody can reconstruct later, because the moment it began is about
+         * to be overwritten.
+         */
+        const previous = await technicianModel
+            .findById(req.technician._id)
+            .select("isAvailable availabilitySince")
+            .lean();
+
+        const changed = !previous || previous.isAvailable !== isAvailable;
+        const since = previous?.availabilitySince;
+
+        const patch = { isAvailable };
+
+        if (changed) {
+            patch.availabilitySince = new Date();
+
+            // Coming back from an absence we know the start of
+            if (isAvailable && since) {
+                patch.lastAwayMs = Math.max(0, Date.now() - new Date(since).getTime());
+            }
+        }
+
         const updatedTech = await technicianModel
-            .findByIdAndUpdate(req.technician._id, { isAvailable }, { returnDocument: "after" })
+            .findByIdAndUpdate(req.technician._id, patch, { returnDocument: "after" })
             .select(PUBLIC_FIELDS)
             .lean();
 
@@ -1681,6 +1822,97 @@ const collectCash = async (req, res) => {
 
 // GET /api/technician/wallet?days=90
 // GET /api/technician/wallet?days=90
+/**
+ * The whole of a job's money, hung on the ledger row that came out of it.
+ *
+ * A ledger row only ever carries the part that moved the balance, and on a
+ * cash job that is the commission alone - the bill goes straight from the
+ * customer into the technician's pocket and the company never touches it. That
+ * is right for the balance and unreadable as a passbook: a Rs 899 job he was
+ * paid in full for appears as "- Rs 269.70" and nothing else, so it reads like
+ * a deduction from money he never received.
+ *
+ * So each job row also carries what the job was worth, what he keeps and what
+ * the company's share was. None of it changes the balance; it is there so the
+ * line can be read without doing the arithmetic in your head.
+ */
+const jobBehind = (txn) => {
+    const billing = txn.ticket?.billing;
+    if (!billing?.totalPaise) return null;
+
+    return {
+        billDisplay: paymentService.paiseToRupees(billing.totalPaise),
+        keptDisplay: paymentService.paiseToRupees(billing.technicianSharePaise || 0),
+    };
+};
+
+/**
+ * A ledger row as the technician reads it, not as the books keep it.
+ *
+ * These two are not the same thing, and printing one where the other belongs
+ * is what made the passbook unreadable. The stored credit/debit is the
+ * company's direction: settling a due is a *credit*, because it pays down what
+ * the technician owed, and the company paying him out is a *debit*. On his
+ * screen both came out backwards - money he had handed over appeared in green
+ * with a plus in front of it, and money that had landed in his bank appeared
+ * in red.
+ *
+ * So direction is worked out here from the source, from his side of it. He
+ * opens this to answer three questions and no others: what came in, what went
+ * out, and whether he still owes anything.
+ *
+ * The wording avoids the word commission and any percentage on purpose. A line
+ * reading "commission (30%)" against his name invites the reading that the
+ * company is taking a cut of his money, when the bill was never his: the
+ * customer is paying Cosmosgen, he earns a share of it, and on a cash job he
+ * is simply holding the rest of the company's money until he hands it in.
+ */
+/*
+ * The note says where the money actually is, which is not the same on every
+ * job.
+ *
+ * On an online job the customer pays the company, so the technician's share
+ * goes into his wallet and waits there until the office transfers it - that
+ * one is credited, and saying so is what explains the balance at the top of
+ * the screen. On a cash, split or visit job he was handed the money at the
+ * door; nothing is credited anywhere, because it is already in his pocket.
+ *
+ * Writing "credited to your wallet" on all of them would read better and be
+ * false on three out of four - he would sit waiting for a transfer that is
+ * never coming, and then ring the office about it.
+ */
+const VENDOR_VIEW = {
+    job_online: { flow: "in", title: "Online job", note: "Credited to your wallet" },
+    job_cash: { flow: "out", title: "Cash job", note: "To hand over" },
+    job_split: { flow: "in", title: "Split job", note: "Taken in cash, in hand" },
+    job_visit: { flow: "in", title: "Visit charge", note: "All yours, in hand" },
+    payout: { flow: "in", title: "Office paid you", note: "Sent to your bank" },
+    recharge: { flow: "out", title: "You paid the office", note: "Dues cleared" },
+};
+
+const vendorView = (txn) => {
+    const known = VENDOR_VIEW[txn.source];
+
+    if (!known) {
+        // A manual correction by the office. Its direction is the only thing
+        // the ledger can tell us, and its own description says why.
+        return {
+            flow: txn.type === "credit" ? "in" : "out",
+            title: "Correction by the office",
+            note: "",
+        };
+    }
+
+    // A settlement that did not take the balance all the way to zero is a part
+    // payment, and saying "dues cleared" against one would be a lie he finds
+    // out about later.
+    if (txn.source === "recharge" && txn.balanceAfterPaise !== 0) {
+        return { ...known, note: "Part payment" };
+    }
+
+    return known;
+};
+
 const getWallet = async (req, res) => {
     try {
         const techId = req.technician._id;
@@ -1697,7 +1929,12 @@ const getWallet = async (req, res) => {
             WalletTransaction.find({ technician: techId })
                 .sort({ createdAt: -1 })
                 .limit(50)
-                .populate("ticket", "ticketNumber serviceLabel")
+                // The job's money travels with the row. A cash job writes only
+                // its commission to the ledger - the bill itself never touches
+                // the company - so without these the passbook shows a
+                // technician "- Rs 269.70" against a job he was paid Rs 899
+                // for, and nothing at all about the Rs 629.30 he kept.
+                .populate("ticket", "ticketNumber serviceLabel billing.totalPaise billing.commissionPaise billing.technicianSharePaise")
                 .lean(),
 
             // Split by source so "earned" means work done, not money moved.
@@ -1797,13 +2034,38 @@ const getWallet = async (req, res) => {
         // they record it" would be telling him about money already dealt
         // with - which is what it did after a visit charge, where the whole
         // amount is his and he owes nothing at all.
-        const pendingSettlements = owedPaise > 0
+        const settlementRows = owedPaise > 0
             ? await Payment.find({
                 collectedBy: techId,
                 ticket: null,
                 status: "collected",
-            }).select("amountPaise createdAt").lean()
+            }).select("amountPaise createdAt razorpayPaymentId razorpayLinkId").lean()
             : [];
+
+        /*
+         * A settlement the office has already put in the ledger is finished,
+         * whatever its row still says.
+         *
+         * Closing the row is the office's job and it now happens when they
+         * record the money, but rows recorded before that are still sitting
+         * there marked "collected" - and one of those blocks online settling
+         * for ever, because nothing may be paid while a settlement is waiting.
+         * Checking the ledger for the same reference is what lets those heal
+         * themselves instead of needing somebody to go in and fix each one.
+         */
+        const recorded = settlementRows.length
+            ? new Set(
+                (await WalletTransaction.find({
+                    technician: techId,
+                    source: "recharge",
+                    reference: { $in: settlementRows.map((r) => r.razorpayPaymentId || r.razorpayLinkId).filter(Boolean) },
+                }).select("reference").lean()).map((t) => t.reference)
+            )
+            : new Set();
+
+        const pendingSettlements = settlementRows.filter(
+            (r) => !recorded.has(r.razorpayPaymentId) && !recorded.has(r.razorpayLinkId)
+        );
 
         const settlementPending = pendingSettlements.length
             ? {
@@ -1907,11 +2169,57 @@ const getWallet = async (req, res) => {
                 // marked, so the screen does not print a running balance
                 // against an entry that never moved one.
                 transactions: [
-                    ...transactions.map((t) => ({
-                        ...t,
-                        amountDisplay: paymentService.paiseToRupees(t.amountPaise),
-                        balanceAfterDisplay: paymentService.paiseToRupees(Math.abs(t.balanceAfterPaise)),
-                    })),
+                    ...transactions.flatMap((t) => {
+                        const row = {
+                            ...t,
+                            amountDisplay: paymentService.paiseToRupees(t.amountPaise),
+                            balanceAfterDisplay: paymentService.paiseToRupees(Math.abs(t.balanceAfterPaise)),
+                            job: jobBehind(t),
+                            ...vendorView(t),
+                        };
+
+                        /*
+                         * A cash job is two things and the ledger only records
+                         * one of them.
+                         *
+                         * The customer hands over the whole bill at the door.
+                         * The technician's own share never touches the company,
+                         * so nothing is written for it - only the office's part
+                         * is, as a debit. Read back, that made a job he had
+                         * just been paid Rs 899 for appear in his passbook as a
+                         * single line taking Rs 269.70 off him, with his
+                         * earnings nowhere on the page.
+                         *
+                         * So the earning is put back as its own line, marked as
+                         * moving no balance because it genuinely does not - the
+                         * money is already in his pocket.
+                         */
+                        const sharePaise = t.source === "job_cash"
+                            ? (t.ticket?.billing?.technicianSharePaise || 0)
+                            : 0;
+
+                        if (!sharePaise) return [row];
+
+                        return [
+                            {
+                                _id: "share-" + t._id,
+                                type: "credit",
+                                source: "job_cash_share",
+                                movesBalance: false,
+                                amountPaise: sharePaise,
+                                amountDisplay: paymentService.paiseToRupees(sharePaise),
+                                ticket: t.ticket,
+                                createdAt: t.createdAt,
+                                job: jobBehind(t),
+                                flow: "in",
+                                title: "Cash job",
+                                note: "Taken in cash, in hand",
+                            },
+                            // The bill is spelled out on the line above, so it
+                            // is not repeated against the part he owes
+                            { ...row, job: null },
+                        ];
+                    }),
                     ...splitJobs.map((t) => ({
                         _id: "settled-" + t._id,
                         type: "credit",
@@ -1925,6 +2233,13 @@ const getWallet = async (req, res) => {
                             : "Your share of " + (t.serviceLabel || "a job") +
                               " #" + t.ticketNumber + " - taken in cash, fully settled",
                         ticket: { ticketNumber: t.ticketNumber, serviceLabel: t.serviceLabel },
+                        job: t.billing?.totalPaise
+                            ? {
+                                billDisplay: paymentService.paiseToRupees(t.billing.totalPaise),
+                                keptDisplay: paymentService.paiseToRupees(t.billing.technicianSharePaise || 0),
+                            }
+                            : null,
+                        ...VENDOR_VIEW[t.refusal?.visitChargeBilled ? "job_visit" : "job_split"],
                         createdAt: t.updatedAt,
                     })),
                 ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50),
@@ -2313,6 +2628,7 @@ module.exports = {
     startScheduledNow,
     createWalletRecharge,
     checkWalletRecharge,
-    verifyPhone,
+    sendSignupOtp,
+    verifySignupOtp,
     checkIfsc
 };

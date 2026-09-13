@@ -1,6 +1,5 @@
 const axios = require("axios");
 const WebSocket = require("ws");
-const { GoogleGenAI } = require("@google/genai");
 
 /**
  * The voice stack, kept apart from everything else.
@@ -9,10 +8,10 @@ const { GoogleGenAI } = require("@google/genai");
  * them belongs in the WhatsApp assistant: Sarvam turns speech into text and
  * text back into speech, because it handles Odia and Indian-accented Hindi far
  * better than the general-purpose engines; Gemini decides what to say; and
- * Twilio carries the line, which lives in the controller because it is HTTP,
+ * Exotel carries the line, which lives in the controller because it is HTTP,
  * not intelligence.
  *
- * Nothing here knows about Twilio, tickets or webhooks. It takes audio and a
+ * Nothing here knows about the carrier, tickets or webhooks. It takes audio and a
  * conversation and gives back words and audio, so the same file serves an
  * outbound call today and an inbound one later without being rewritten.
  */
@@ -30,7 +29,14 @@ const SARVAM_BASE = process.env.SARVAM_BASE_URL || "https://api.sarvam.ai";
  */
 const MODEL = process.env.GEMINI_VOICE_MODEL || "gemini-3.1-flash-lite";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+/*
+ * The key comes from the ring rather than from the environment.
+ *
+ * Same call, same answer - what changes is that a key the provider has
+ * refused for quota is stepped past instead of failing everything at once,
+ * and what each key has been spent on is countable in the office.
+ */
+const keyring = require("./keyring.service");
 
 /** Sarvam speaks these; the app's three languages map onto them. */
 const SARVAM_LANG = {
@@ -41,7 +47,9 @@ const SARVAM_LANG = {
 
 const langCode = (language) => SARVAM_LANG[language] || SARVAM_LANG.odenglish;
 
-const isVoiceReady = () => Boolean(SARVAM_KEY && process.env.GEMINI_API_KEY);
+// Gemini may come from the ring now rather than from the environment, so the
+// question is whether a key exists at all, not whether one variable is set
+const isVoiceReady = () => Boolean(SARVAM_KEY && keyring.seemsConfigured());
 
 /* ================= SPEECH IN ================= */
 
@@ -61,6 +69,7 @@ const transcribe = async (audio, language) => {
         form.append("language_code", langCode(language));
         form.append("model", process.env.SARVAM_STT_MODEL || "saaras:v3");
 
+        keyring.count("sarvam");
         const res = await axios.post(SARVAM_BASE + "/speech-to-text", form, {
             headers: { "api-subscription-key": SARVAM_KEY },
             timeout: 15000,
@@ -431,13 +440,14 @@ const listenStream = (language) => {
 /**
  * The line to play down the phone, as a base64 wav.
  *
- * Null on failure, and the caller is expected to fall back to Twilio's own
+ * Null on failure, and the caller is expected to fall back to the carrier's own
  * <Say>. A robotic voice reading the right sentence beats a silent line.
  */
 const speak = async (text, language) => {
     if (!SARVAM_KEY || !String(text || "").trim()) return null;
 
     try {
+        keyring.count("sarvam");
         const res = await axios.post(
             SARVAM_BASE + "/text-to-speech",
             {
@@ -917,7 +927,7 @@ const nextTurn = async ({ purpose, turns, context, language }) => {
     const tool = TOOLS[purpose];
 
     try {
-        const res = await ai.models.generateContent({
+        const res = await keyring.generate({
             model: MODEL,
             contents: turns,
             config: {

@@ -5,7 +5,17 @@ const ticketSchema = new mongoose.Schema({
     // Human readable - the office can't read an ObjectId out over the phone
     ticketNumber: { type: String, unique: true, index: true },
 
-    channel: { type: String, enum: ["whatsapp", "web"], default: "whatsapp" },
+    /**
+     * Where the job was booked from.
+     *
+     * "app" is the customer's Android app, and it was missing: the booking
+     * service has always stamped tickets with it, so every booking made in the
+     * app failed validation and came back to the customer as an internal
+     * server error. It is a real channel and it behaves like WhatsApp rather
+     * than like "web" - the customer is reachable on their number, so the
+     * codes and the invoice still go out to them there.
+     */
+    channel: { type: String, enum: ["whatsapp", "web", "app"], default: "whatsapp" },
 
     customer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 

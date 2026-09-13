@@ -6,6 +6,8 @@ const connectDB = require("./src/config/db");
 const initSocketServer = require("./src/sockets/socketManager");
 const initVoicebotServer = require("./src/sockets/voicebot.socket");
 const { promoteDueScheduledTickets } = require("./src/services/dispatch.service");
+const catalog = require("./src/services/catalog.service");
+const keyring = require("./src/services/keyring.service");
 
 const PORT = process.env.PORT || 3000;
 const httpServer = createServer(app);
@@ -13,6 +15,16 @@ const httpServer = createServer(app);
 const startServer = async () => {
     // DB first - otherwise the server accepts requests it can't answer
     await connectDB();
+
+    // The catalogue moves from the file into the database on first boot and is
+    // read back into memory on every boot after that, so the WhatsApp menu, the
+    // assistant and the website all see whatever the office last changed
+    await catalog.init();
+
+    // And the keys, so anything asking "is the assistant configured?" before
+    // the first model call has a real answer rather than an empty ring
+    await keyring.warm();
+
     initSocketServer(httpServer);
 
     // Exotel talks to the voicebot over a raw WebSocket on its own path, so it

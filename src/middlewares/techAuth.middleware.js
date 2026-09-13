@@ -3,7 +3,19 @@ const technicianModel = require("../models/technician.model");
 
 const isTechAuthenticated = async (req, res, next) => {
     try {
-        const token = req.cookies?.techToken;
+        /**
+         * A cookie for the browser, a header for the phone.
+         *
+         * The web panel signs in and the browser carries an httpOnly cookie on
+         * every request afterwards, which is the safer arrangement and stays.
+         * A React Native app has no cookie jar worth relying on, so it keeps
+         * the token itself and sends it as a bearer header. Same token, same
+         * signature, same checks below - only the way it arrives differs.
+         */
+        const header = req.headers.authorization || "";
+        const bearer = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+        const token = req.cookies?.techToken || bearer;
+
         if (!token) {
             return res.status(401).json({ success: false, message: "Unauthorized: Please login first" });
         }

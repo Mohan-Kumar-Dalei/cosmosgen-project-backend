@@ -4,6 +4,10 @@ const rateLimit = require("express-rate-limit");
 
 const { isAdminAuthenticated, isSuperAdmin } = require("../middlewares/adminAuth.middleware");
 const adminController = require("../controllers/admin.controller");
+const serviceAdmin = require("../controllers/serviceAdmin.controller");
+const siteImage = require("../controllers/siteImage.controller");
+const keyAdmin = require("../controllers/apiKey.controller");
+const upload = require("../middlewares/multer");
 
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -41,6 +45,38 @@ router.post("/technicians/:id/reject", isAdminAuthenticated, adminController.rej
 
 // Pricing
 router.get("/pricing", isAdminAuthenticated, adminController.getPricingList);
+/* ---------- THE CATALOGUE ----------
+   What the company sells is the office's to change, not a developer's. Reading
+   it is open to any admin; changing it is the owner's, because a service added
+   here appears on the website, in the WhatsApp menu and in the assistant's
+   prompt the moment it is saved. */
+router.get("/services", isAdminAuthenticated, serviceAdmin.listServices);
+router.post("/services/draft", isAdminAuthenticated, isSuperAdmin, serviceAdmin.draftService);
+router.post("/services", isAdminAuthenticated, isSuperAdmin, upload.single("image"), serviceAdmin.createService);
+router.put("/services/:key", isAdminAuthenticated, isSuperAdmin, upload.single("image"), serviceAdmin.updateService);
+router.delete("/services/:key", isAdminAuthenticated, isSuperAdmin, serviceAdmin.removeService);
+
+/* ---------- THE PICTURES ----------
+   Every drawing the customer site shows, in one place, saved either by
+   uploading a file or by pasting the ImageKit link it already has. The owner's
+   decision rather than the desk's: these are the first thing anybody sees. */
+router.get("/images", isAdminAuthenticated, isSuperAdmin, siteImage.listImages);
+router.put("/images/appliance/:key/:appliance", isAdminAuthenticated, isSuperAdmin, upload.single("image"), siteImage.saveApplianceImage);
+router.put("/images/:slot", isAdminAuthenticated, isSuperAdmin, upload.single("image"), siteImage.saveSiteImage);
+
+/* ---------- THE KEYS ----------
+   Which API key the platform is spending, how much of it is left, and what to
+   fall back to when a free tier runs out. Owner only, and the key itself is
+   never sent back to the browser. */
+router.get("/keys", isAdminAuthenticated, isSuperAdmin, keyAdmin.listKeys);
+router.post("/keys", isAdminAuthenticated, isSuperAdmin, keyAdmin.addKey);
+router.post("/keys/reveal", isAdminAuthenticated, isSuperAdmin, keyAdmin.revealKey);
+router.post("/keys/:id/test", isAdminAuthenticated, isSuperAdmin, keyAdmin.testKey);
+router.post("/keys/:id/promote", isAdminAuthenticated, isSuperAdmin, keyAdmin.promoteKey);
+router.post("/keys/:id/reset", isAdminAuthenticated, isSuperAdmin, keyAdmin.resetKey);
+router.put("/keys/:id", isAdminAuthenticated, isSuperAdmin, keyAdmin.updateKey);
+router.delete("/keys/:id", isAdminAuthenticated, isSuperAdmin, keyAdmin.removeKey);
+
 router.post("/pricing/:serviceKey/items", isAdminAuthenticated, adminController.addPricingItem);
 router.put("/pricing/:serviceKey/items/:itemId", isAdminAuthenticated, adminController.updatePricingItem);
 router.delete("/pricing/:serviceKey/items/:itemId", isAdminAuthenticated, adminController.deletePricingItem);

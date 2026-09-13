@@ -10,6 +10,7 @@ const technicianRoutes = require("./routes/technician.routes");
 const trackRoutes = require("./routes/track.routes");
 const voiceRoutes = require("./routes/voice.routes");
 const mapRoutes = require("./routes/map.routes");
+const customerRoutes = require("./routes/customer.routes");
 const adminRoutes = require("./routes/admin.routes");
 const webhookRoutes = require("./routes/webhook.routes");
 const whatsappRoutes = require("./routes/whatsapp.routes");
@@ -44,7 +45,7 @@ app.use(cors({
 /* fails. Each of these routers applies express.raw() itself.           */
 /* ------------------------------------------------------------------ */
 app.use("/api/webhook", webhookRoutes);
-// Twilio, like the payment webhooks, cannot sign in and must not be
+// The carrier, like the payment webhooks, cannot sign in and must not be
 // rate limited alongside ordinary browser traffic - a busy afternoon of
 // calls would otherwise start dropping mid-conversation.
 app.use("/api/voice", voiceRoutes);
@@ -70,12 +71,29 @@ app.get("/", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/customer", customerRoutes);
 app.use("/api/track", trackRoutes);
 app.use("/api/technician", technicianRoutes);
 app.use("/api/map", mapRoutes);
 app.use("/api/admin", adminRoutes);
 
 app.use((req, res) => {
+    /**
+     * The voicebot's socket path, asked for as an ordinary request.
+     *
+     * That path only answers WebSocket upgrades, so anything else - a browser
+     * opened to check the tunnel, or a provider probing the URL before it
+     * connects - fell through to here and was told the route does not exist.
+     * It does exist, and saying so is the difference between "my server is
+     * broken" and "this URL is fine, it just needs a websocket".
+     */
+    if (req.path === "/voice-stream") {
+        return res.status(200).json({
+            success: true,
+            message: "Voicebot socket is live here. Connect with a WebSocket, not a GET.",
+        });
+    }
+
     res.status(404).json({ success: false, message: "Route not found" });
 });
 

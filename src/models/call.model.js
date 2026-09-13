@@ -37,7 +37,7 @@ const callSchema = new mongoose.Schema({
 
     language: { type: String, enum: ["english", "hinglish", "odenglish"], default: "odenglish" },
 
-    // Twilio's id for the call, so a support question can be traced to their
+    // The carrier's id for the call, so a support question can be traced to their
     // console without guessing from timestamps
     providerCallSid: { type: String, index: true, sparse: true },
 

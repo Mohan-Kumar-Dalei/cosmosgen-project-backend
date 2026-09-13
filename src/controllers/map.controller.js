@@ -22,6 +22,7 @@ const setCache = (key, value) => {
 };
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+const keyring = require("../services/keyring.service");
 
 // Every response we build for the frontend keeps the same shape the old
 // Nominatim version returned, so nothing downstream had to change.
@@ -78,6 +79,7 @@ const lookupPlace = async (lat, lon) => {
     const cached = getCache(key);
     if (cached) return cached;
 
+    keyring.count("google");
     const response = await axios.get("https://maps.googleapis.com/maps/api/geocode/json", {
         params: {
             latlng: `${lat},${lon}`,
@@ -179,6 +181,7 @@ const searchPlaces = async (req, res) => {
         };
         if (sessionToken) body.sessionToken = sessionToken;
 
+        keyring.count("google");
         const response = await axios.post(
             "https://places.googleapis.com/v1/places:autocomplete",
             body,
@@ -239,6 +242,7 @@ const placeDetails = async (req, res) => {
             return res.status(200).json({ success: true, cached: true, data: cached });
         }
 
+        keyring.count("google");
         const response = await axios.get(
             `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`,
             {

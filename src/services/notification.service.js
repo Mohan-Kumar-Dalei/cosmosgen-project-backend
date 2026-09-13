@@ -1,4 +1,3 @@
-const routeService = require("./route.service");
 const whatsapp = require("./whatsapp.service");
 const ticketModel = require("../models/ticket.model");
 const trackController = require("../controllers/track.controller");
@@ -127,23 +126,24 @@ const notifyCustomerWorkStarted = async (ticket) => {
 };
 
 /**
- * Technician has left for the job. The ETA here is read off the ticket, not
- * recomputed - startRide already paid for that route call.
+ * Technician has left for the job.
+ *
+ * No estimated arrival time any more. A printed estimate is a promise that
+ * goes stale the moment traffic does - the customer holds you to a number that
+ * was true when the vendor set off, and the correction never comes. The
+ * tracking link replaces it: it shows where the vendor actually is, and keeps
+ * being right without anybody having to send anything.
  */
 const notifyCustomerTechnicianEnRoute = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
-    const eta = routeService.formatEta(ticket.ride?.etaSeconds);
+    const link = await ensureTrackingLink(ticket);
 
     let text =
         (tech.name || "Your technician") + " is on the way to you.\n\n" +
         "Ticket: " + ticket.ticketNumber + "\n" +
         "Service: " + ticket.serviceLabel + "\n";
 
-    // No ETA line at all when the route call failed. A vague "soon" reads as
-    // evasive, and a wrong number is worse than none.
-    if (eta) {
-        text += "Estimated arrival: " + eta + "\n";
-    }
+    if (link) text += "\nFollow them here:\n" + link + "\n";
 
     text += "\nReply here if you need to reach us.";
 

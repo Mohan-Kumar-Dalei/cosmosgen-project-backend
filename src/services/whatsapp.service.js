@@ -1,12 +1,17 @@
 const axios = require("axios");
+const keyring = require("./keyring.service");
 
 const GRAPH_URL = "https://graph.facebook.com/v21.0";
 
 const isConfigured = () =>
     Boolean(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID);
 
-const client = () =>
-    axios.create({
+const client = () => {
+    // Every send builds one of these, so this is the honest place to
+    // count what the WhatsApp number is being asked to do today
+    keyring.count("meta");
+
+    return axios.create({
         baseURL: `${GRAPH_URL}/${process.env.WHATSAPP_PHONE_NUMBER_ID}`,
         headers: {
             Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
@@ -14,6 +19,7 @@ const client = () =>
         },
         timeout: 10000,
     });
+};
 
 // India ke numbers ke liye 91 prefix. WhatsApp bina + ke chahta hai.
 const formatPhone = (phone) => {
@@ -35,7 +41,18 @@ const sendText = async (to, body) => {
             type: "text",
             text: { preview_url: false, body },
         });
-        console.log("[WA] Sent text to", to);
+        /**
+         * "accepted" is not "delivered".
+         *
+         * Meta answers 200 and hands back a message id for anything it will
+         * take, including a free-form message to somebody outside the
+         * twenty four hour window - who will never receive it. The status it
+         * returns is the only hint in the response, so it is printed rather
+         * than swallowed: a log that says "Sent" while nothing arrives is
+         * worse than no log at all.
+         */
+        const status = data?.messages?.[0]?.message_status;
+        console.log("[WA] Sent text to " + to + (status ? " (" + status + ")" : ""));
         return data;
     } catch (error) {
         // Meta's error body says exactly what's wrong - wrong id, expired

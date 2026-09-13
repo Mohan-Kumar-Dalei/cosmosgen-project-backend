@@ -1,20 +1,25 @@
-const { GoogleGenAI } = require("@google/genai");
 const Ticket = require("../models/ticket.model");
 const UserModel = require("../models/user.model");
 const { SERVICE_CATALOG, getServiceByKey } = require("../config/services");
 const { copyFor } = require("../config/copy");
 const notification = require("./notification.service");
+const booking = require("./booking.service");
 const voiceController = require("../controllers/voice.controller");
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+/*
+ * The key comes from the ring rather than from the environment.
+ *
+ * Same call, same answer - what changes is that a key the provider has
+ * refused for quota is stepped past instead of failing everything at once,
+ * and what each key has been spent on is countable in the office.
+ */
+const keyring = require("./keyring.service");
 // Configurable because it is the single biggest lever on how well the
 // assistant actually converses. A "-lite" model follows the mechanical parts
 // of the instruction below and drops the parts that need judgement - it read
 // "yes, but why?" as consent and booked a job nobody had agreed to.
 const MODEL_NAME = process.env.GEMINI_CHAT_MODEL || "gemini-3.1-flash-lite";
 
-const OPEN_STATUSES = ["Pending", "Queued", "Assigned", "In-Progress", "Payment-Pending"];
-const MAX_OPEN_TICKETS = 3;
 
 const createTicketTool = {
     name: "create_service_request",
@@ -414,128 +419,84 @@ const buildCustomerRecord = async (userId) => {
     return "\nCUSTOMER RECORD (live, as of right now):\n" + lines.join("\n") + "\n";
 };
 
+/**
+ * The assistant's side of booking: ask the booking service, then say it.
+ *
+ * The rules themselves - how many open jobs are allowed, what counts as a
+ * duplicate, whether the location is good enough - moved into
+ * booking.service.js when the app needed to book too. Two copies of a rule is
+ * one copy that is wrong, so this now only turns the answer into something the
+ * model can read back to the customer.
+ */
 const handleCreateTicket = async (args, userData, userLocation) => {
-    const service = getServiceByKey(args.serviceKey);
-    if (!service) {
+    const result = await booking.bookJob({
+        customerId: userData?._id || userData?.id,
+        serviceKey: args.serviceKey,
+        selectedIssues: args.selectedIssues,
+        problemDescription: args.problemDescription,
+        channel: userData.channel || "whatsapp",
+        location: userLocation,
+    });
+
+    if (result.ok) {
+        return {
+            status: "success",
+            ticketNumber: result.ticket.ticketNumber,
+            workerRole: result.service.worker,
+            message: "Request registered. The team is checking availability.",
+        };
+    }
+
+    if (result.code === "unknown_service") {
         return { status: "failed", message: "Unknown service category." };
     }
-
-    const userId = userData?._id || userData?.id;
-    const realUser = await UserModel.findById(userId);
-    if (!realUser) {
+    if (result.code === "no_profile") {
         return { status: "failed", message: "User profile not found." };
     }
-
-    if (userLocation && Number.isFinite(Number(userLocation.lat)) && Number.isFinite(Number(userLocation.lon))) {
-        realUser.lat = Number(userLocation.lat);
-        realUser.lon = Number(userLocation.lon);
-        realUser.location = { type: "Point", coordinates: [realUser.lon, realUser.lat] };
-        if (userLocation.area) realUser.area = userLocation.area;
-        if (userLocation.state) realUser.state = userLocation.state;
-        if (userLocation.address) realUser.address = userLocation.address;
-        await realUser.save();
-    }
-
-    if (!Number.isFinite(realUser.lat) || !Number.isFinite(realUser.lon)) {
+    if (result.code === "no_location") {
         return { status: "failed", message: "Customer location is missing." };
     }
 
-    // A customer can have several jobs running - an AC repair and a house
-    // cleaning are unrelated. Only block a second request for the SAME
-    // service, since that's the one that's genuinely a duplicate.
-    const openTickets = await Ticket.find({
-        customer: realUser._id,
-        status: { $in: OPEN_STATUSES },
-    })
-        .select("ticketNumber status serviceKey serviceLabel technicianSnapshot scheduling")
-        .lean();
-
-    const sameService = openTickets.find((t) => t.serviceKey === service.key);
-
-    if (sameService) {
-        const tech = sameService.technicianSnapshot || {};
-        const scheduledFor = sameService.scheduling?.scheduledFor;
-
-        const stageNote = {
-            Pending: "Our team is finding the right person. You'll get their details shortly.",
-            Queued: tech.name
-                ? tech.name + " is booked for this and will reach you at the scheduled time."
-                : "Someone is booked for this job.",
-            Assigned: tech.name
-                ? tech.name + " has been assigned and is on the way."
-                : "Someone has been assigned and is on the way.",
-            "In-Progress": "They're at your place working on it right now.",
-            "Payment-Pending": "The work is done - only the payment is left.",
-        }[sameService.status] || "Your request is being handled.";
-
-        return {
-            status: "already_booked",
-            ticketNumber: sameService.ticketNumber,
-            ticketStage: sameService.status,
-            service: sameService.serviceLabel,
-            workerRole: service.worker,
-            technicianName: tech.name || null,
-            technicianPhone: tech.phone || null,
-            scheduledFor: scheduledFor
-                ? new Date(scheduledFor).toLocaleDateString("en-IN", { day: "numeric", month: "short" })
-                : null,
-            stageNote,
-            message: "Customer already has an open request for this same service. Tell them where it stands. They can still book a different service.",
-        };
-    }
-
-    if (openTickets.length >= MAX_OPEN_TICKETS) {
+    if (result.code === "limit_reached") {
         return {
             status: "limit_reached",
-            openCount: openTickets.length,
-            openServices: openTickets.map((t) => t.serviceLabel).join(", "),
-            message: "Customer already has " + MAX_OPEN_TICKETS + " open requests. Ask them to wait until one is finished.",
+            openCount: result.openCount,
+            openServices: result.openServices.join(", "),
+            message: "Customer already has " + booking.MAX_OPEN + " open requests. Ask them to wait until one is finished.",
         };
     }
 
-    const ticket = await Ticket.create({
-        channel: userData.channel || "whatsapp",
-        customer: realUser._id,
-        customerSnapshot: {
-            name: realUser.name,
-            phone: realUser.phone,
-            address: realUser.address,
-            area: realUser.area,
-            state: realUser.state,
-            lat: realUser.lat,
-            lon: realUser.lon,
-        },
-        location: { type: "Point", coordinates: [realUser.lon, realUser.lat] },
-        serviceKey: service.key,
-        serviceLabel: service.label,
-        selectedIssues: Array.isArray(args.selectedIssues) ? args.selectedIssues : [],
-        problemDescription: args.problemDescription,
-        status: "Pending",
-        statusHistory: [{ to: "Pending", actorRole: "ai", at: new Date() }],
-    });
+    // already_booked - tell them where the existing one stands rather than
+    // refusing flatly, which reads as the booking having failed
+    const existing = result.ticket;
+    const tech = existing.technicianSnapshot || {};
+    const scheduledFor = existing.scheduling?.scheduledFor;
 
-    notification.notifyAdminsNewTicket(ticket);
-
-    /**
-     * Ring them straight away, before anybody is committed to the job.
-     *
-     * The whole point of this call is to find out whether somebody will be at
-     * the address, so it has to happen while the ticket is still unassigned -
-     * a call placed after a technician is on it has missed its purpose.
-     *
-     * Not awaited: the customer is waiting on this reply in WhatsApp, and a
-     * phone call takes a minute. The answer lands on the ticket by the time
-     * the office looks at it, and the phone button there does the same thing
-     * by hand for a booking worth confirming twice.
-     */
-    voiceController.placeCall({ ticket, purpose: "availability" })
-        .catch((err) => console.error("[VOICE] availability call failed:", err.message));
+    const stageNote = {
+        Pending: "Our team is finding the right person. You'll get their details shortly.",
+        Queued: tech.name
+            ? tech.name + " is booked for this and will reach you at the scheduled time."
+            : "Someone is booked for this job.",
+        Assigned: tech.name
+            ? tech.name + " has been assigned and is on the way."
+            : "Someone has been assigned and is on the way.",
+        "In-Progress": "They're at your place working on it right now.",
+        "Payment-Pending": "The work is done - only the payment is left.",
+    }[existing.status] || "Your request is being handled.";
 
     return {
-        status: "success",
-        ticketNumber: ticket.ticketNumber,
-        workerRole: service.worker,
-        message: "Request registered. The team is checking availability.",
+        status: "already_booked",
+        ticketNumber: existing.ticketNumber,
+        ticketStage: existing.status,
+        service: existing.serviceLabel,
+        workerRole: result.service.worker,
+        technicianName: tech.name || null,
+        technicianPhone: tech.phone || null,
+        scheduledFor: scheduledFor
+            ? new Date(scheduledFor).toLocaleDateString("en-IN", { day: "numeric", month: "short" })
+            : null,
+        stageNote,
+        message: "Customer already has an open request for this same service. Tell them where it stands. They can still book a different service.",
     };
 };
 
@@ -612,7 +573,7 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
             temperature: 0.3,
         };
 
-        const response = await ai.models.generateContent({ model: MODEL_NAME, contents, config });
+        const response = await keyring.generate({ model: MODEL_NAME, contents, config });
         const functionCall = response.functionCalls?.[0];
 
         if (!functionCall || functionCall.name !== "create_service_request") {
@@ -640,7 +601,7 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
             { role: "user", parts: [{ functionResponse: { name: functionCall.name, response: toolResult } }] },
         ];
 
-        const finalResponse = await ai.models.generateContent({
+        const finalResponse = await keyring.generate({
             model: MODEL_NAME,
             contents: followUp,
             config: { ...config, temperature: 0.4 },
@@ -669,7 +630,7 @@ async function generateVector(content) {
     if (!content || (typeof content === "string" && !content.trim())) return [];
 
     try {
-        const response = await ai.models.embedContent({
+        const response = await keyring.embed({
             model: "gemini-embedding-001",
             contents: content,
             config: { outputDimensionality: 768 },

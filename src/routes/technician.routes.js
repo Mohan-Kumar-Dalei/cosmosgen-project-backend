@@ -35,7 +35,11 @@ const ifscLimiter = rateLimit({
 });
 
 /* ---------- REGISTRATION ---------- */
-router.post("/verify-phone", otpLimiter, technicianController.verifyPhone);
+
+// A new vendor is verified over WhatsApp, from the app and the web panel
+// alike - six digits this server issued and checks itself
+router.post("/signup-otp", otpLimiter, technicianController.sendSignupOtp);
+router.post("/signup-otp/verify", otpLimiter, technicianController.verifySignupOtp);
 router.get("/ifsc/:code", ifscLimiter, technicianController.checkIfsc);
 router.post("/register", registerLimiter, upload.single("profileImage"), technicianController.registerTechnician);
 
