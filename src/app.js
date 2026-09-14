@@ -97,4 +97,38 @@ app.use((req, res) => {
     res.status(404).json({ success: false, message: "Route not found" });
 });
 
+/**
+ * The last word, and it is always JSON.
+ *
+ * Without this Express answers an unhandled error with its own HTML page. The
+ * apps and the panels all read `data.message` to decide what to put on screen,
+ * find nothing in a page of markup, and fall back to their own vague line -
+ * so a precise failure on the server arrived as "Could not send your
+ * application" with no way to tell what had actually gone wrong.
+ *
+ * Multer is the one that made this worth fixing. It rejects a malformed
+ * upload - a multipart body whose boundary is missing, a file over the limit -
+ * by throwing, and every one of those was reaching the phone as a bare 500.
+ */
+app.use((err, req, res, _next) => {
+    console.error("Unhandled error on " + req.method + " " + req.originalUrl + ":", err);
+
+    if (res.headersSent) return;
+
+    const upload = {
+        LIMIT_FILE_SIZE: "That image is too large. Please choose a smaller one.",
+        LIMIT_UNEXPECTED_FILE: "That file was not expected here.",
+    }[err?.code];
+
+    // A boundary the client never wrote, which is a malformed request rather
+    // than a server fault - say so with a 400 instead of a blank 500
+    const malformed = /boundary/i.test(err?.message || "");
+
+    res.status(upload || malformed ? 400 : err?.status || 500).json({
+        success: false,
+        message: upload
+            || (malformed ? "That upload was not readable. Please try again." : "Internal Server Error"),
+    });
+});
+
 module.exports = app;
