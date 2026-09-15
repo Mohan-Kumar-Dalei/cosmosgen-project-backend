@@ -28,6 +28,47 @@ const isRegistered = (user) =>
         && user.pincode
     );
 
+/**
+ * Whether this number has an account somebody typed their own name into.
+ *
+ * The first half of the gate WhatsApp now stands behind. Deliberately not
+ * `isRegistered` above: that one is the full dispatch record, language
+ * included, and language is a preference the app never asks for - a customer
+ * who registered properly on the app would have failed it and been sent back
+ * to register all over again.
+ */
+const hasAppAccount = (user) => Boolean(user && user.nameConfirmedAt);
+
+/**
+ * Whether we know where to send somebody.
+ *
+ * A dropped pin and nothing else will do. It is tempting to accept a written
+ * address instead - it reads like an address, after all - but dispatch finds
+ * the nearest vendor by distance and refuses a booking with no coordinates
+ * (booking.service.js). Accepting one here would let a customer through the
+ * gate, through the whole conversation, and into a booking that cannot be
+ * made, on a channel that no longer has any way to ask them for a pin.
+ */
+const hasPin = (user) => Boolean(user && Number.isFinite(user.lat) && Number.isFinite(user.lon));
+
+/** Both halves: an account, and somewhere to send an engineer. */
+const isAppRegistered = (user) => hasAppAccount(user) && hasPin(user);
+
+/**
+ * Where we would send somebody, in the few words a person would use.
+ *
+ * Read back to the customer on WhatsApp so they can see what we hold before a
+ * job is raised against it. The pincode is left off on purpose - it confirms
+ * nothing to the person who lives there and only makes the line longer.
+ */
+const whereWeSend = (user) => {
+    const parts = [user?.area, user?.city].filter(Boolean);
+    if (parts.length) return parts.join(", ");
+
+    const written = String(user?.address || "").trim();
+    return written.length > 60 ? written.slice(0, 57).trimEnd() + "..." : written;
+};
+
 /** Named so a caller can ask for exactly the one thing still missing. */
 const missingFrom = (user) => {
     if (!user) return "everything";
@@ -117,4 +158,4 @@ const applyLocation = async (phone, { lat, lon, fallbackAddress = "", name } = {
         .lean();
 };
 
-module.exports = { isRegistered, missingFrom, describeLocation, applyLocation };
+module.exports = { isRegistered, isAppRegistered, hasAppAccount, hasPin, whereWeSend, missingFrom, describeLocation, applyLocation };

@@ -21,11 +21,26 @@
 
 const COPY = {
     english: {
+        appNeedsLocation: "You have a Cosmosgen account, but no location saved on it." + "\n\n" +
+            "Open the app, tap Use my current location while you are standing at the door, and save. " +
+            "That pin is how the office finds somebody near you - without it a job cannot be sent anywhere.",
+        /*
+         * The one thing WhatsApp says to a number it does not know.
+         *
+         * It asks for nothing - not a name, not a pin. Registration happens
+         * once, on the app, and this says why rather than simply refusing: a
+         * customer told to install an app walks away, a customer told what it
+         * saves them usually does it.
+         */
+        appOnly: "To book with Cosmosgen you need an account on our app." + "\n\n" +
+            "Register there once - that is where you set the address an engineer is sent to, " +
+            "so we never have to ask for your location here. Then message me again and we will carry on.",
+        welcomeVerified: (name, place) =>
+            "Verified: " + name + (place ? " - " + place : "") + "." + "\n\n" +
+            "Welcome to Cosmosgen services. If that is not where you want somebody sent, " +
+            "change the address in the app.",
+        alreadyHaveLocation: "No need for that - we already use the address you saved on the app, and that is where somebody will be sent.",
         languageDone: (name) => "Done. We will chat in " + name + ".",
-        askName: "Now type your full name. (For example: Vicky Sahoo)",
-        nameRetry: "Sorry, I didn't catch that. Please type your name in letters - for example, Vicky Sahoo.",
-        namePlease: "Please type your full name to carry on.",
-        thanksName: (first) => "Thanks, " + first + ".",
         welcomeBack: (name) => "Hi" + name + "! Welcome back to Cosmosgen.",
         serviceBody: "What do you need help with today?",
         serviceButton: "Choose service",
@@ -41,11 +56,17 @@ const COPY = {
     },
 
     hinglish: {
+        appNeedsLocation: "Aapka Cosmosgen account hai, par usme location save nahi hai." + "\n\n" +
+            "App kholiye, darwaze par khade hokar Use my current location dabaiye aur save kar dijiye. " +
+            "Usi pin se office aapke paas wala banda dhoondta hai - uske bina job kahin bheja hi nahi ja sakta.",
+        appOnly: "Cosmosgen se booking ke liye aapko hamare app par account banana hoga." + "\n\n" +
+            "Ek baar register kar lijiye - wahin wo address set hota hai jahan engineer bheja jayega, " +
+            "isliye yahan baar baar location maangni nahi padti. Uske baad yahan message kijiye, hum aage badh jayenge.",
+        welcomeVerified: (name, place) =>
+            "Verify ho gaya: " + name + (place ? " - " + place : "") + "." + "\n\n" +
+            "Cosmosgen services mein aapka swagat hai. Agar wahan nahi bhijwana hai toh app mein address badal lijiye.",
+        alreadyHaveLocation: "Iski zaroorat nahi - jo address aapne app mein save kiya hai wahi hum use karte hain, aur wahin bheja jayega.",
         languageDone: (name) => "Theek hai, hum " + name + " mein baat karenge.",
-        askName: "Ab apna poora naam likh kar bhejein. (Jaise: Vicky Sahoo)",
-        nameRetry: "Maaf kijiye, samajh nahi aaya. Kripya naam akshron mein likhein - jaise Vicky Sahoo.",
-        namePlease: "Aage badhne ke liye apna poora naam likhein.",
-        thanksName: (first) => "Shukriya, " + first + ".",
         welcomeBack: (name) => "Hi" + name + "! Cosmosgen mein wapas swagat hai.",
         serviceBody: "Aaj aapko kis cheez mein madad chahiye?",
         serviceButton: "Choose service",
@@ -61,11 +82,17 @@ const COPY = {
     },
 
     odenglish: {
+        appNeedsLocation: "Apananka Cosmosgen account achhi, kintu sethire location save heini." + "\n\n" +
+            "App kholantu, duara pakhare thai Use my current location tipantu ebang save karantu. " +
+            "Sei pin dwara hin office apananka pakhara loka khoje - taha bina kaam kouthiku pathajai paribani.",
+        appOnly: "Cosmosgen re booking pain apananka ama app re account darkar." + "\n\n" +
+            "Thare register kari nianTu - sethire sei thikana set heba jouthiku engineer pathajiba, " +
+            "tenu ethire barambara location puchhiba darkar pade nahin. Tarapare ethire message karantu, ame agaku jiba.",
+        welcomeVerified: (name, place) =>
+            "Verify heigala: " + name + (place ? " - " + place : "") + "." + "\n\n" +
+            "Cosmosgen services ku swagata. Jadi sethire pathaibaku chahuni, app re thikana badalantu.",
+        alreadyHaveLocation: "Darkar nahin - apana app re save karithiba thikana ame byabahara karu, ebang sethiku hin kehi jibe.",
         languageDone: (name) => "Thik achhi, ame " + name + " re katha heba.",
-        askName: "Ebe apananka pura nama lekhi pathantu.",
-        nameRetry: "Kshama karibe, mun bujhi parili nahin. Dayakari akhyara re nama lekhantu - jemiti Vicky Sahoo.",
-        namePlease: "Agaku jibaku apananka pura nama lekhantu.",
-        thanksName: (first) => "Dhanyabad, " + first + ".",
         welcomeBack: (name) => "Namaskar" + name + "! Cosmosgen ku punarbara swagata.",
         serviceBody: "Aji apananka kou bisayare sahajya darkar?",
         serviceButton: "Choose service",

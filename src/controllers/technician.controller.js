@@ -17,7 +17,7 @@ const whatsapp = require("../services/whatsapp.service");
 const voiceController = require("./voice.controller");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
 const rideService = require("../services/ride.service");
-const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
+const { emitToRoom, userRoom, techRoom, adminRoom, dropRoom } = require("../sockets/socket.instance");
 const walletService = require("../services/wallet.service");
 const settingsService = require("../services/settings.service");
 const { estimateGatewayFee } = require("../config/razorpay");
@@ -704,6 +704,10 @@ const deleteTechProfile = async (req, res) => {
             // The clock the office sees, and the one Mongo's TTL index reads
             deletedAt: new Date(),
         });
+
+        // The cookie goes, and so does the live socket - which the cookie
+        // has no say over, having been authorised when it opened
+        dropRoom(techRoom(techId));
 
         res.clearCookie("techToken", clearOptions);
         return res.status(200).json({ success: true, message: "Account deleted successfully" });

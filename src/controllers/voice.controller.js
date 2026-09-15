@@ -200,7 +200,32 @@ const contextFor = (ticket, purpose) => {
     ];
 
     if (purpose === "feedback" && tech.name) lines.push("Technician who came: " + tech.name);
-    if (purpose === "availability" && customer.area) lines.push("Address area: " + customer.area);
+
+    /*
+     * Where we are already sending somebody, said plainly, on the call that
+     * decides whether anybody sets off.
+     *
+     * The snapshot is taken off the customer's account when the job is booked,
+     * and the account is the one place an address is set now - so the call has
+     * it and must never ask for it. It used to get the area alone, which was
+     * not enough to confirm anything with, and the old voice prompt told the
+     * model outright that it had no location and should ask for an area and a
+     * landmark. That is exactly the repeated asking Mohan wanted gone, and on
+     * a line where speech recognition mangles addresses it was also the least
+     * reliable way to learn one.
+     */
+    if (purpose === "availability") {
+        const where = [customer.address, customer.area, customer.state]
+            .map((part) => String(part || "").trim())
+            .filter(Boolean);
+
+        // The written address usually opens with the area anyway, so a repeat
+        // would have the assistant reading the same words twice out loud.
+        const said = where.filter((part, i) => !where.slice(0, i).some((earlier) => earlier.includes(part)));
+
+        if (said.length) lines.push("Address on file: " + said.join(", "));
+        if (customer.landmark) lines.push("Landmark: " + customer.landmark);
+    }
 
     return lines.join("\n");
 };

@@ -21,6 +21,15 @@ const MEMORY_CHAR_CAP = 300;
 // Anything a customer types to get back to the start
 const RESET_WORDS = ["hi", "hii", "hy", "hey", "hello", "menu", "start", "restart"];
 
+/*
+ * Where somebody who is not registered is sent.
+ *
+ * Left out of the message entirely when it is not configured, rather than
+ * shipped as a placeholder: a dead link in the one message a new customer
+ * reads is worse than no link at all, and they can find the app by name.
+ */
+const APP_LINK = (process.env.APP_DOWNLOAD_URL || "").trim();
+
 /**
  * GET /api/whatsapp/webhook
  * Meta calls this once when the webhook URL is saved.
@@ -110,8 +119,13 @@ const handleMessage = async (phone, message, profileName) => {
 
     console.log("WhatsApp [" + convo.step + "] from " + phone + ":", message.type);
 
+    // A pin still arrives now and then - from somebody who used this number
+    // before the app existed, or who is being helpful. It is answered rather
+    // than stored: the address on the account is the one a job is dispatched
+    // to, and quietly keeping a second one is how two different addresses end
+    // up on two tickets for the same customer.
     if (message.type === "location") {
-        await saveLocation(convo, message.location);
+        await handleSharedLocation(convo);
         await convo.save();
         return;
     }
@@ -126,24 +140,26 @@ const handleMessage = async (phone, message, profileName) => {
             status: { $in: OPEN_STATUSES },
         });
         if (!stillOpen) {
-            convo.step = convo.location?.lat ? "AWAITING_SERVICE" : "NEW";
+            convo.step = "AWAITING_SERVICE";
             convo.selectedServiceKey = undefined;
             convo.selectedApplianceKey = undefined;
             convo.selectedIssues = [];
             convo.activeTicket = null;
 
-            // The job that brought them here is over, so this is a fresh
-            // conversation and a natural place to offer the language choice
-            // again - a household is not always the same person on WhatsApp.
-            //
-            // Caught here rather than at the five places a ticket can close,
-            // and it fires exactly once, because the branch is only reachable
-            // while the conversation is still parked on TICKET_CREATED.
-            if (convo.location?.lat) {
-                await askForLanguage(convo);
-                await convo.save();
-                return;
-            }
+            /*
+             * The job that brought them here is over, so this is a fresh
+             * conversation and a natural place to offer the language choice
+             * again - a household is not always the same person on WhatsApp.
+             *
+             * Caught here rather than at the five places a ticket can close,
+             * and it fires exactly once, because the branch is only reachable
+             * while the conversation is still parked on TICKET_CREATED. The
+             * customer is known by definition here - the condition above
+             * required it - so there is nothing to look up first.
+             */
+            await askForLanguage(convo);
+            await convo.save();
+            return;
         }
     }
 
@@ -155,10 +171,10 @@ const handleMessage = async (phone, message, profileName) => {
     // your guy?" is a question about that ticket, not a fresh start.
     const normalised = (text || "").toLowerCase();
     if (RESET_WORDS.includes(normalised) && convo.step !== "TICKET_CREATED") {
-        // Straight to the menu only once we know their language and name.
-        // Otherwise a "hi" typed at either question would skip it for good,
-        // since nothing downstream asks again.
-        if (convo.location?.lat && convo.language && convo.customerName) {
+        // Straight to the menu only once the account is attached and the
+        // language is settled. Otherwise a "hi" typed at the language question
+        // would skip it for good, since nothing downstream asks again.
+        if (convo.user && convo.language && convo.customerName) {
             await sendServiceMenu(convo, { greet: true });
         } else {
             convo.step = "NEW";
@@ -174,11 +190,23 @@ const handleMessage = async (phone, message, profileName) => {
             await startFlow(convo);
             break;
 
+        /*
+         * Waiting for an account to appear on the app.
+         *
+         * Every message is a chance to look again rather than a chance to
+         * repeat ourselves: somebody who has just finished registering says
+         * "done" here and carries straight on, and somebody who has not is
+         * told once more what is needed.
+         *
+         * The two old steps join it. Nobody is put into either any more, but
+         * conversations were parked on them when the flow changed underneath
+         * them, and both mean the same thing now - go and look at the account
+         * - rather than waiting for a question that is never coming.
+         */
+        case "AWAITING_APP_SIGNUP":
         case "AWAITING_LOCATION":
-            await whatsapp.sendLocationRequest(
-                phone,
-                "I still need your location to find someone near you. Tap the button below."
-            );
+        case "AWAITING_NAME":
+            await startFlow(convo);
             break;
 
         case "AWAITING_LANGUAGE":
@@ -186,14 +214,6 @@ const handleMessage = async (phone, message, profileName) => {
                 await handleLanguagePick(convo, interactiveId);
             } else {
                 await askForLanguage(convo);
-            }
-            break;
-
-        case "AWAITING_NAME":
-            if (text) {
-                await handleNameReply(convo, text);
-            } else {
-                await whatsapp.sendText(convo.phone, copyFor(convo.language).namePlease);
             }
             break;
 
@@ -272,8 +292,6 @@ const cleanName = (raw) =>
         .trim()
         .slice(0, 60);
 
-const looksLikeName = (value) => (value.match(/\p{L}/gu) || []).length >= 2;
-
 /**
  * "vicky kumar" and "VICKY KUMAR" both read badly on an invoice. Only touch
  * the casing when the whole thing is one case - a name the customer typed as
@@ -341,147 +359,152 @@ const handleLanguagePick = async (convo, id) => {
  * message rather than carrying a WhatsApp nickname onto every future invoice.
  */
 /**
- * Picks up wherever this customer actually is.
+ * The door, and the only thing this number does for somebody it does not know.
  *
- * The test is the customer record, not this conversation, and that is the
- * point: somebody who registered on the web app and then messages us here is
- * already known, so asking for their name and language again would be the
- * product forgetting them between two of its own doors. Registered means
- * greeted and straight to the service list; anything else means asking for
- * the one thing still missing, and nothing more.
+ * WhatsApp used to be a registration desk of its own: it asked for a dropped
+ * pin, made an account out of it, then asked for a name. Mohan closed that
+ * door - "agar hai toh aage ka normal process, agar nahi hai toh pehle AI
+ * khud bolega ki Cosmosgen app main register karein" - because asking every
+ * customer for their live location over WhatsApp, every time, is a privacy
+ * problem waiting to become a real one.
+ *
+ * So there is one registration desk now and it is the app. Here we only look
+ * the number up. The number is the identity: WhatsApp has already verified it
+ * and it is the same number the app signs in with, so no code of our own is
+ * needed to join the two.
  */
-const resumeOnboarding = async (convo) => {
-    if (!convo.user) {
-        await sendServiceMenu(convo, { greet: true });
+const startFlow = async (convo) => {
+    // WhatsApp hands the number back with the country code on the front; the
+    // account is keyed on the ten digits typed into the app.
+    const plainPhone = convo.phone.replace(/^91/, "");
+
+    const onFile = await userModel
+        .findOne({ phone: plainPhone })
+        .select("name phone language nameConfirmedAt languageConfirmedAt address area city pincode lat lon")
+        .lean();
+
+    /*
+     * Two different problems, and telling somebody the wrong one is worse
+     * than saying nothing. "Register on the app" to a customer who registered
+     * last week reads as the product having lost them.
+     */
+    if (!registration.hasAppAccount(onFile)) {
+        await sendAppSignup(convo);
         return;
     }
 
-    const onFile = await userModel
-        .findById(convo.user)
-        .select("name phone language nameConfirmedAt languageConfirmedAt lat lon pincode")
-        .lean();
-
-    if (onFile?.language) convo.language = onFile.language;
-
-    // A customer from before we resolved pins into addresses has coordinates
-    // and no pincode. That is ours to fix, not theirs to be asked about, so it
-    // is filled in from the pin we already hold and nobody is interrupted.
-    if (onFile && registration.missingFrom(onFile) === "address") {
-        registration
-            .applyLocation(onFile.phone, { lat: onFile.lat, lon: onFile.lon })
-            .catch((err) => console.error("[ONBOARD] address backfill failed:", err.message));
+    if (!registration.hasPin(onFile)) {
+        await sendNeedsLocation(convo, onFile);
+        return;
     }
 
-    switch (registration.missingFrom(onFile)) {
-        case "language":
-            await askForLanguage(convo);
-            return;
-        case "name":
-            await askForName(convo);
-            return;
-        default:
-            break;
-    }
-
+    convo.user = onFile._id;
     convo.customerName = onFile.name;
-    await sendServiceMenu(convo, { greet: true });
-};
+    if (onFile.language) convo.language = onFile.language;
 
-const askForName = async (convo) => {
-    await whatsapp.sendText(
-        convo.phone,
-        copyFor(convo.language).askName
-    );
-    convo.step = "AWAITING_NAME";
+    /*
+     * The address is deliberately not copied onto the conversation.
+     *
+     * It used to be, because the pin arrived in the chat and the chat was the
+     * only place it existed. Now it lives on the account, and a copy here
+     * would be a second address that goes stale the moment somebody changes
+     * theirs in the app - and a booking made from a conversation started
+     * yesterday would quietly go to where they used to live.
+     *
+     * So there is one address, on the account, read at the moment a job is
+     * raised. See runAI below.
+     */
+    convo.location = undefined;
+
+    await resumeOnboarding(convo, onFile);
 };
 
 /**
- * Their reply to the name question. Anything with two letters in it is
- * accepted: pushing back on a name over WhatsApp loses more bookings than a
- * slightly odd spelling costs us, and the office can correct it.
+ * What an unknown number is told, and the only thing it is told.
+ *
+ * Parked on a step of its own so the next message is read as "have they done
+ * it yet" rather than as the answer to a question we never asked.
  */
-const handleNameReply = async (convo, text) => {
-    const name = tidyCase(cleanName(text));
+const sendAppSignup = async (convo) => {
+    const t = copyFor(convo.language);
+    await whatsapp.sendText(convo.phone, t.appOnly + (APP_LINK ? "\n\n" + APP_LINK : ""));
+    convo.step = "AWAITING_APP_SIGNUP";
+};
 
-    if (!looksLikeName(name)) {
-        await whatsapp.sendText(
-            convo.phone,
-            copyFor(convo.language).nameRetry
-        );
-        return;
-    }
+/**
+ * An account with nowhere to send anybody.
+ *
+ * Parked on the same step as a missing account, because the next message is
+ * the same question either way: have they gone and done it yet. Their own
+ * language is used here - unlike the signup message, we know who they are.
+ */
+const sendNeedsLocation = async (convo, onFile) => {
+    if (onFile?.language) convo.language = onFile.language;
 
-    // No user row yet means they reached this without sending a location,
-    // which the flow does not allow - send them back rather than writing to
-    // an undefined id.
+    await whatsapp.sendText(convo.phone, copyFor(convo.language).appNeedsLocation);
+    convo.step = "AWAITING_APP_SIGNUP";
+};
+
+/**
+ * Somebody has shared a pin we did not ask for.
+ *
+ * They are told plainly that we already hold their address and where to change
+ * it, and then put back on whatever they were doing. The pin is not written
+ * anywhere: two addresses for one customer is how an engineer ends up at the
+ * wrong gate.
+ */
+const handleSharedLocation = async (convo) => {
     if (!convo.user) {
         await startFlow(convo);
         return;
     }
 
-    await userModel.updateOne(
-        { _id: convo.user },
-        { $set: { name, nameConfirmedAt: new Date() } }
-    );
+    await whatsapp.sendText(convo.phone, copyFor(convo.language).alreadyHaveLocation);
 
-    convo.customerName = name;
-    await whatsapp.sendText(convo.phone, copyFor(convo.language).thanksName(name.split(" ")[0]));
-    await sendServiceMenu(convo);
+    if (convo.step === "NEW" || convo.step === "IDLE") await sendServiceMenu(convo);
 };
 
-const startFlow = async (convo) => {
-    const name = greetingName(convo);
+/**
+ * Language, the verification, and then the list.
+ *
+ * The language question is the one thing still asked here, and it is asked
+ * once. It is not a privacy question and the app deliberately never puts it to
+ * anybody - it is which of three ways of speaking this conversation runs in,
+ * which only this channel needs to know.
+ *
+ * Then the details are read back before anything is booked. That is the
+ * "verify" step: the customer sees the name and the place a job would be
+ * raised against, taken off their own account, and corrects it in the app
+ * rather than being asked to type it again here.
+ */
+const resumeOnboarding = async (convo, known) => {
+    const onFile = known || (convo.user
+        ? await userModel
+            .findById(convo.user)
+            .select("name phone language nameConfirmedAt languageConfirmedAt address area city pincode lat lon")
+            .lean()
+        : null);
 
-    // Location first - without coordinates the office can't run a nearby
-    // search, so there's no point collecting anything else yet
-    if (!convo.location?.lat) {
-        // Built from the catalog, not typed out - adding a service to
-        // config/services.js should never mean editing this message too
-        const serviceLine = SERVICE_CATALOG.map((s) => s.label).join(", ");
-
-        await whatsapp.sendText(
-            convo.phone,
-            "Hi" + name + "! Welcome to Cosmosgen.\n\n" +
-            "We handle " + serviceLine + ".\n\n" +
-            "To get you someone nearby, I need your location first."
-        );
-        await whatsapp.sendLocationRequest(
-            convo.phone,
-            "Tap below and choose *Send current location*."
-        );
-        convo.step = "AWAITING_LOCATION";
+    if (!onFile) {
+        await startFlow(convo);
         return;
     }
 
-    await resumeOnboarding(convo);
-};
+    if (onFile.language) convo.language = onFile.language;
 
-const saveLocation = async (convo, location) => {
-    convo.location = {
-        lat: location.latitude,
-        lon: location.longitude,
-        address: location.address || location.name,
-        capturedAt: new Date(),
-    };
+    if (!onFile.languageConfirmedAt) {
+        await askForLanguage(convo);
+        return;
+    }
 
-    // WhatsApp has already verified this number, so it works as identity
-    // without an OTP step of our own
-    const plainPhone = convo.phone.replace(/^91/, "");
+    convo.customerName = onFile.name;
 
-    // The pin is resolved into a full address, state and pincode on the way
-    // in. WhatsApp never sends those, and they are the first things the
-    // office asks for when a pin turns out to be a few streets off.
-    const user = await registration.applyLocation(plainPhone, {
-        lat: location.latitude,
-        lon: location.longitude,
-        fallbackAddress: location.address || location.name,
-        name: convo.profileName,
-    });
+    await whatsapp.sendText(
+        convo.phone,
+        copyFor(convo.language).welcomeVerified(onFile.name, registration.whereWeSend(onFile))
+    );
 
-    convo.user = user._id;
-
-    await whatsapp.sendText(convo.phone, "Got your location, thanks.");
-    await resumeOnboarding(convo);
+    await sendServiceMenu(convo);
 };
 
 const sendServiceMenu = async (convo, opts = {}) => {
@@ -720,7 +743,17 @@ const runAI = async (convo, userMessage, opts = {}) => {
 
     const contents = [...priorTurns, { role: "user", parts: [{ text: currentText }] }];
 
-    const reply = await aiService.generateResponse(contents, user, userMessage, convo.location, record);
+    /*
+     * No location passed with the booking, on purpose.
+     *
+     * booking.bookJob treats one as "this job is somewhere other than home"
+     * and writes it over the account - which is right for the app, where a
+     * customer can book for their office, and wrong here, where there is no
+     * way to say that and anything we sent would just be a stale copy of the
+     * account overwriting the account. Left out, it dispatches to the address
+     * the customer set on the app, as it stands right now.
+     */
+    const reply = await aiService.generateResponse(contents, user, userMessage, null, record);
 
     // Reply goes out first. Everything below is bookkeeping the customer
     // has no reason to wait for.

@@ -214,32 +214,6 @@ Tell them to shut off the supply and stay away first. Then book urgently.
 `;
 
 /**
- * Voice calls have different constraints - no menus, no links, and the
- * caller can't re-read anything. Keeping this separate means chat changes
- * never leak into calls.
- */
-const VOICE_INSTRUCTION = `
-You are answering a phone call for Cosmosgen Engineering Pvt Ltd.
-
-SERVICES:
-${buildServiceListForPrompt()}
-
-CALL RULES:
-1. This is spoken. One or two short sentences per turn. No lists, no links.
-2. Ask ONE question at a time and wait - the caller can't see options.
-3. Repeat back what you heard before moving on. Speech recognition gets
-   Indian names and addresses wrong often.
-4. You do NOT have their location on a call. Ask for area and a landmark,
-   then confirm it back.
-5. Never quote a price. Never promise an arrival time.
-6. Emergencies (gas leak, shock, sparking, flooding): tell them to shut off
-   the supply and stay away, before anything else.
-7. If you can't understand after two tries, say the office will call back
-   and end politely.
-8. Warm, patient, simple Hinglish. Speak like a person, not a form.
-`;
-
-/**
  * The customer picked one of these on WhatsApp before anything else.
  *
  * Odia is the house language, so it is what an unset record falls back to.
@@ -622,10 +596,6 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
 const generateResponse = (contents, userData, userMessage, userLocation, record) =>
     runConversation({ contents, userData, userLocation, instruction: CHAT_INSTRUCTION, record });
 
-// Phone calls - same model, different rules
-const generateVoiceResponse = (contents, userData, userLocation) =>
-    runConversation({ contents, userData, userLocation, instruction: VOICE_INSTRUCTION });
-
 async function generateVector(content) {
     if (!content || (typeof content === "string" && !content.trim())) return [];
 
@@ -643,4 +613,4 @@ async function generateVector(content) {
     }
 }
 
-module.exports = { generateResponse, generateVoiceResponse, generateVector, buildCustomerRecord };
+module.exports = { generateResponse, generateVector, buildCustomerRecord };

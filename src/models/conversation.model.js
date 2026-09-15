@@ -12,9 +12,27 @@ step: {
         type: String,
         enum: [
             "NEW",
+
+            /*
+             * Waiting for them to go and make an account on the app.
+             *
+             * WhatsApp no longer registers anybody itself: it checks whether
+             * the number already has an account and, when it does not, parks
+             * the conversation here until one appears.
+             */
+            "AWAITING_APP_SIGNUP",
+
+            /*
+             * Neither of these is reached any more - the location and the name
+             * both come off the app record now. They stay in the list because
+             * conversations already parked on one of them are still in the
+             * database, and a row that cannot pass validation is a row that
+             * cannot be saved when that customer next says hello.
+             */
             "AWAITING_LOCATION",
-            "AWAITING_LANGUAGE",
             "AWAITING_NAME",
+
+            "AWAITING_LANGUAGE",
             "AWAITING_SERVICE",
             "AWAITING_APPLIANCE",
             "AWAITING_ISSUE",

@@ -9,6 +9,9 @@ const Payment = require("../models/payment.model");
 const WalletTransaction = require("../models/walletTransaction.model");
 const ServicePricing = require("../models/servicePricing.model");
 const { buildSkillRegex, escapeRegex } = require("../config/services");
+// Blocking or purging a vendor has to reach the socket he already holds - the
+// connect-time check cannot, having already run
+const { techRoom, dropRoom } = require("../sockets/socket.instance");
 const { metresBetween } = require("../services/ride.service");
 const { lookupPlace } = require("./map.controller");
 const routeService = require("../services/route.service");
@@ -1494,8 +1497,14 @@ const blockTechnician = async (req, res) => {
             { returnDocument: "after" }
         ).select("name phone isBlacklisted").lean();
 
-        // Any live session dies on their next request - the auth middleware
-        // rechecks this flag every time
+        /*
+         * The REST session dies on his next request, because the auth
+         * middleware rechecks this flag every time. A socket does not: it was
+         * authorised once, when it opened, and would sit there reporting him
+         * as reachable until the app happened to close. So it is cut here.
+         */
+        dropRoom(techRoom(req.params.id));
+
         notification.notifyTechnicianBlocked(req.params.id);
 
         return res.status(200).json({
@@ -3990,10 +3999,19 @@ const purgeDeletedTechnicians = async (req, res) => {
             walletBalancePaise: { $ne: 0 },
         });
 
+        // Whose sockets to cut - read before the rows go, since after the
+        // delete there is nothing left to ask
+        const going = await technicianModel
+            .find({ isDeleted: true, walletBalancePaise: 0 })
+            .select("_id")
+            .lean();
+
         const { deletedCount } = await technicianModel.deleteMany({
             isDeleted: true,
             walletBalancePaise: 0,
         });
+
+        going.forEach((row) => dropRoom(techRoom(row._id)));
 
         return res.status(200).json({
             success: true,

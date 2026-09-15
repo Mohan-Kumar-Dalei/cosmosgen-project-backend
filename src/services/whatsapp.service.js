@@ -151,26 +151,4 @@ const sendButtons = async (to, { body, buttons }) => {
     }
 };
 
-// Location request - user ka exact coordinates maangne ke liye.
-// Ye services dikhane se PEHLE bhejna hai.
-const sendLocationRequest = async (to, body) => {
-    if (!isConfigured()) return null;
-    try {
-        const { data } = await client().post("/messages", {
-            messaging_product: "whatsapp",
-            to: formatPhone(to),
-            type: "interactive",
-            interactive: {
-                type: "location_request_message",
-                body: { text: body },
-                action: { name: "send_location" },
-            },
-        });
-        return data;
-    } catch (error) {
-        console.error("WhatsApp location request failed:", error.response?.data || error.message);
-        return null;
-    }
-};
-
-module.exports = { sendText, sendList, sendButtons, sendLocationRequest, markAsRead, formatPhone, isConfigured };
+module.exports = { sendText, sendList, sendButtons, markAsRead, formatPhone, isConfigured };

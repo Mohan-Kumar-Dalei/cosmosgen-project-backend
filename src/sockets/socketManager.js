@@ -114,8 +114,23 @@ function initSocketServer(httpServer) {
                 if (!techToken) return next(new Error("No technician session"));
 
                 const decoded = jwt.verify(techToken, process.env.JWT_SECRET);
-                const tech = await technicianModel.findById(decoded.techId).select("_id name").lean();
+                const tech = await technicianModel
+                    .findById(decoded.techId)
+                    .select("_id name isDeleted isBlacklisted")
+                    .lean();
+
+                /*
+                 * Deleted and blocked are checked here, not only at login.
+                 *
+                 * A token outlives the account it was issued for - it is
+                 * signed, not looked up - so an app that signed in last week
+                 * will happily present one today. Without this the office kept
+                 * seeing a deleted vendor as connected and reachable, and
+                 * every reconnect let him back in.
+                 */
                 if (!tech) return next(new Error("Technician not found"));
+                if (tech.isDeleted) return next(new Error("This account has been deleted"));
+                if (tech.isBlacklisted) return next(new Error("This account has been blocked"));
                 socket.role = "technician";
                 socket.actor = tech;
                 return next();

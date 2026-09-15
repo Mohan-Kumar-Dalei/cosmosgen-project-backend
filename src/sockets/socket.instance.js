@@ -25,4 +25,25 @@ const emitToRoom = (room, event, payload) => {
     }
 };
 
-module.exports = { setIo, getIo, userRoom, techRoom, trackRoom, adminRoom, emitToRoom };
+/**
+ * Cut every live socket in a room, now.
+ *
+ * The connect-time check runs once. A vendor who is deleted or blocked while
+ * his app is open keeps the socket he already has, and the office goes on
+ * counting him as reachable - which was reported exactly that way: "I deleted
+ * the vendor and he is still connected."
+ *
+ * `close: true` closes the underlying transport rather than only the
+ * namespace, so the client sees a real disconnect instead of silently
+ * reattaching.
+ */
+const dropRoom = (room) => {
+    if (!io) return;
+    try {
+        io.in(room).disconnectSockets(true);
+    } catch (err) {
+        console.error(`Socket drop failed (${room}):`, err.message);
+    }
+};
+
+module.exports = { setIo, getIo, userRoom, techRoom, trackRoom, adminRoom, emitToRoom, dropRoom };
