@@ -206,8 +206,21 @@ const markOnTheWay = async (technicianId, ticketId) => {
         status: "Assigned",
     });
 
-    if (!ticket) return { ok: false, code: "not_yours" };
-    if (ticket.ride?.startedAt) return { ok: true, ticket, already: true };
+    if (!ticket) {
+        /*
+         * The commonest reason is the honest one: the job is not his, or it
+         * has already moved past Assigned. Worth a line either way - this is
+         * the call behind "I tapped Directions and the customer's page did
+         * not change", and silence here is what made that hard to chase.
+         */
+        console.warn("[RIDE] on-the-way refused: ticket " + ticketId + " is not assigned to " + technicianId);
+        return { ok: false, code: "not_yours" };
+    }
+
+    if (ticket.ride?.startedAt) {
+        console.log("[RIDE] " + ticket.ticketNumber + " was already on the way");
+        return { ok: true, ticket, already: true };
+    }
 
     const destLon = ticket.location?.coordinates?.[0];
     const destLat = ticket.location?.coordinates?.[1];
@@ -247,6 +260,12 @@ const markOnTheWay = async (technicianId, ticketId) => {
     };
 
     await ticket.save();
+
+    console.log(
+        "[RIDE] " + ticket.ticketNumber + " is on the way"
+        + (from ? "" : " - no position stored yet, so the customer gets the stage without a marker")
+        + (ticket.ride.encodedPolyline ? " (route found)" : " (no route)")
+    );
 
     if (ticket.tracking?.token) {
         emitToRoom(trackRoom(ticket.tracking.token), "track:update", {

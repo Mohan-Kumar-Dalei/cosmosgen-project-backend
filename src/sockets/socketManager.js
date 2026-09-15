@@ -40,8 +40,42 @@ function initSocketServer(httpServer) {
 
     setIo(io);
 
+    /*
+     * "Session ID unknown" is churn, not a fault.
+     *
+     * It means a client came back holding a session this process has never
+     * heard of - which is every open page after a restart, and every phone
+     * that lost signal for longer than the ping timeout. The client makes a
+     * new handshake a moment later and carries on. Nothing is broken, and
+     * nobody can do anything about it.
+     *
+     * It was going to the error log on every occurrence, so a real failure sat
+     * buried under dozens of copies of it. Counted and reported once a minute
+     * instead: the number is worth seeing - a rate that never settles would
+     * mean something genuinely wrong - and the flood is not.
+     */
+    let staleSessions = 0;
+    let staleReportedAt = 0;
+
     io.engine.on("connection_error", (err) => {
-        console.error("[SOCKET] Engine-level connection_error:", { message: err.message, code: err.code });
+        const stale = /session id unknown/i.test(err.message || "");
+
+        if (!stale) {
+            console.error("[SOCKET] Engine-level connection_error:", { message: err.message, code: err.code });
+            return;
+        }
+
+        staleSessions += 1;
+
+        const now = Date.now();
+        if (now - staleReportedAt < 60000) return;
+
+        staleReportedAt = now;
+        console.log(
+            "[SOCKET] " + staleSessions + " client(s) came back with a session from before the "
+            + "last restart, and were handed a new one"
+        );
+        staleSessions = 0;
     });
 
     /**
