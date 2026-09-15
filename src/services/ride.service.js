@@ -71,23 +71,40 @@ const syncRideProgress = async (technician, lat, lon) => {
         const distance = metresBetween(lat, lon, destLat, destLon);
 
         /*
-         * Nothing here starts the ride any more.
+         * The line is information; "on the way" is an announcement.
          *
-         * It used to: the first position that arrived after assignment set
-         * startedAt, so a vendor who simply had the app open was announced to
-         * the customer as on his way. Mohan moved that to the Directions
-         * button - "jab technician wo direction button main click kare tabhi
-         * usko on the way main bhejo" - which is the moment somebody actually
-         * decides to set off, rather than the moment their phone happened to
-         * report where they were standing.
+         * Only the announcement waits for the Directions button. The route,
+         * the distance and the estimate are worked out from the first position
+         * that arrives, exactly as they always were - taking those away as
+         * well left the customer with two pins and no line between them, which
+         * is not what was asked for.
          *
-         * So until markOnTheWay() has run there is no ride to keep up to date,
-         * and this returns. Arrival is still worked out from the distance
-         * below, because reaching the door is a fact and not a decision.
+         * So a ride object exists from the first fix, with everything in it
+         * except startedAt. markOnTheWay() fills that in, and that is the only
+         * thing the customer's stage is read from.
          */
-        if (!ticket.ride?.startedAt) return;
+        const started = Boolean(ticket.ride?.startedAt);
+        const isFirstFix = !ticket.ride?.computedAt;
 
-        {
+        if (isFirstFix) {
+            const route = await routeService.computeRoute(
+                { lat, lon },
+                { lat: destLat, lon: destLon }
+            );
+
+            ticket.ride = {
+                ...(ticket.ride?.toObject ? ticket.ride.toObject() : ticket.ride || {}),
+                arrivedAt: null,
+                origin: { lat, lon },
+                etaSeconds: route?.durationSeconds ?? null,
+                distanceMeters: route?.distanceMeters ?? null,
+                etaAt: route?.durationSeconds
+                    ? new Date(now.getTime() + route.durationSeconds * 1000)
+                    : null,
+                encodedPolyline: route?.encodedPolyline ?? null,
+                computedAt: route ? now : null,
+            };
+        } else {
             const computedAt = ticket.ride.computedAt
                 ? new Date(ticket.ride.computedAt).getTime()
                 : 0;
@@ -128,7 +145,16 @@ const syncRideProgress = async (technician, lat, lon) => {
         if (ticket.tracking?.token) {
             emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
                 technicianAt: { lat, lon, at: now },
-                stage: hasArrived ? "arrived" : "on_the_way",
+
+                /*
+                 * "assigned" until he has actually set off.
+                 *
+                 * This used to say on_the_way on every ping, which announced a
+                 * departure that had not happened - the whole reason the
+                 * button exists. Arriving still overrides everything, because
+                 * being at the door is a fact whatever the record says.
+                 */
+                stage: hasArrived ? "arrived" : (started ? "on_the_way" : "assigned"),
                 etaSeconds: ticket.ride?.etaSeconds ?? null,
                 etaAt: ticket.ride?.etaAt || null,
                 distanceMeters: ticket.ride?.distanceMeters ?? null,
@@ -139,7 +165,7 @@ const syncRideProgress = async (technician, lat, lon) => {
         // Both messages go out only once each: the en-route branch runs on the
         // first fix and the arrival branch flips arrivedAt, which is the guard
         // at the top of this function on every later ping.
-        if (isFirstFix) {
+        if (isFirstFix && started) {
             await notification.notifyCustomerTechnicianEnRoute(plain);
             notification.notifyAdminsRideStarted(plain);
         }
@@ -200,17 +226,24 @@ const markOnTheWay = async (technicianId, ticketId) => {
         ? await routeService.computeRoute(from, { lat: destLat, lon: destLon })
         : null;
 
+    const had = ticket.ride?.toObject ? ticket.ride.toObject() : (ticket.ride || {});
+
     ticket.ride = {
+        ...had,
         startedAt: now,
         arrivedAt: null,
-        origin: from || undefined,
-        etaSeconds: route?.durationSeconds ?? null,
-        distanceMeters: route?.distanceMeters ?? null,
+        origin: from || had.origin,
+
+        // A fresh route wins; without one, whatever the first GPS fix already
+        // worked out stays. Losing a good line because this one call failed
+        // would leave the customer worse off than before he set off.
+        etaSeconds: route?.durationSeconds ?? had.etaSeconds ?? null,
+        distanceMeters: route?.distanceMeters ?? had.distanceMeters ?? null,
         etaAt: route?.durationSeconds
             ? new Date(now.getTime() + route.durationSeconds * 1000)
-            : null,
-        encodedPolyline: route?.encodedPolyline ?? null,
-        computedAt: route ? now : null,
+            : (had.etaAt || null),
+        encodedPolyline: route?.encodedPolyline ?? had.encodedPolyline ?? null,
+        computedAt: route ? now : (had.computedAt || null),
     };
 
     await ticket.save();
