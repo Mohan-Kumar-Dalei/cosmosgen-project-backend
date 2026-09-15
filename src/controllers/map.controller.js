@@ -24,6 +24,8 @@ const setCache = (key, value) => {
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const keyring = require("../services/keyring.service");
 const { searchCities, findCity } = require("../config/cities");
+const technicianModel = require("../models/technician.model");
+const { extraAreasFor } = require("../config/localities");
 
 // Every response we build for the frontend keeps the same shape the old
 // Nominatim version returned, so nothing downstream had to change.
@@ -378,10 +380,25 @@ const areasForTown = async (town) => {
     const base = Number(town.pincode);
     if (!Number.isFinite(base)) return [];
 
+    /*
+     * A short rest after a refusal.
+     *
+     * Walking a town is forty requests, and India Post will rate limit for it
+     * - which it did, immediately, under testing. Without this a town that is
+     * being refused would set forty more requests going on every single
+     * keystroke, which is both useless and the fastest way to be blocked for
+     * longer. Ten minutes of quiet, then try again.
+     */
+    const cool = "cool:" + key;
+    if (getCache(cool, 10 * 60 * 1000)) return [];
+
     // The head office first, because its district is what the rest is judged
     // against - and if even that answers nothing there is no block to walk
     const head = await officesAt(base);
-    if (!head.length) return [];
+    if (!head.length) {
+        setCache(cool, true);
+        return [];
+    }
 
     const district = String(head[0].District || "").toLowerCase();
     const found = new Map();
@@ -416,21 +433,202 @@ const areasForTown = async (town) => {
 };
 
 /**
- * GET /api/map/areas?city=Bhubaneswar
+ * The localities our own vendors have already named, for one town.
+ *
+ * India Post lists post offices, and a great many real neighbourhoods do not
+ * have one - Palasuni is a well known part of Bhubaneswar and its post is
+ * handled by Rasulgarh, so the directory has never heard of it. Those gaps are
+ * exactly where a vendor types something rather than picking it.
+ *
+ * So what one vendor types becomes what the next one is offered. The list
+ * fills itself in from real answers, at no cost and without anybody inventing
+ * a dataset that then has to be maintained.
+ *
+ * Only from approved vendors, so a name nobody has vetted cannot be planted in
+ * the list by filling in a form.
+ */
+const vendorAreas = async (city) => {
+    try {
+        const rows = await technicianModel.distinct("area", {
+            city,
+            approvalStatus: "approved",
+            area: { $nin: [null, ""] },
+        });
+        return rows.map((name) => String(name).trim()).filter(Boolean);
+    } catch (error) {
+        console.error("[MAP] Vendor localities failed:", error.message);
+        return [];
+    }
+};
+
+/**
+ * Google's guess at a locality, narrowed to one town.
+ *
+ * India Post's directory is free and exact, and it lists *post offices* - so
+ * Palasuni, a real part of Bhubaneswar whose post is handled from
+ * G.G.P.Colony, does not appear in it at all. That gap is why this exists:
+ * Google knows the names people actually use, and the office has decided the
+ * suggestions are worth what they cost.
+ *
+ * Two things keep that cost to about the minimum Google allows.
+ *
+ * The session token is the big one. Passed through every keystroke and then
+ * handed to the details lookup, Google bills the whole episode as one session
+ * instead of one charge per letter typed. The client mints a token when the
+ * field is first used and throws it away once something is picked.
+ *
+ * And the town is appended to the query rather than left to Google's idea of
+ * where the user is - "palasuni" alone could be anywhere in India, and a
+ * prediction for the wrong state is a request paid for and thrown away.
+ */
+const googleAreas = async (term, city, sessionToken) => {
+    const body = {
+        input: term + ", " + city,
+        includedRegionCodes: ["in"],
+        languageCode: "en",
+    };
+    if (sessionToken) body.sessionToken = sessionToken;
+
+    keyring.count("google");
+    const response = await axios.post(
+        "https://places.googleapis.com/v1/places:autocomplete",
+        body,
+        {
+            headers: {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": API_KEY,
+                "X-Goog-FieldMask":
+                    "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat",
+            },
+            timeout: 8000,
+        }
+    );
+
+    const suggestions = Array.isArray(response.data?.suggestions) ? response.data.suggestions : [];
+
+    return suggestions
+        .map((s) => s.placePrediction)
+        .filter(Boolean)
+        .map((prediction) => ({
+            // A placeId rather than a pincode: the pincode arrives from
+            // /api/map/place once one of these is actually chosen, which is
+            // the call that closes the billing session
+            placeId: prediction.placeId,
+            name: prediction.structuredFormat?.mainText?.text
+                || prediction.text?.text
+                || "",
+            detail: prediction.structuredFormat?.secondaryText?.text || "",
+        }))
+        .filter((row) => row.name);
+};
+
+/**
+ * GET /api/map/areas?city=Bhubaneswar&q=palas&session=<token>
  * GET /api/map/areas?pincode=751024
  *
  * By town is what the forms use. By pincode is kept for the one case it still
  * answers better: a dropped map pin gives a pincode and nothing else.
+ *
+ * Google answers when there is a key and something has been typed. Everything
+ * else falls through to the free list - India Post's post offices, the
+ * neighbourhoods the office has filled in by hand, and whatever approved
+ * vendors have typed for themselves. That fallback is not decoration: it is
+ * what a vendor sees if the key is missing, the billing lapses, or Google is
+ * simply down, and none of those should stop somebody registering.
  */
 const areas = async (req, res) => {
     const city = String(req.query.city || "").trim();
+
+    // Declared once, out here: the free list below narrows itself by the same
+    // term Google was asked for, and reading it from inside the block above
+    // was a scope mistake that only showed up on the fallback path
+    const term = String(req.query.q || "").trim();
+    const session = String(req.query.session || "").trim();
+
+    if (city) {
+        if (API_KEY && term.length >= 2) {
+            try {
+                const found = await googleAreas(term, city, session);
+                if (found.length) {
+                    return res.status(200).json({ success: true, source: "google", data: found });
+                }
+            } catch (error) {
+                console.error("[MAP] Google localities failed:", error.response?.data?.error?.message || error.message);
+                // and on to the free list below
+            }
+        }
+    }
 
     if (city) {
         const town = findCity(city);
         if (!town) return res.status(200).json({ success: true, data: [] });
 
         try {
-            return res.status(200).json({ success: true, data: await areasForTown(town) });
+            const [listed, typed] = await Promise.all([
+                areasForTown(town),
+                vendorAreas(town.city),
+            ]);
+
+            /*
+             * Three sources, in order of how much they can be trusted to spell
+             * a place the way an envelope does: India Post, then the names the
+             * office has filled in by hand for neighbourhoods the directory
+             * misses, then whatever vendors have typed for themselves.
+             *
+             * First one to claim a name keeps it, so the same place cannot
+             * appear twice under three spellings.
+             */
+            const seen = new Set(listed.map((a) => a.name.toLowerCase()));
+            const extra = [];
+
+            const add = (name, pincode) => {
+                const key = String(name).trim().toLowerCase();
+                if (!key || seen.has(key)) return;
+                seen.add(key);
+                extra.push({ name: String(name).trim(), pincode: pincode || "" });
+            };
+
+            for (const row of extraAreasFor(town.city)) add(row.name, row.pincode);
+
+            // A typed name has no pincode of its own - it belongs to whichever
+            // office covers it, and the vendor's own pincode already says which
+            for (const name of typed) add(name, "");
+
+            const merged = listed.concat(extra)
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+            /*
+             * Narrowed to what is being typed, when anything is.
+             *
+             * The free list is the whole town - seventy-odd names - and
+             * handing all of them to somebody who has typed "palas" is worse
+             * than handing them nothing: the answer they want is not in the
+             * first ten and they have no reason to think the list is even
+             * listening. Empty is an honest answer, and the field can be
+             * typed into regardless.
+             *
+             * A match at the start ranks above one in the middle, the same
+             * rule the town list uses.
+             */
+            if (!term) {
+                return res.status(200).json({ success: true, source: "post", data: merged });
+            }
+
+            const want = term.toLowerCase();
+            const starts = [];
+            const contains = [];
+
+            for (const row of merged) {
+                const name = row.name.toLowerCase();
+                if (name.startsWith(want)) starts.push(row);
+                else if (name.includes(want)) contains.push(row);
+            }
+
+            return res.status(200).json({
+                success: true,
+                source: "post",
+                data: starts.concat(contains).slice(0, 8),
+            });
         } catch (error) {
             console.error("[MAP] Town localities failed:", error.message);
             return res.status(200).json({ success: true, data: [] });
@@ -458,18 +656,84 @@ const areas = async (req, res) => {
 };
 
 /**
- * GET /api/map/cities?q=
+ * GET /api/map/cities?q=bhub&session=<token>
  *
- * The towns this company works in, matched against what is being typed. Reads
- * a bundled list - no provider, no key, no bill, and an answer in under a
- * millisecond whether or not anything else is reachable.
+ * Towns, from Google, restricted to India and to places that are actually
+ * towns. Without that restriction the same query returns Bhubaneswar Railway
+ * Station and Bhubaneswar Airport alongside the city, and a vendor filed under
+ * an airport is a vendor nobody finds.
  *
- * This is what replaced Places Autocomplete on the vendor form, where a paid
- * request went out on every keystroke before anybody had even signed up.
+ * Google rather than the bundled list because the office asked for it: one
+ * provider for every suggestion on the form, so what a vendor sees typing a
+ * town and typing his locality behave the same way. The session token is
+ * carried through so the whole search plus its details lookup is billed once.
+ *
+ * `src/config/cities.js` has not gone anywhere - it is the fallback below, and
+ * the only thing that still answers when a key is missing or Google is down.
  */
-const cities = (req, res) => {
-    const list = searchCities(req.query.q, 8);
-    return res.status(200).json({ success: true, data: list });
+const googleCities = async (term, sessionToken) => {
+    const body = {
+        input: term,
+        includedRegionCodes: ["in"],
+        includedPrimaryTypes: ["locality"],
+        languageCode: "en",
+    };
+    if (sessionToken) body.sessionToken = sessionToken;
+
+    keyring.count("google");
+    const response = await axios.post(
+        "https://places.googleapis.com/v1/places:autocomplete",
+        body,
+        {
+            headers: {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": API_KEY,
+                "X-Goog-FieldMask":
+                    "suggestions.placePrediction.placeId,suggestions.placePrediction.structuredFormat",
+            },
+            timeout: 8000,
+        }
+    );
+
+    const suggestions = Array.isArray(response.data?.suggestions) ? response.data.suggestions : [];
+
+    return suggestions
+        .map((s) => s.placePrediction)
+        .filter(Boolean)
+        .map((prediction) => ({
+            // The state and pincode arrive from /api/map/place when one of
+            // these is chosen - the call that also closes the billing session
+            placeId: prediction.placeId,
+            city: prediction.structuredFormat?.mainText?.text || "",
+            detail: prediction.structuredFormat?.secondaryText?.text || "",
+        }))
+        .filter((row) => row.city);
+};
+
+const cities = async (req, res) => {
+    const term = String(req.query.q || "").trim();
+    const session = String(req.query.session || "").trim();
+
+    if (API_KEY && term.length >= 2) {
+        try {
+            const found = await googleCities(term, session);
+            if (found.length) {
+                return res.status(200).json({ success: true, source: "google", data: found });
+            }
+        } catch (error) {
+            console.error("[MAP] Google towns failed:", error.response?.data?.error?.message || error.message);
+            // and on to the bundled list
+        }
+    }
+
+    // The floor: the towns this company works in, with their state and a
+    // starting pincode. Instant, free, and the only thing that answers with no
+    // key at all.
+    return res.status(200).json({
+        success: true,
+        source: "bundled",
+        data: searchCities(term, 8),
+    });
 };
 
 module.exports = {

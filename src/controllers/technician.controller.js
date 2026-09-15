@@ -74,26 +74,32 @@ const registerTechnician = async (req, res) => {
         }
 
         /*
-         * The town is checked against our own list, not taken on trust.
+         * The town is taken as sent, now that Google is what suggests it.
          *
-         * The form picks from that list, so anything else arriving here is
-         * either a stale page or somebody posting by hand - and a vendor
-         * filed under a town the office does not recognise is a vendor
-         * nobody finds. The state and a starting pincode come from the same
-         * row, which is why neither has to be sent correctly.
+         * It used to be checked against `config/cities.js` and refused if it
+         * was not in there. That list is still the fallback the form falls
+         * back to, but it is no longer the whole world: the office asked for
+         * Google on every suggestion, and Google knows towns this company has
+         * not written down yet. Refusing those would mean a vendor picking a
+         * suggestion the form itself offered him and being told no.
+         *
+         * What is still checked is that something arrived for each field, and
+         * that the pincode is six digits - which is the difference between a
+         * filled form and a broken one.
          */
         const town = findCity(city);
-        if (!town) {
+
+        const cleanPin = String(pincode || "").replace(/\D/g, "").slice(0, 6);
+        const finalPin = cleanPin.length === 6
+            ? cleanPin
+            : (town ? town.pincode : "");
+
+        if (!finalPin) {
             return res.status(400).json({
                 success: false,
-                message: "Pick your town from the list so we file you in the right place.",
+                message: "We need your six digit pincode.",
             });
         }
-
-        // The vendor's own pincode wins when they gave one; the town's head
-        // post office is the floor under the question
-        const cleanPin = String(pincode || "").replace(/\D/g, "").slice(0, 6);
-        const finalPin = cleanPin.length === 6 ? cleanPin : town.pincode;
         if (String(password).length < 6) {
             return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
         }
@@ -140,8 +146,8 @@ const registerTechnician = async (req, res) => {
             password: await bcrypt.hash(password, 10),
             email: email ? String(email).toLowerCase().trim() : undefined,
             pincode: finalPin,
-            state: town.state,
-            city: town.city,
+            state: String(state).trim(),
+            city: String(city).trim(),
             area: String(area).trim(),
             address: String(address || "").trim(),
             skills: Array.isArray(skills) ? skills : (skills ? JSON.parse(skills) : []),
@@ -603,17 +609,10 @@ const updateTechProfile = async (req, res) => {
         // Changing town moves the state with it, for the same reason it does
         // at registration: the two are one fact, not two the vendor can
         // disagree with themselves about
-        if (city) {
-            const town = findCity(city);
-            if (!town) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Pick your town from the list.",
-                });
-            }
-            updateData.city = town.city;
-            updateData.state = town.state;
-        }
+        // Same reasoning as registration: Google suggests the town, so the
+        // town is taken as sent rather than checked against our own list
+        if (city) updateData.city = String(city).trim();
+        if (state) updateData.state = String(state).trim();
         if (pincode) updateData.pincode = String(pincode).trim();
 
         if (req.body.accountHolderName && req.body.accountNumber && req.body.ifsc) {
