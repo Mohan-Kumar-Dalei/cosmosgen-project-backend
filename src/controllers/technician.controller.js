@@ -842,7 +842,14 @@ const updateLocation = async (req, res) => {
  */
 const startOnTheWay = async (req, res) => {
     try {
-        const result = await rideService.markOnTheWay(req.technician._id, req.params.id);
+        const result = await rideService.markOnTheWay(
+            req.technician._id,
+            req.params.id,
+
+            // The app sends its last fix with the tap, because the moment it
+            // hands over to Google Maps its own GPS watcher stops.
+            { lat: req.body?.lat, lon: req.body?.lon }
+        );
 
         if (!result.ok) {
             return res.status(404).json({

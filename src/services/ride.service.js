@@ -199,7 +199,7 @@ const syncRideProgress = async (technician, lat, lon) => {
  * and the customer should not spend that minute looking at a screen that has
  * not moved.
  */
-const markOnTheWay = async (technicianId, ticketId) => {
+const markOnTheWay = async (technicianId, ticketId, at = null) => {
     const ticket = await ticketModel.findOne({
         _id: ticketId,
         technician: technicianId,
@@ -225,11 +225,42 @@ const markOnTheWay = async (technicianId, ticketId) => {
     const destLon = ticket.location?.coordinates?.[0];
     const destLat = ticket.location?.coordinates?.[1];
 
-    const tech = await technicianModel.findById(technicianId).select("location").lean();
-    const coords = tech?.location?.coordinates;
-    const from = Array.isArray(coords) && coords.length === 2
-        ? { lat: coords[1], lon: coords[0] }
+    /*
+     * The position the app sent, before the one on file.
+     *
+     * This is the whole reason the bike used to appear late. Tapping
+     * Directions hands the vendor straight to Google Maps, and on Android the
+     * foreground GPS watcher stops the moment this app is no longer in front -
+     * so no new position reached the server until he came back, which is
+     * exactly when Mohan saw the bike turn up. The app now sends its last fix
+     * with the tap, so the customer has a marker the same second.
+     */
+    const sent = Number.isFinite(Number(at?.lat)) && Number.isFinite(Number(at?.lon))
+        ? { lat: Number(at.lat), lon: Number(at.lon) }
         : null;
+
+    const tech = sent
+        ? null
+        : await technicianModel.findById(technicianId).select("location").lean();
+
+    const coords = tech?.location?.coordinates;
+    const from = sent || (Array.isArray(coords) && coords.length === 2
+        ? { lat: coords[1], lon: coords[0] }
+        : null);
+
+    // Written back, so anything that reads the record later - the customer's
+    // page on a plain refresh, the office board - sees the same place.
+    if (sent) {
+        await technicianModel.updateOne(
+            { _id: technicianId },
+            {
+                $set: {
+                    location: { type: "Point", coordinates: [sent.lon, sent.lat] },
+                    lastLocationAt: new Date(),
+                },
+            }
+        );
+    }
 
     const now = new Date();
 
