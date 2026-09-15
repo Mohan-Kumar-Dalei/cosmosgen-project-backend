@@ -19,6 +19,8 @@
  * button.
  */
 
+const { asLanguage } = require("./languages");
+
 const COPY = {
     english: {
         appNeedsLocation: "You have a Cosmosgen account, but no location saved on it." + "\n\n" +
@@ -81,30 +83,44 @@ const COPY = {
         aiUnavailable: "Maaf kijiye, abhi process nahi kar paya. Kripya thodi der baad try karein.",
     },
 
-    odenglish: {
-        appNeedsLocation: "Apananka Cosmosgen account achhi, kintu sethire location save heini." + "\n\n" +
-            "App kholantu, duara pakhare thai Use my current location tipantu ebang save karantu. " +
-            "Sei pin dwara hin office apananka pakhara loka khoje - taha bina kaam kouthiku pathajai paribani.",
-        appOnly: "Cosmosgen re booking pain apananka ama app re account darkar." + "\n\n" +
-            "Thare register kari nianTu - sethire sei thikana set heba jouthiku engineer pathajiba, " +
-            "tenu ethire barambara location puchhiba darkar pade nahin. Tarapare ethire message karantu, ame agaku jiba.",
+    /*
+     * Odia, in Odia script.
+     *
+     * This was Odia written in Roman letters, and Mohan could not read his
+     * own product: "ye AI kya keh raha hai samajh nahi aa raha hai". He is
+     * right - transliterated Odia is a puzzle even to somebody who speaks
+     * it, because there is no agreed spelling and the reader has to sound
+     * every word out before it means anything.
+     *
+     * The words that stay in English are the ones people actually say in
+     * English - app, booking, location, engineer, service. Translating
+     * those is what makes a line read as a translation rather than as
+     * somebody speaking.
+     */
+    odia: {
+        appNeedsLocation: "ଆପଣଙ୍କର Cosmosgen account ଅଛି, କିନ୍ତୁ ସେଥିରେ location save ହୋଇନାହିଁ।" + "\n\n" +
+            "App ଖୋଲନ୍ତୁ, ଦୁଆର ପାଖରେ ଠିଆ ହୋଇ Use my current location ଦବାନ୍ତୁ ଏବଂ save କରନ୍ତୁ। " +
+            "ସେହି pin ରୁ ହିଁ office ଆପଣଙ୍କ ପାଖର ଲୋକ ଖୋଜେ - ତାହା ବିନା କାମ କେଉଁଠିକୁ ପଠାଯାଇ ପାରିବ ନାହିଁ।",
+        appOnly: "Cosmosgen ରେ booking କରିବା ପାଇଁ ଆପଣଙ୍କର ଆମ app ରେ account ଦରକାର।" + "\n\n" +
+            "ଥରେ ସେଠାରେ register କରନ୍ତୁ - ସେଠାରେ ହିଁ ସେହି ଠିକଣା ଦିଅନ୍ତି ଯେଉଁଠିକୁ engineer ଯିବେ, " +
+            "ତେଣୁ ଏଠାରେ ବାରମ୍ବାର location ମାଗିବାକୁ ପଡ଼େ ନାହିଁ। ତାପରେ ଏଠାରେ message କରନ୍ତୁ, ଆମେ ଆଗକୁ ବଢ଼ିବା।",
         welcomeVerified: (name, place) =>
-            "Verify heigala: " + name + (place ? " - " + place : "") + "." + "\n\n" +
-            "Cosmosgen services ku swagata. Jadi sethire pathaibaku chahuni, app re thikana badalantu.",
-        alreadyHaveLocation: "Darkar nahin - apana app re save karithiba thikana ame byabahara karu, ebang sethiku hin kehi jibe.",
-        languageDone: (name) => "Thik achhi, ame " + name + " re katha heba.",
-        welcomeBack: (name) => "Namaskar" + name + "! Cosmosgen ku punarbara swagata.",
-        serviceBody: "Aji apananka kou bisayare sahajya darkar?",
+            "Verify ହୋଇଗଲା: " + name + (place ? " - " + place : "") + "।" + "\n\n" +
+            "Cosmosgen services କୁ ସ୍ୱାଗତ। ଯଦି ସେଠିକୁ ଲୋକ ପଠାଇବାକୁ ଚାହୁଁନାହାନ୍ତି, app ରେ ଠିକଣା ବଦଳାନ୍ତୁ।",
+        alreadyHaveLocation: "ଦରକାର ନାହିଁ - ଆପଣ app ରେ save କରିଥିବା ଠିକଣା ଆମ ପାଖରେ ଅଛି, ସେଠିକୁ ହିଁ ଲୋକ ଯିବେ।",
+        languageDone: (name) => "ଠିକ ଅଛି, ଆମେ " + name + " ରେ କଥା ହେବା।",
+        welcomeBack: (name) => "ନମସ୍କାର" + name + "! Cosmosgen କୁ ପୁଣି ସ୍ୱାଗତ।",
+        serviceBody: "ଆଜି ଆପଣଙ୍କୁ କେଉଁ କାମରେ ସାହାଯ୍ୟ ଦରକାର?",
         serviceButton: "Choose service",
         serviceSection: "Our services",
-        applianceBody: "Kou appliance re samasya hauchi?",
+        applianceBody: "କେଉଁ appliance ରେ ସମସ୍ୟା ହେଉଛି?",
         applianceButton: "Choose appliance",
-        issueBody: (heading) => heading + " - kana samasya hauchi?",
+        issueBody: (heading) => heading + " - କଣ ସମସ୍ୟା ହେଉଛି?",
         issueButton: "Choose issue",
         issueSection: "Common issues",
         somethingElse: "Something else",
-        ownWords: "Thik achhi - nija bhasare kuhantu kana hauchi.",
-        aiUnavailable: "Kshama karibe, ebe process kari parili nahin. Dayakari kichhi samay pare cheshta karantu.",
+        ownWords: "ଠିକ ଅଛି - ନିଜ ଭାଷାରେ କୁହନ୍ତୁ କଣ ହେଉଛି।",
+        aiUnavailable: "ଦୁଃଖିତ, ଏବେ process କରି ପାରିଲି ନାହିଁ। ଟିକେ ପରେ ଆଉ ଥରେ ଚେଷ୍ଟା କରନ୍ତୁ।",
     },
 };
 
@@ -121,7 +137,7 @@ const COPY = {
  * So the order is English first, then the language question, then everything
  * after that in whatever they picked.
  */
-const copyFor = (language) => COPY[language] || COPY.english;
+const copyFor = (language) => COPY[asLanguage(language)] || COPY.english;
 
 const assertCopyLengths = () => {
     const tooLong = [];

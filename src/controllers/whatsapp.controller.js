@@ -312,12 +312,18 @@ const greetingName = (convo) => {
 
 /**
  * Odia first, because that is the language the office actually works in.
- * Neither of the mixed options is pure - people here type Odia and Hindi in
- * Roman script with English words dropped in, and asking them to pick "Odia"
- * would suggest a script most of them do not type.
+ *
+ * It is offered as Odia, written in Odia script - it used to be called
+ * Odenglish and written in Roman letters, which Mohan could not read back and
+ * nor could anybody else. Hinglish stays a mix, because Roman-script Hindi is
+ * genuinely what people read and type.
+ *
+ * Whatever they pick here is only what we write to them. What they send us can
+ * be any of the three, in any script, and the assistant is told to read it
+ * without ever asking them to write differently.
  */
 const LANGUAGES = [
-    { id: "lang_odenglish", key: "odenglish", title: "Odenglish", description: "Odia + English" },
+    { id: "lang_odia", key: "odia", title: "Odia", description: "ଓଡ଼ିଆ" },
     { id: "lang_hinglish", key: "hinglish", title: "Hinglish", description: "Hindi + English" },
     { id: "lang_english", key: "english", title: "English", description: "English only" },
 ];
@@ -333,7 +339,15 @@ const askForLanguage = async (convo) => {
 };
 
 const handleLanguagePick = async (convo, id) => {
-    const picked = LANGUAGES.find((l) => l.id === id);
+    /*
+     * The old id is still accepted.
+     *
+     * A language list sent before the rename is sitting in somebody's chat
+     * right now, and tapping a row on it posts the id it was sent with. Left
+     * unmatched, that tap would be answered by sending the list again - the
+     * customer taps, nothing happens, they tap again.
+     */
+    const picked = LANGUAGES.find((l) => l.id === id || l.id === id.replace("odenglish", "odia"));
     if (!picked) {
         await askForLanguage(convo);
         return;

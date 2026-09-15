@@ -1,3 +1,4 @@
+const { asLanguage } = require("../config/languages");
 const axios = require("axios");
 const WebSocket = require("ws");
 
@@ -40,12 +41,12 @@ const keyring = require("./keyring.service");
 
 /** Sarvam speaks these; the app's three languages map onto them. */
 const SARVAM_LANG = {
-    odenglish: "od-IN",
+    odia: "od-IN",
     hinglish: "hi-IN",
     english: "en-IN",
 };
 
-const langCode = (language) => SARVAM_LANG[language] || SARVAM_LANG.odenglish;
+const langCode = (language) => SARVAM_LANG[asLanguage(language)] || SARVAM_LANG.english;
 
 // Gemini may come from the ring now rather than from the environment, so the
 // question is whether a key exists at all, not whether one variable is set
@@ -644,14 +645,17 @@ const speakStream = (text, language, onPcm) => new Promise((resolve) => {
  * adding an entry here rather than editing the prompt.
  */
 const STYLE = {
-    odenglish: {
-        speak: "Odia mixed with English the way it is spoken in Bhubaneswar. " +
-            "Odia in Odia script, English words in English letters, in the same sentence. " +
-            "Do not translate English words into pure Odia.",
+    odia: {
+        speak: "Simple everyday Odia, the way it is spoken in Bhubaneswar - short " +
+            "sentences, nothing formal. Odia in Odia script, and the English words " +
+            "people actually say in English left in English letters, in the same " +
+            "sentence. Do not translate those into formal Odia.",
         mix: "Odia sentences with the English words left in English. " +
             '"ଆପଣ booking କରିଥିବା ticket number", not a translated word for booking.',
         script: "Write the Odia in Odia script and the English words in English letters, in\n" +
-            "  the same sentence. That is how it is read aloud correctly.",
+            "  the same sentence. That is how it is read aloud correctly. What they say\n" +
+            "  back may be Odia, English or a mix - understand it either way and never\n" +
+            "  ask them to speak differently.",
         nods: '"ହଉ", "ଆଚ୍ଛା", "ଠିକ ଅଛି"',
         intro: "ନମସ୍କାର, ମୁଁ Cosmosgen ର AI assistant " + ASSISTANT_NAME + " କହୁଛି।",
     },
@@ -675,7 +679,7 @@ const STYLE = {
     },
 };
 
-const styleFor = (language) => STYLE[language] || STYLE.english;
+const styleFor = (language) => STYLE[asLanguage(language)] || STYLE.english;
 
 /**
  * How a call is written, as opposed to a chat.
@@ -886,12 +890,12 @@ const TOOLS = { availability: AVAILABILITY_TOOL, feedback: FEEDBACK_TOOL };
  */
 const SIGN_OFF = {
     availability: {
-        odenglish: "Dhanyabad. Office apananku confirm kari janai deba. Namaskar.",
+        odia: "ଧନ୍ୟବାଦ। Office ଆପଣଙ୍କୁ confirm କରି ଜଣାଇଦେବ। ନମସ୍କାର।",
         hinglish: "Dhanyavad. Office aapko confirm kar dega. Namaste.",
         english: "Thank you. The office will confirm with you shortly. Goodbye.",
     },
     feedback: {
-        odenglish: "Apananka samaya pain dhanyabad. Namaskar.",
+        odia: "ଆପଣଙ୍କ ସମୟ ପାଇଁ ଧନ୍ୟବାଦ। ନମସ୍କାର।",
         hinglish: "Aapke time ke liye dhanyavad. Namaste.",
         english: "Thank you for your time. Goodbye.",
     },
@@ -905,19 +909,19 @@ const SIGN_OFF = {
  * stop bothering them.
  */
 const NUDGE = {
-    odenglish: ["Hello, apana shunuchhanti ki?", "Hello? Mun apananka awaaj shunipariuni."],
+    odia: ["Hello, ଆପଣ ଶୁଣୁଛନ୍ତି କି?", "Hello? ମୁଁ ଆପଣଙ୍କ ସ୍ୱର ଶୁଣି ପାରୁନାହିଁ।"],
     hinglish: ["Hello, aap sun rahe hain?", "Hello? Mujhe aapki awaaz nahi aa rahi."],
     english: ["Hello, are you there?", "Hello? I cannot hear you."],
 };
 
 const nudge = (language, attempt = 0) => {
-    const lines = NUDGE[language] || NUDGE.odenglish;
+    const lines = NUDGE[asLanguage(language)] || NUDGE.english;
     return lines[Math.min(attempt, lines.length - 1)];
 };
 
 const signOff = (purpose, language) =>
-    (SIGN_OFF[purpose] || SIGN_OFF.availability)[language] ||
-    (SIGN_OFF[purpose] || SIGN_OFF.availability).odenglish;
+    (SIGN_OFF[purpose] || SIGN_OFF.availability)[asLanguage(language)] ||
+    (SIGN_OFF[purpose] || SIGN_OFF.availability).english;
 
 
 

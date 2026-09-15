@@ -1,3 +1,4 @@
+const { LANGUAGE_ENUM } = require("../config/languages");
 const mongoose = require("mongoose");
 
 /**
@@ -35,7 +36,7 @@ const callSchema = new mongoose.Schema({
         index: true,
     },
 
-    language: { type: String, enum: ["english", "hinglish", "odenglish"], default: "odenglish" },
+    language: { type: String, enum: LANGUAGE_ENUM, default: "english" },
 
     // The carrier's id for the call, so a support question can be traced to their
     // console without guessing from timestamps

@@ -1,3 +1,4 @@
+const { LANGUAGES, asLanguage } = require("../config/languages");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 
@@ -180,7 +181,7 @@ const updateProfile = async (req, res) => {
         if (String(state || "").trim()) typed.state = String(state).trim();
         if (String(area || "").trim()) typed.area = String(area).trim();
 
-        if (["english", "hinglish", "odenglish"].includes(language)) {
+        if (LANGUAGES.includes(language)) {
             typed.language = language;
             typed.languageConfirmedAt = new Date();
         }
@@ -208,17 +209,17 @@ const updateProfile = async (req, res) => {
  * Public on purpose: somebody deciding whether to install the app needs to see
  * what is on offer before they have an account.
  */
-const LANG_FIELD = { english: "en", hinglish: "hinglish", odenglish: "odenglish" };
+const LANG_FIELD = { english: "en", hinglish: "hinglish", odia: "odia" };
 
 const getServices = async (req, res) => {
     try {
-        const lang = LANG_FIELD[req.query.language] || LANG_FIELD[req.user?.language] || "en";
+        const lang = LANG_FIELD[asLanguage(req.query.language)] || LANG_FIELD[asLanguage(req.user?.language)] || "en";
 
         /*
          * Two shapes, one rule.
          *
          * A service and an appliance carry `label` / `labelHinglish` /
-         * `labelOdenglish`; an issue carries `en` / `hinglish` / `odenglish`.
+         * `labelOdia`; an issue carries `en` / `hinglish` / `odia`.
          * Both fall back to English when a translation is missing, and English
          * is always what `label` reports - that is the wording the office and
          * the vendor read on the ticket, so it must not change with whatever
@@ -226,7 +227,7 @@ const getServices = async (req, res) => {
          */
         const named = (item) => lang === "en"
             ? item.label
-            : (lang === "hinglish" ? item.labelHinglish : item.labelOdenglish) || item.label;
+            : (lang === "hinglish" ? item.labelHinglish : item.labelOdia) || item.label;
 
         const said = (i) => (lang === "en" ? i.en : i[lang] || i.en);
 
@@ -290,7 +291,7 @@ const book = async (req, res) => {
          * Written before the booking, so the very first message about this job
          * is already in it.
          */
-        if (["english", "hinglish", "odenglish"].includes(language) && language !== req.user.language) {
+        if (LANGUAGES.includes(language) && language !== req.user.language) {
             await userModel.updateOne(
                 { _id: req.user._id },
                 { $set: { language, languageConfirmedAt: new Date() } }

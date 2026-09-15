@@ -23,14 +23,14 @@ const issueSchema = new mongoose.Schema({
     // picked.
     en: { type: String, required: true, trim: true },
     hinglish: { type: String, trim: true },
-    odenglish: { type: String, trim: true },
+    odia: { type: String, trim: true },
 }, { _id: false });
 
 const applianceSchema = new mongoose.Schema({
     key: { type: String, required: true, trim: true, uppercase: true },
     label: { type: String, required: true, trim: true },
     labelHinglish: { type: String, trim: true },
-    labelOdenglish: { type: String, trim: true },
+    labelOdia: { type: String, trim: true },
     image: { type: String, default: "" },
     issues: [issueSchema],
 }, { _id: false });
@@ -40,7 +40,7 @@ const serviceSchema = new mongoose.Schema({
 
     label: { type: String, required: true, trim: true },
     labelHinglish: { type: String, trim: true },
-    labelOdenglish: { type: String, trim: true },
+    labelOdia: { type: String, trim: true },
 
     // What to call the person on this job. "Technician" everywhere sounds wrong
     // when somebody books a house cleaning.

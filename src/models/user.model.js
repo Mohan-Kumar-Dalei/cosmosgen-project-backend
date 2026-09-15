@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { LANGUAGE_ENUM } = require("../config/languages");
 
 const userSchema = new mongoose.Schema({
     phone: { type: String, required: true, unique: true, trim: true },
@@ -53,7 +54,7 @@ const userSchema = new mongoose.Schema({
      */
     language: {
         type: String,
-        enum: ["english", "hinglish", "odenglish"],
+        enum: LANGUAGE_ENUM,
         default: "english",
     },
 

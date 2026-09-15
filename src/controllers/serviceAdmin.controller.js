@@ -188,7 +188,7 @@ const createService = async (req, res) => {
 const updateService = async (req, res) => {
     try {
         const allowed = [
-            "label", "labelHinglish", "labelOdenglish", "worker", "keywords",
+            "label", "labelHinglish", "labelOdia", "worker", "keywords",
             "image", "blurb", "badges", "appliances", "issues", "order", "isActive",
         ];
 

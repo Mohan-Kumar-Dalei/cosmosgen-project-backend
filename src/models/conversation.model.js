@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { LANGUAGE_ENUM } = require("../config/languages");
 
 /**
  * WhatsApp is stateless - every message arrives as a separate HTTP POST with
@@ -48,7 +49,7 @@ step: {
 
     // Which of the three the customer picked. Mirrored from the user record
     // so the flow can check it without a lookup on every turn.
-    language: { type: String, enum: ["english", "hinglish", "odenglish"] },
+    language: { type: String, enum: LANGUAGE_ENUM },
 
     // The name they typed, kept here so greetings can use it without
     // reloading the user on every turn.

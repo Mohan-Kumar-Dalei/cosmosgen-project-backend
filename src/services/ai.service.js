@@ -1,3 +1,4 @@
+const { asLanguage } = require("../config/languages");
 const Ticket = require("../models/ticket.model");
 const UserModel = require("../models/user.model");
 const { SERVICE_CATALOG, getServiceByKey } = require("../config/services");
@@ -233,30 +234,32 @@ const LANGUAGE_RULES = {
     // script", a small model drifts into Hindi within a turn or two, because
     // that is what most of its Roman-script Indian-language training looks
     // like. Concrete Odia words give it something to copy.
-    odenglish:
-        "Write in ODIA using Roman letters, mixed with English words. This is " +
-        "Odia, not Hindi - do not drift into Hindi.\n" +
-        "Use Odia words like these:\n" +
-        "  Namaskar (hello), apananka (your), mun (I), achhi (is/are),\n" +
-        "  kana (what), kete (how much/many), kemiti (how), kahinki (why),\n" +
-        "  hauchi (is happening), kariba (to do), dei (giving), dhanyabad (thank you),\n" +
-        "  thik achhi (okay), samasya (problem), kebe (when), au (and).\n" +
-        "Verbs must be in the future when you offer to do something: it is " +
-        "\"kari debi\" (I will do), never \"kari dei\". Likewise \"pathei debi\" " +
-        "(I will send), \"janai debi\" (I will let you know).\n" +
+    odia:
+        "Write in ODIA, in Odia script. This is Odia, not Hindi and not " +
+        "Bengali - do not drift into either.\n" +
+        "Simple, everyday Odia - the way somebody speaks to a neighbour, not " +
+        "the way a notice is written. Short sentences.\n" +
+        "Never write Odia in Roman letters. Transliterated Odia is unreadable " +
+        "even to an Odia speaker, because there is no agreed spelling for it.\n" +
+        "Keep service and technical words in English, in English letters, " +
+        "inside the Odia sentence - AC, technician, service, booking, invoice, " +
+        "app, location. That is how people actually say them. Do not translate " +
+        "them into formal Odia.\n" +
+        "Verbs must be in the future when you offer to do something: " +
+        "\"କରିଦେବି\" (I will do), never \"କରିଦେଉଛି\". Likewise \"ପଠାଇଦେବି\" " +
+        "(I will send), \"ଜଣାଇଦେବି\" (I will let you know).\n" +
         "Examples of the tone:\n" +
-        "  \"Apananka AC re kana samasya hauchi?\"\n" +
-        "  \"Kete dinru ehi samasya hauchi?\"\n" +
-        "  \"Mun apananka pain technician book kari debi ki?\"\n" +
-        "  \"Team confirm kale mun apananku janai debi.\"\n" +
-        "Keep technical and service words in English - AC, technician, service, " +
-        "booking, invoice. Never write in Odia script.\n" +
-        "These Hindi words keep slipping in. Never use them - use the Odia one:\n" +
-        "  hai/hain -> achhi      nahi -> nahin / -uni     kya -> kana\n" +
-        "  aapka -> apananka      main -> mun               kyunki -> karana\n" +
-        "  karna -> kariba        raha hai -> uchhi         kitna -> kete\n" +
-        "  aur -> au              theek hai -> thik achhi   namaste -> namaskar\n" +
-        "  ho gaya -> heigala     chahiye -> darkar         dhanyavad -> dhanyabad",
+        "  \"ଆପଣଙ୍କ AC ରେ କଣ ସମସ୍ୟା ହେଉଛି?\"\n" +
+        "  \"କେତେ ଦିନରୁ ଏହି ସମସ୍ୟା ହେଉଛି?\"\n" +
+        "  \"ମୁଁ ଆପଣଙ୍କ ପାଇଁ technician book କରିଦେବି କି?\"\n" +
+        "  \"Team confirm କଲେ ମୁଁ ଆପଣଙ୍କୁ ଜଣାଇଦେବି।\"\n" +
+        "End sentences with the Odia full stop, which is the danda: ।\n" +
+        "READING them is a different matter from writing to them. Most people " +
+        "here type Odia in Roman letters with English words mixed in - " +
+        "\"AC thanda karuni\", \"kete din ru\", \"pani jharuchi\" - and some " +
+        "type plain English, or Hindi. Understand whatever they send, in any " +
+        "script, without ever asking them to write differently. Only your own " +
+        "reply is in Odia script.",
 };
 
 /**
@@ -268,7 +271,7 @@ const LANGUAGE_RULES = {
  * is the field that records an answer, so that is the one to test.
  */
 const chosenLanguage = (userData) =>
-    (userData?.languageConfirmedAt ? userData.language : null) || "english";
+    asLanguage(userData?.languageConfirmedAt ? userData.language : null) || "english";
 
 const languageBlock = (language) =>
     "\nLANGUAGE - THIS OVERRIDES EVERYTHING ELSE:\n" +

@@ -34,7 +34,7 @@ const examples = () => SERVICE_CATALOG.slice(0, 2).map((s) => ({
     worker: s.worker,
     keywords: s.keywords,
     issues: (s.issues || []).slice(0, 3).map((i) => ({
-        key: i.key, en: i.en, hinglish: i.hinglish, odenglish: i.odenglish,
+        key: i.key, en: i.en, hinglish: i.hinglish, odia: i.odia,
     })),
 }));
 
@@ -47,19 +47,20 @@ Shape:
   "key": "UPPER_SNAKE_CASE, short, unique, derived from the name",
   "label": "the service as a customer would see it, title case, under 40 characters",
   "labelHinglish": "the same, as a Hindi speaker in Odisha would say it - keep English words people actually use",
-  "labelOdenglish": "the same, as an Odia speaker would say it, written in Latin script",
+  "labelOdia": "the same, as an Odia speaker would say it, written in Odia script - keep the English words people actually use in English letters",
   "worker": "one lower-case noun for the person who does it: electrician, plumber, carpenter, cleaner, technician",
   "keywords": ["lower case words that would appear in an engineer's own description of their skills"],
   "blurb": "one sentence, max 140 characters, in the words a customer would use about their own house. No marketing adjectives.",
   "badges": ["three or four two-to-three word tags, e.g. 'Same-day visits', 'Parts from the list'"],
   "issues": [
-    { "key": "UPPER_SNAKE", "en": "the fault in plain English", "hinglish": "...", "odenglish": "..." }
+    { "key": "UPPER_SNAKE", "en": "the fault in plain English", "hinglish": "...", "odia": "..." }
   ],
   "appliances": []
 }
 
 HARD RULES
-Every "en", "hinglish" and "odenglish" string must be 24 characters or fewer. They are rows in a WhatsApp list and anything longer is cut off mid-word. Count them.
+The "odia" strings are Odia and must be written in Odia script, never in Latin letters - transliterated Odia is unreadable even to an Odia speaker. Words people say in English (AC, fuse, spin, servicing, cleaning) stay in English letters inside the Odia sentence.
+Every "en", "hinglish" and "odia" string must be 24 characters or fewer. They are rows in a WhatsApp list and anything longer is cut off mid-word. Count them.
 Give between four and six issues. They must be the faults people actually report, not categories.
 "appliances" stays an empty array unless the service genuinely covers several different machines, in which case give each one a key, a label and its own issues under the same 24-character rule.
 Never invent a price, a duration or a guarantee. Nothing in the blurb or a badge may promise a time or an amount.
@@ -82,7 +83,7 @@ const tidyIssue = (issue, i) => ({
     key: String(issue.key || "ISSUE_" + (i + 1)).toUpperCase().replace(/[^A-Z0-9_]/g, "_"),
     en: clip(issue.en || ""),
     hinglish: clip(issue.hinglish || issue.en || ""),
-    odenglish: clip(issue.odenglish || issue.en || ""),
+    odia: clip(issue.odia || issue.en || ""),
 });
 
 /**
@@ -114,7 +115,7 @@ const draft = async (name, note = "") => {
         key,
         label: String(raw.label || name).slice(0, 60).trim(),
         labelHinglish: String(raw.labelHinglish || raw.label || name).slice(0, 60).trim(),
-        labelOdenglish: String(raw.labelOdenglish || raw.label || name).slice(0, 60).trim(),
+        labelOdia: String(raw.labelOdia || raw.label || name).slice(0, 60).trim(),
         worker: String(raw.worker || "technician").toLowerCase().trim(),
 
         // Always something to match on: a service with no keywords can never be
@@ -135,7 +136,7 @@ const draft = async (name, note = "") => {
             key: String(a.key || "ITEM_" + (i + 1)).toUpperCase().replace(/[^A-Z0-9_]/g, "_"),
             label: String(a.label || "").slice(0, 60).trim(),
             labelHinglish: String(a.labelHinglish || a.label || "").slice(0, 60).trim(),
-            labelOdenglish: String(a.labelOdenglish || a.label || "").slice(0, 60).trim(),
+            labelOdia: String(a.labelOdia || a.label || "").slice(0, 60).trim(),
             image: "",
             issues: (a.issues || []).map(tidyIssue).filter((x) => x.en),
         })).filter((a) => a.label && a.issues.length),
