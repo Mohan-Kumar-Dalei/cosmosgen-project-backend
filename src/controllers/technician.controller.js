@@ -120,13 +120,18 @@ const registerTechnician = async (req, res) => {
         // Re-check here rather than trusting phase 1 - minutes may have passed
         const existing = await technicianModel
             .findOne({ phone: verified.phone })
-            .select("_id isBlacklisted")
+            .select("_id isBlacklisted isDeleted")
             .lean();
 
         if (existing?.isBlacklisted) {
             return res.status(403).json({ success: false, message: "This number cannot be registered." });
         }
-        if (existing) {
+
+        // Same reasoning as the check at the start of signup - a deleted
+        // account is not allowed to hold its own number hostage
+        if (existing?.isDeleted) {
+            await technicianModel.deleteOne({ _id: existing._id });
+        } else if (existing) {
             return res.status(409).json({ success: false, message: "This number is already registered" });
         }
 
@@ -227,8 +232,28 @@ const registerTechnician = async (req, res) => {
 const signupBlockedFor = async (phone) => {
     const existing = await technicianModel
         .findOne({ phone })
-        .select("_id isBlacklisted approvalStatus")
+        .select("_id isBlacklisted approvalStatus isDeleted")
         .lean();
+
+    /*
+     * A deleted account does not hold the number hostage.
+     *
+     * The phone is unique on this collection, so a soft-deleted row kept
+     * refusing its own owner for the length of the grace period - somebody who
+     * left on Monday and thought better of it on Tuesday was told his number
+     * was "already registered" and given no way forward. The grace period is
+     * there to protect the office's records, not to lock a person out.
+     *
+     * Removed rather than revived, because coming back is a fresh
+     * registration: the office approves it again, and the skills and bank
+     * details are asked for as they are today rather than as they were.
+     * Tickets keep their own copy of who did the work, so nothing readable is
+     * lost by this.
+     */
+    if (existing?.isDeleted && !existing.isBlacklisted) {
+        await technicianModel.deleteOne({ _id: existing._id });
+        return null;
+    }
 
     if (existing?.isBlacklisted) {
         return {
@@ -676,6 +701,8 @@ const deleteTechProfile = async (req, res) => {
 
         await technicianModel.findByIdAndUpdate(techId, {
             isDeleted: true, isAvailable: false, activeTicket: null,
+            // The clock the office sees, and the one Mongo's TTL index reads
+            deletedAt: new Date(),
         });
 
         res.clearCookie("techToken", clearOptions);

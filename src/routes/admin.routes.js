@@ -74,6 +74,10 @@ router.get("/keys", isAdminAuthenticated, isSuperAdmin, keyAdmin.listKeys);
    themselves - it is a bill, and the shape of one says how the product is
    being used. */
 router.get("/map-usage", isAdminAuthenticated, isSuperAdmin, keyAdmin.mapUsage);
+
+/* Emptying the vendor recycle bin. Owner only - it is the one thing on that
+   screen nobody can undo. */
+router.delete("/technicians/deleted", isAdminAuthenticated, isSuperAdmin, adminController.purgeDeletedTechnicians);
 router.post("/keys", isAdminAuthenticated, isSuperAdmin, keyAdmin.addKey);
 router.post("/keys/reveal", isAdminAuthenticated, isSuperAdmin, keyAdmin.revealKey);
 router.post("/keys/:id/test", isAdminAuthenticated, isSuperAdmin, keyAdmin.testKey);

@@ -136,10 +136,35 @@ const technicianSchema = new mongoose.Schema({
 
 
     isDeleted: { type: Boolean, default: false },
+
+    /*
+     * When the account was deleted, and the thing that eventually removes it.
+     *
+     * Deleting a vendor has always been a flag rather than a removal, which is
+     * right - tickets, payouts and a wallet balance all point at this row, and
+     * dropping it the moment somebody taps a button would take the office's
+     * own history with it. What was missing is the second half: the row then
+     * sat there for ever, and the panel had no way to see or finish it.
+     *
+     * So the date is stamped, the office gets a week to change its mind or
+     * clear it out by hand, and Mongo removes whatever is left. The TTL index
+     * below is what does that - no cron job, no forgotten script, and it keeps
+     * working whether or not anybody is logged in.
+     */
+    deletedAt: { type: Date },
 }, { timestamps: true });
 
 technicianSchema.index({ location: "2dsphere" });
 technicianSchema.index({ state: 1, city: 1, isAvailable: 1 });
 technicianSchema.index({ approvalStatus: 1, isDeleted: 1 });
+
+/*
+ * Seven days after deletion, gone.
+ *
+ * Mongo checks about once a minute, so "seven days" is seven days and change -
+ * which is the right kind of precision for a grace period. Only a deleted row
+ * carries `deletedAt`, so nothing else is ever in range of this.
+ */
+technicianSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 });
 
 module.exports = mongoose.model("Technician", technicianSchema);

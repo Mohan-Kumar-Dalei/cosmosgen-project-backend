@@ -1309,10 +1309,16 @@ const getAllTechnicians = async (req, res) => {
         if (approval === "pending") {
             filter.approvalStatus = "pending";
             filter.isBlacklisted = false;
+            filter.isDeleted = false;
         } else if (approval === "blocked") {
             filter.isBlacklisted = true;
+            filter.isDeleted = false;
         } else if (approval === "rejected") {
             filter.approvalStatus = "rejected";
+            filter.isDeleted = false;
+        } else if (approval === "deleted") {
+            // The recycle bin. Everything else on this screen hides these.
+            filter.isDeleted = true;
         } else {
             filter.approvalStatus = "approved";
             filter.isDeleted = false;
@@ -1346,7 +1352,7 @@ const getAllTechnicians = async (req, res) => {
         const [technicians, total] = await Promise.all([
             technicianModel
                 .find(filter)
-                .select("name phone profileImage skills rating completedJobs performanceLevel city area state isAvailable availabilitySince lastAwayMs activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted createdAt")
+                .select("name phone profileImage skills rating completedJobs performanceLevel city area state isAvailable availabilitySince lastAwayMs activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted deletedAt createdAt")
                 .sort({ createdAt: -1 })
                 .skip((page - 1) * limit)
                 .limit(limit)
@@ -3962,7 +3968,48 @@ const exportRevenueCsv = async (req, res) => {
 };
 
 
+
+/**
+ * DELETE /api/admin/technicians/deleted
+ *
+ * Empties the recycle bin now instead of waiting out the week.
+ *
+ * The week exists so a deletion can be looked at before it is final; this is
+ * the office saying it has looked. Owner only, because it is the one action on
+ * this screen that cannot be undone by anybody.
+ *
+ * A vendor still holding money is left behind rather than removed. The balance
+ * is the company's record of what it owes him or he owes it, and a bin that
+ * quietly takes that with it would turn "tidy up" into "write off" - so those
+ * rows stay, and the response says how many and why.
+ */
+const purgeDeletedTechnicians = async (req, res) => {
+    try {
+        const owing = await technicianModel.countDocuments({
+            isDeleted: true,
+            walletBalancePaise: { $ne: 0 },
+        });
+
+        const { deletedCount } = await technicianModel.deleteMany({
+            isDeleted: true,
+            walletBalancePaise: 0,
+        });
+
+        return res.status(200).json({
+            success: true,
+            data: { removed: deletedCount, kept: owing },
+            message: owing
+                ? `${deletedCount} removed. ${owing} kept - their wallet is not settled.`
+                : `${deletedCount} account${deletedCount === 1 ? "" : "s"} removed.`,
+        });
+    } catch (error) {
+        console.error("Purge deleted technicians error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 module.exports = {
+    purgeDeletedTechnicians,
     registerAdmin,
     loginAdmin,
     logoutAdmin,
