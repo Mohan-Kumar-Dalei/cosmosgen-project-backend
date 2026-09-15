@@ -1,6 +1,8 @@
 const ApiKey = require("../models/apiKey.model");
 const keyring = require("../services/keyring.service");
 const { ENV_KEYS, ENV_SECRETS } = require("../config/apiKeys");
+const usage = require("../services/mapUsage.service");
+const { RATES, VIEW_RATES, CONFIG, rupeesFor } = require("../config/mapRates");
 
 /**
  * The owner's view of what the platform is spending.
@@ -447,4 +449,80 @@ const removeKey = async (req, res) => {
     }
 };
 
-module.exports = { listKeys, addKey, updateKey, promoteKey, resetKey, testKey, revealKey, removeKey };
+
+/**
+ * GET /api/admin/map-usage?days=14
+ *
+ * What the map providers were asked for, day by day and kind by kind, priced
+ * in rupees.
+ *
+ * The key ring already counts Google as one number, which says the key is
+ * alive and nothing about where the money goes - an autocomplete request and a
+ * route matrix are both "Google" and are priced an order of magnitude apart.
+ * This splits them, so "the bill went up" can be followed by "because of what".
+ *
+ * The rupee figures come from `config/mapRates.js`, which holds list prices
+ * somebody has to keep current by hand. The rate card and the date it was last
+ * checked travel with the response, so the page can say plainly what it is
+ * estimating from rather than presenting a guess as an invoice.
+ */
+const mapUsage = async (req, res) => {
+    try {
+        const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
+        const rows = await usage.recent(days);
+
+        const priced = rows.map((row) => {
+            const kinds = {};
+            let rupees = 0;
+
+            for (const [kind, count] of Object.entries(row.kinds)) {
+                const cost = rupeesFor(kind, count);
+                kinds[kind] = { count, rupees: Math.round(cost * 100) / 100 };
+                rupees += cost;
+            }
+
+            return {
+                day: row.day,
+                total: row.total,
+                rupees: Math.round(rupees * 100) / 100,
+                kinds,
+            };
+        });
+
+        // The totals the page leads with, added up here so the browser does
+        // not do the same arithmetic a second time
+        const period = { calls: 0, rupees: 0, kinds: {} };
+        for (const row of priced) {
+            period.calls += row.total;
+            period.rupees += row.rupees;
+            for (const [kind, entry] of Object.entries(row.kinds)) {
+                if (!period.kinds[kind]) period.kinds[kind] = { count: 0, rupees: 0 };
+                period.kinds[kind].count += entry.count;
+                period.kinds[kind].rupees += entry.rupees;
+            }
+        }
+        period.rupees = Math.round(period.rupees * 100) / 100;
+        for (const entry of Object.values(period.kinds)) {
+            entry.rupees = Math.round(entry.rupees * 100) / 100;
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                days,
+                today: usage.today(),
+                rows: priced,
+                period,
+                rates: RATES,
+                views: VIEW_RATES,
+                config: CONFIG,
+            },
+        });
+    } catch (error) {
+        console.error("Map usage error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+module.exports = {
+    mapUsage, listKeys, addKey, updateKey, promoteKey, resetKey, testKey, revealKey, removeKey };

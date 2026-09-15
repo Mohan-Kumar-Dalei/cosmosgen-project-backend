@@ -2,6 +2,7 @@ const axios = require("axios");
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const keyring = require("./keyring.service");
+const mapUsage = require("./mapUsage.service");
 
 const ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
 const MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix";
@@ -38,6 +39,7 @@ const computeRoute = async (origin, destination) => {
 
     try {
         keyring.count("google");
+        mapUsage.record("routes");
         const response = await axios.post(
             ROUTES_URL,
             {
@@ -145,6 +147,7 @@ const computeRouteMatrix = async (origin, destinations = []) => {
 
     try {
         keyring.count("google");
+        mapUsage.record("matrix");
 
         const response = await axios.post(
             MATRIX_URL,

@@ -69,6 +69,11 @@ router.put("/images/:slot", isAdminAuthenticated, isSuperAdmin, upload.single("i
    fall back to when a free tier runs out. Owner only, and the key itself is
    never sent back to the browser. */
 router.get("/keys", isAdminAuthenticated, isSuperAdmin, keyAdmin.listKeys);
+
+/* What the maps cost, split by the kind of call. Owner only, like the keys
+   themselves - it is a bill, and the shape of one says how the product is
+   being used. */
+router.get("/map-usage", isAdminAuthenticated, isSuperAdmin, keyAdmin.mapUsage);
 router.post("/keys", isAdminAuthenticated, isSuperAdmin, keyAdmin.addKey);
 router.post("/keys/reveal", isAdminAuthenticated, isSuperAdmin, keyAdmin.revealKey);
 router.post("/keys/:id/test", isAdminAuthenticated, isSuperAdmin, keyAdmin.testKey);

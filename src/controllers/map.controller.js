@@ -23,6 +23,7 @@ const setCache = (key, value) => {
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const keyring = require("../services/keyring.service");
+const mapUsage = require("../services/mapUsage.service");
 const { searchCities, findCity } = require("../config/cities");
 const technicianModel = require("../models/technician.model");
 const { extraAreasFor } = require("../config/localities");
@@ -125,6 +126,7 @@ const lookupPlace = async (lat, lon) => {
     if (cached) return cached;
 
     keyring.count("google");
+    mapUsage.record("geocode");
     const response = await axios.get("https://maps.googleapis.com/maps/api/geocode/json", {
         params: {
             latlng: `${lat},${lon}`,
@@ -230,6 +232,7 @@ const searchPlaces = async (req, res) => {
         if (sessionToken) body.sessionToken = sessionToken;
 
         keyring.count("google");
+    mapUsage.record("autocomplete");
         const response = await axios.post(
             "https://places.googleapis.com/v1/places:autocomplete",
             body,
@@ -291,6 +294,7 @@ const placeDetails = async (req, res) => {
         }
 
         keyring.count("google");
+    mapUsage.record("details");
         const response = await axios.get(
             `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`,
             {
@@ -490,6 +494,7 @@ const googleAreas = async (term, city, sessionToken) => {
     if (sessionToken) body.sessionToken = sessionToken;
 
     keyring.count("google");
+    mapUsage.record("autocomplete");
     const response = await axios.post(
         "https://places.googleapis.com/v1/places:autocomplete",
         body,
@@ -681,6 +686,7 @@ const googleCities = async (term, sessionToken) => {
     if (sessionToken) body.sessionToken = sessionToken;
 
     keyring.count("google");
+    mapUsage.record("autocomplete");
     const response = await axios.post(
         "https://places.googleapis.com/v1/places:autocomplete",
         body,
