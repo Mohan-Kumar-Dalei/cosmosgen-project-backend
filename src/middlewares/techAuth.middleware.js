@@ -27,7 +27,17 @@ const isTechAuthenticated = async (req, res, next) => {
 
         const technician = await technicianModel
             .findById(decoded.techId)
-            .select("_id name phone state area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel location approvalStatus isBlacklisted isDeleted bankDetails commissionRate walletBalancePaise")
+            /*
+             * `city` belongs in this list, and its absence is why the vendor
+             * app showed "Not set" against Town or city.
+             *
+             * GET /technician/me hands back exactly what this attaches, so a
+             * field left out here does not merely go unchecked - it never
+             * reaches the app at all, and the profile screen reports it as
+             * missing from the record. `state`, `area` and `pincode` were all
+             * here; the town was the one that was not.
+             */
+            .select("_id name phone state city area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel location approvalStatus isBlacklisted isDeleted bankDetails commissionRate walletBalancePaise")
             .lean();
 
         if (!technician) {
