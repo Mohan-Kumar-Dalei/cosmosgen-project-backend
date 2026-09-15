@@ -110,7 +110,7 @@ class Session {
     ensureListener() {
         if (this.done) return;
         if (this.stt?.alive) return;
-        this.stt = voice.listenStream(this.call?.language || "odenglish");
+        this.stt = voice.listenStream(this.call?.language || "english");
     }
 
     /**
@@ -395,7 +395,7 @@ class Session {
         this.busy = true;
         this.clearQuietTimer();
 
-        const language = this.call?.language || "odenglish";
+        const language = this.call?.language || "english";
         let bytes = 0;
 
         // Streamed rather than fetched whole: the customer hears the first

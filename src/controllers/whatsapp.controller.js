@@ -400,7 +400,11 @@ const startFlow = async (convo) => {
 
     convo.user = onFile._id;
     convo.customerName = onFile.name;
-    if (onFile.language) convo.language = onFile.language;
+
+    // Only a language they actually chose. The account always carries one -
+    // the schema sets it on the way in - so taking it at face value is what
+    // had a first-time customer answered in Odia.
+    if (onFile.languageConfirmedAt) convo.language = onFile.language;
 
     /*
      * The address is deliberately not copied onto the conversation.
@@ -439,7 +443,7 @@ const sendAppSignup = async (convo) => {
  * language is used here - unlike the signup message, we know who they are.
  */
 const sendNeedsLocation = async (convo, onFile) => {
-    if (onFile?.language) convo.language = onFile.language;
+    if (onFile?.languageConfirmedAt) convo.language = onFile.language;
 
     await whatsapp.sendText(convo.phone, copyFor(convo.language).appNeedsLocation);
     convo.step = "AWAITING_APP_SIGNUP";
@@ -490,7 +494,7 @@ const resumeOnboarding = async (convo, known) => {
         return;
     }
 
-    if (onFile.language) convo.language = onFile.language;
+    if (onFile.languageConfirmedAt) convo.language = onFile.language;
 
     if (!onFile.languageConfirmedAt) {
         await askForLanguage(convo);

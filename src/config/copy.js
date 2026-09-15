@@ -108,8 +108,20 @@ const COPY = {
     },
 };
 
-/** Odia is the house language, so an unset record falls back to it. */
-const copyFor = (language) => COPY[language] || COPY.odenglish;
+/**
+ * English until somebody chooses otherwise.
+ *
+ * This used to fall back to Odenglish on the grounds that Odia is the house
+ * language. It is - but a fallback is not a choice, and the first message a
+ * stranger ever gets from this company was going out in transliterated Odia
+ * they had never asked for. Mohan's word for it was "bakwas", and he is right:
+ * Roman-script Odia is unreadable to somebody not expecting it, and it is the
+ * one message that has to land.
+ *
+ * So the order is English first, then the language question, then everything
+ * after that in whatever they picked.
+ */
+const copyFor = (language) => COPY[language] || COPY.english;
 
 const assertCopyLengths = () => {
     const tooLong = [];

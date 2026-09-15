@@ -259,9 +259,20 @@ const LANGUAGE_RULES = {
         "  ho gaya -> heigala     chahiye -> darkar         dhanyavad -> dhanyabad",
 };
 
+/**
+ * The language the customer actually picked, or English.
+ *
+ * `user.language` is never empty - the schema gives it a value on the way in -
+ * so reading it alone cannot tell a choice from a default, and every customer
+ * who had never been asked was being written to in Odia. `languageConfirmedAt`
+ * is the field that records an answer, so that is the one to test.
+ */
+const chosenLanguage = (userData) =>
+    (userData?.languageConfirmedAt ? userData.language : null) || "english";
+
 const languageBlock = (language) =>
     "\nLANGUAGE - THIS OVERRIDES EVERYTHING ELSE:\n" +
-    (LANGUAGE_RULES[language] || LANGUAGE_RULES.odenglish) +
+    (LANGUAGE_RULES[language] || LANGUAGE_RULES.english) +
     "\nThe customer chose this language. Every reply is in it, every turn, no " +
     "matter what language their own message is written in. Before sending, read " +
     "your reply back and check every word belongs to the chosen language. One " +
@@ -542,7 +553,7 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
         const ticketRecord = record ?? await buildCustomerRecord(userData?._id || userData?.id);
 
         const config = {
-            systemInstruction: instruction + languageBlock(userData?.language) + ticketRecord,
+            systemInstruction: instruction + languageBlock(chosenLanguage(userData)) + ticketRecord,
             tools: [{ functionDeclarations: [createTicketTool] }],
             temperature: 0.3,
         };
@@ -587,7 +598,7 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
         // The apology has to arrive in the language they chose - a Hindi
         // sentence to a customer chatting in English or Odia is the drift
         // they complained about, and it came from here, not the model.
-        return copyFor(userData?.language).aiUnavailable;
+        return copyFor(chosenLanguage(userData)).aiUnavailable;
     }
 };
 

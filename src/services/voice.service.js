@@ -675,7 +675,7 @@ const STYLE = {
     },
 };
 
-const styleFor = (language) => STYLE[language] || STYLE.odenglish;
+const styleFor = (language) => STYLE[language] || STYLE.english;
 
 /**
  * How a call is written, as opposed to a chat.

@@ -38,16 +38,27 @@ const userSchema = new mongoose.Schema({
         type: { type: String, enum: ["Point"] },
         coordinates: { type: [Number], default: undefined }, // [lon, lat]
     },
-    // Odia is the house language, so a customer who never picks one still
-    // gets served in it rather than in English.
+    /*
+     * English until they say otherwise.
+     *
+     * This defaulted to Odenglish - Odia is the house language - and the
+     * effect was that anybody who had never been asked was written to in
+     * Roman-script Odia, including in the very first message the company ever
+     * sends them. A house language is what we offer, not what we assume.
+     *
+     * Changing the default only affects accounts made from here on. Nothing
+     * reads this field on its own any more, though: `languageConfirmedAt`
+     * below is the test everywhere, so an older account carrying the old
+     * default is still written to in English until somebody picks.
+     */
     language: {
         type: String,
         enum: ["english", "hinglish", "odenglish"],
-        default: "odenglish",
+        default: "english",
     },
 
-    // The default above means language is never empty, so it cannot double
-    // as "have they chosen yet". This is what says they picked it.
+    // Language is never empty, so it cannot double as "have they chosen yet".
+    // This is what says they picked it, and it is what every caller tests.
     languageConfirmedAt: { type: Date },
 
     role: { type: String, default: "customer" },

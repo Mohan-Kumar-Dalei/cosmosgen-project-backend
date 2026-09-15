@@ -133,8 +133,15 @@ const placeCall = async ({ ticket, purpose, to, callerId }) => {
     const phone = to || ticket.customerSnapshot?.phone;
     if (!phone) return null;
 
+    /*
+     * languageConfirmedAt as well as the language itself.
+     *
+     * The account always carries a language - the schema writes one on the way
+     * in - so the field alone cannot tell a choice from a default, and a
+     * customer who had never been asked was rung up and spoken to in Odia.
+     */
     const user = ticket.customer
-        ? await userModel.findById(ticket.customer).select("language").lean()
+        ? await userModel.findById(ticket.customer).select("language languageConfirmedAt").lean()
         : null;
 
     const call = await Call.create({
@@ -142,7 +149,7 @@ const placeCall = async ({ ticket, purpose, to, callerId }) => {
         customer: ticket.customer,
         phone,
         purpose,
-        language: user?.language || "odenglish",
+        language: (user?.languageConfirmedAt ? user.language : null) || "english",
         status: "queued",
         attempts: 1,
     });
@@ -355,7 +362,7 @@ const exotelSay = async (req, res) => {
 
     // A flow we cannot place still gets a sentence rather than silence
     if (!call) {
-        const clip = await voice.speak("Sorry, we could not find your booking. The office will call you back.", "odenglish");
+        const clip = await voice.speak("Sorry, we could not find your booking. The office will call you back.", "english");
         if (!clip) return res.sendStatus(404);
         res.set("Content-Type", "audio/wav");
         return res.send(Buffer.from(clip, "base64"));
