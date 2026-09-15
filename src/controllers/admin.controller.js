@@ -483,7 +483,7 @@ const getNearbyTechnicians = async (req, res) => {
 
         const PROJECTION = {
             name: 1, phone: 1, profileImage: 1, skills: 1, rating: 1,
-            completedJobs: 1, performanceLevel: 1, city: 1, address: 1, state: 1, pincode: 1,
+            completedJobs: 1, performanceLevel: 1, city: 1, area: 1, address: 1, state: 1, pincode: 1,
             hasVehicle: 1, lastLocationAt: 1, isAvailable: 1, activeTicket: 1,
         };
 
@@ -1346,7 +1346,7 @@ const getAllTechnicians = async (req, res) => {
         const [technicians, total] = await Promise.all([
             technicianModel
                 .find(filter)
-                .select("name phone profileImage skills rating completedJobs performanceLevel area state isAvailable availabilitySince lastAwayMs activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted createdAt")
+                .select("name phone profileImage skills rating completedJobs performanceLevel city area state isAvailable availabilitySince lastAwayMs activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted createdAt")
                 .sort({ createdAt: -1 })
                 .skip((page - 1) * limit)
                 .limit(limit)
@@ -1543,7 +1543,7 @@ const getTechnicianById = async (req, res) => {
 
         const [technician, activeTicket, scheduled, recentJobs, cashHeld, totalEarnings] = await Promise.all([
             technicianModel.findById(id)
-                .select("name phone email profileImage skills rating completedJobs performanceLevel area state pincode isAvailable activeTicket hasVehicle lastLocationAt location isDeleted createdAt approvalStatus isBlacklisted blacklistReason rejectionReason approvedAt walletBalancePaise commissionRate bankDetails.accountHolderName bankDetails.accountNumber bankDetails.accountLast4 bankDetails.ifsc bankDetails.bankName bankDetails.branch")
+                .select("name phone email profileImage skills rating completedJobs performanceLevel city area state pincode isAvailable activeTicket hasVehicle lastLocationAt location isDeleted createdAt approvalStatus isBlacklisted blacklistReason rejectionReason approvedAt walletBalancePaise commissionRate bankDetails.accountHolderName bankDetails.accountNumber bankDetails.accountLast4 bankDetails.ifsc bankDetails.bankName bankDetails.branch")
                 .lean(),
 
             ticketModel.findOne({ technician: id, status: { $in: ["Assigned", "In-Progress", "Payment-Pending"] } })
