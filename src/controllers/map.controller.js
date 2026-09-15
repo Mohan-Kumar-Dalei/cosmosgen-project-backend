@@ -2,12 +2,12 @@ const axios = require("axios");
 
 const cache = new Map();
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
-const MAX_CACHE = 1000;
+const MAX_CACHE = 4000;
 
-const getCache = (key) => {
+const getCache = (key, ttl = CACHE_TTL) => {
     const hit = cache.get(key);
     if (!hit) return null;
-    if (Date.now() - hit.time > CACHE_TTL) {
+    if (Date.now() - hit.time > ttl) {
         cache.delete(key);
         return null;
     }
@@ -23,7 +23,7 @@ const setCache = (key, value) => {
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const keyring = require("../services/keyring.service");
-const { searchCities } = require("../config/cities");
+const { searchCities, findCity } = require("../config/cities");
 
 // Every response we build for the frontend keeps the same shape the old
 // Nominatim version returned, so nothing downstream had to change.
@@ -331,68 +331,130 @@ const placeDetails = async (req, res) => {
 };
 
 /**
- * GET /api/map/areas?pincode=751024
+ * Every locality inside one town, with the pincode each one belongs to.
  *
- * The localities inside one pincode, so "which part of Bhubaneswar" is a
- * choice rather than a spelling.
+ * A vendor says "Rasulgarh, Bhubaneswar" - he does not say 751010, and asking
+ * him to produce it before he can name his own neighbourhood is the wrong way
+ * round. So the town is what this takes, and the pincode is what it gives
+ * back: picking Rasulgarh fills in 751010 without anybody typing a digit.
  *
- * Asked of India Post, whose directory is the authority on this and who charge
- * nothing for it: no key, no quota, no bill. Google could answer the same
- * question through Places, at roughly five dollars a thousand and with its own
- * idea of where a neighbourhood ends. The post office's names are the ones
- * written on envelopes, which is also what a vendor will recognise.
+ * India Post is the source, and it charges nothing. It has no "list a town"
+ * endpoint though - only "what is at this pincode" - so a town is read by
+ * walking the block of pincodes its head office sits at the bottom of. Indian
+ * pincodes are allocated in contiguous blocks per town, which is what makes
+ * that work: Bhubaneswar is 751001 upwards, and Jatni and Khordha are in the
+ * 7520xx block rather than scattered through this one.
  *
- * Cached hard, because a pincode's post offices do not change from one week to
- * the next - so a town everybody registers from is fetched once and answered
- * from memory after that.
+ * Two things keep a slightly-too-wide guess harmless. A pincode that does not
+ * exist simply answers with nothing, and anything belonging to a different
+ * district is dropped - so the walk can overshoot without dragging a
+ * neighbouring town's streets in.
  *
- * Never fails loudly. If the directory is unreachable the form falls back to a
- * plain text box, which is what it would have been anyway.
+ * Roughly thirty requests the first time a town is asked for, and none ever
+ * again: the answer is cached for a month, because a post office does not move.
  */
-const areas = async (req, res) => {
-    const pincode = String(req.query.pincode || "").replace(/\D/g, "");
+const SCAN_SPAN = 40;
+const SCAN_AT_ONCE = 5;
+const AREA_TTL = 30 * 24 * 60 * 60 * 1000;
 
-    if (pincode.length !== 6) {
-        return res.status(400).json({ success: false, message: "Send a six digit pincode." });
-    }
-
-    const key = "pin:" + pincode;
-    const cached = getCache(key);
-    if (cached) return res.status(200).json({ success: true, data: cached });
-
+/** One pincode's post offices, or an empty list. Never throws. */
+const officesAt = async (pincode) => {
     try {
         const { data } = await axios.get("https://api.postalpincode.in/pincode/" + pincode, {
             timeout: 8000,
         });
-
         const first = Array.isArray(data) ? data[0] : null;
-        const offices = (first && first.PostOffice) || [];
-
-        /*
-         * One entry per locality, tidied.
-         *
-         * The directory returns a post office rather than a neighbourhood, so
-         * a few are the town's own name repeated and a few carry a suffix
-         * nobody says out loud - "Patia Gds" is the goods office at Patia. The
-         * name is kept as the post office writes it, because that is what
-         * matches an envelope, and the district is carried alongside so two
-         * places called the same thing can be told apart.
-         */
-        const list = offices
-            .map((office) => ({
-                name: String(office.Name || "").trim(),
-                district: String(office.District || "").trim(),
-                state: String(office.State || "").trim(),
-            }))
-            .filter((row) => row.name);
-
-        setCache(key, list);
-        return res.status(200).json({ success: true, data: list });
-    } catch (error) {
-        console.error("[MAP] Pincode directory failed:", error.message);
-        // An empty list, not an error: the form offers a text box instead
-        return res.status(200).json({ success: true, data: [] });
+        return (first && first.PostOffice) || [];
+    } catch {
+        return [];
     }
+};
+
+const areasForTown = async (town) => {
+    const key = "town:" + town.city.toLowerCase();
+    const cached = getCache(key, AREA_TTL);
+    if (cached) return cached;
+
+    const base = Number(town.pincode);
+    if (!Number.isFinite(base)) return [];
+
+    // The head office first, because its district is what the rest is judged
+    // against - and if even that answers nothing there is no block to walk
+    const head = await officesAt(base);
+    if (!head.length) return [];
+
+    const district = String(head[0].District || "").toLowerCase();
+    const found = new Map();
+
+    const keep = (offices) => {
+        for (const office of offices) {
+            if (String(office.District || "").toLowerCase() !== district) continue;
+            const name = String(office.Name || "").trim();
+            if (name && !found.has(name)) {
+                found.set(name, String(office.Pincode || "").trim());
+            }
+        }
+    };
+
+    keep(head);
+
+    // In small groups rather than all at once - this is somebody else's free
+    // service and forty simultaneous requests is not how to treat one
+    for (let from = 1; from <= SCAN_SPAN; from += SCAN_AT_ONCE) {
+        const batch = [];
+        for (let i = from; i < from + SCAN_AT_ONCE && i <= SCAN_SPAN; i += 1) {
+            batch.push(officesAt(base + i));
+        }
+        (await Promise.all(batch)).forEach(keep);
+    }
+
+    const list = Array.from(found, ([name, pincode]) => ({ name, pincode }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+    setCache(key, list);
+    return list;
+};
+
+/**
+ * GET /api/map/areas?city=Bhubaneswar
+ * GET /api/map/areas?pincode=751024
+ *
+ * By town is what the forms use. By pincode is kept for the one case it still
+ * answers better: a dropped map pin gives a pincode and nothing else.
+ */
+const areas = async (req, res) => {
+    const city = String(req.query.city || "").trim();
+
+    if (city) {
+        const town = findCity(city);
+        if (!town) return res.status(200).json({ success: true, data: [] });
+
+        try {
+            return res.status(200).json({ success: true, data: await areasForTown(town) });
+        } catch (error) {
+            console.error("[MAP] Town localities failed:", error.message);
+            return res.status(200).json({ success: true, data: [] });
+        }
+    }
+
+    const pincode = String(req.query.pincode || "").replace(/\D/g, "");
+    if (pincode.length !== 6) {
+        return res.status(400).json({ success: false, message: "Send a town or a six digit pincode." });
+    }
+
+    const key = "pin:" + pincode;
+    const cached = getCache(key, AREA_TTL);
+    if (cached) return res.status(200).json({ success: true, data: cached });
+
+    const list = (await officesAt(pincode))
+        .map((office) => ({
+            name: String(office.Name || "").trim(),
+            pincode: String(office.Pincode || "").trim(),
+        }))
+        .filter((row) => row.name);
+
+    setCache(key, list);
+    return res.status(200).json({ success: true, data: list });
 };
 
 /**

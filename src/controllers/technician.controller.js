@@ -69,7 +69,7 @@ const registerTechnician = async (req, res) => {
             });
         }
 
-        if (!name || !password || !state || !city || !address || !skills?.length) {
+        if (!name || !password || !state || !city || !area || !skills?.length) {
             return res.status(400).json({ success: false, message: "Please fill in all the required details" });
         }
 
@@ -142,8 +142,8 @@ const registerTechnician = async (req, res) => {
             pincode: finalPin,
             state: town.state,
             city: town.city,
-            area: String(area || "").trim(),
-            address: String(address).trim(),
+            area: String(area).trim(),
+            address: String(address || "").trim(),
             skills: Array.isArray(skills) ? skills : (skills ? JSON.parse(skills) : []),
             hasVehicle: hasVehicle === 'true' || hasVehicle === true,
             approvalStatus: "pending",

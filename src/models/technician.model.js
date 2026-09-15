@@ -29,18 +29,22 @@ const technicianSchema = new mongoose.Schema({
     /*
      * Which part of the town, chosen rather than typed.
      *
-     * The post office's own name for the locality, offered from the pincode's
-     * entry in India Post's directory. That is the difference between this and
-     * the free-text field it replaced: "Patia", "patia bbsr" and "PATIA SQUARE"
-     * were three places as far as the office was concerned, and none of them
-     * matched what was written on an envelope.
+     * The post office's own name for the locality, picked from the list of
+     * everything inside the chosen town. That is the difference between this
+     * and the free-text field it replaced: "Patia", "patia bbsr" and "PATIA
+     * SQUARE" were three places as far as the office was concerned, and none
+     * of them matched what was written on an envelope.
      *
-     * Optional, because a pincode occasionally returns nothing and a vendor
-     * must never be stopped by a directory being down.
+     * Town plus locality is the whole answer - "Rasulgarh, Bhubaneswar" is
+     * where a vendor works, and the pincode comes with it rather than being
+     * asked for. Which is why there is no street address here: it was a
+     * question with no reader, since the pin is what an engineer navigates to.
      */
-    area: { type: String, trim: true, default: "" },
+    area: { type: String, required: true, trim: true },
 
-    address: { type: String, required: true, trim: true },
+    // Kept, not asked for. Nothing collects it today; it is here so a record
+    // written when the form did ask is not silently dropped.
+    address: { type: String, trim: true, default: "" },
     pincode: { type: String, required: true, trim: true },
 
     profileImage: { type: String, default: "" },
