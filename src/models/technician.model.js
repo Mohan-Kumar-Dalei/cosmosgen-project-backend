@@ -25,6 +25,21 @@ const technicianSchema = new mongoose.Schema({
      */
     state: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true },
+
+    /*
+     * Which part of the town, chosen rather than typed.
+     *
+     * The post office's own name for the locality, offered from the pincode's
+     * entry in India Post's directory. That is the difference between this and
+     * the free-text field it replaced: "Patia", "patia bbsr" and "PATIA SQUARE"
+     * were three places as far as the office was concerned, and none of them
+     * matched what was written on an envelope.
+     *
+     * Optional, because a pincode occasionally returns nothing and a vendor
+     * must never be stopped by a directory being down.
+     */
+    area: { type: String, trim: true, default: "" },
+
     address: { type: String, required: true, trim: true },
     pincode: { type: String, required: true, trim: true },
 

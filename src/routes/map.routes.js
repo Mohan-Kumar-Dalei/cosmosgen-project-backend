@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
 
-const { reverseGeocode, searchPlaces, placeDetails, cities } = require("../controllers/map.controller");
+const { reverseGeocode, searchPlaces, placeDetails, cities, areas } = require("../controllers/map.controller");
 
 // Google's quota is far higher than the old Nominatim 1 req/sec ceiling, so
 // this limit is no longer about their policy - it is about our bill. Each
@@ -18,6 +18,11 @@ const geoLimiter = rateLimit({
    in an array we already have in memory, so there is no bill to protect and no
    provider to be polite to. */
 router.get("/cities", cities);
+
+/* The localities inside a pincode, from India Post. Free and cached, but it
+   is somebody else's server, so the limiter applies - to be polite to them
+   rather than to protect a bill. */
+router.get("/areas", geoLimiter, areas);
 
 router.get("/rev-geocode", geoLimiter, reverseGeocode);
 router.get("/search", geoLimiter, searchPlaces);

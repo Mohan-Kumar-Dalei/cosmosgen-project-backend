@@ -331,6 +331,71 @@ const placeDetails = async (req, res) => {
 };
 
 /**
+ * GET /api/map/areas?pincode=751024
+ *
+ * The localities inside one pincode, so "which part of Bhubaneswar" is a
+ * choice rather than a spelling.
+ *
+ * Asked of India Post, whose directory is the authority on this and who charge
+ * nothing for it: no key, no quota, no bill. Google could answer the same
+ * question through Places, at roughly five dollars a thousand and with its own
+ * idea of where a neighbourhood ends. The post office's names are the ones
+ * written on envelopes, which is also what a vendor will recognise.
+ *
+ * Cached hard, because a pincode's post offices do not change from one week to
+ * the next - so a town everybody registers from is fetched once and answered
+ * from memory after that.
+ *
+ * Never fails loudly. If the directory is unreachable the form falls back to a
+ * plain text box, which is what it would have been anyway.
+ */
+const areas = async (req, res) => {
+    const pincode = String(req.query.pincode || "").replace(/\D/g, "");
+
+    if (pincode.length !== 6) {
+        return res.status(400).json({ success: false, message: "Send a six digit pincode." });
+    }
+
+    const key = "pin:" + pincode;
+    const cached = getCache(key);
+    if (cached) return res.status(200).json({ success: true, data: cached });
+
+    try {
+        const { data } = await axios.get("https://api.postalpincode.in/pincode/" + pincode, {
+            timeout: 8000,
+        });
+
+        const first = Array.isArray(data) ? data[0] : null;
+        const offices = (first && first.PostOffice) || [];
+
+        /*
+         * One entry per locality, tidied.
+         *
+         * The directory returns a post office rather than a neighbourhood, so
+         * a few are the town's own name repeated and a few carry a suffix
+         * nobody says out loud - "Patia Gds" is the goods office at Patia. The
+         * name is kept as the post office writes it, because that is what
+         * matches an envelope, and the district is carried alongside so two
+         * places called the same thing can be told apart.
+         */
+        const list = offices
+            .map((office) => ({
+                name: String(office.Name || "").trim(),
+                district: String(office.District || "").trim(),
+                state: String(office.State || "").trim(),
+            }))
+            .filter((row) => row.name);
+
+        setCache(key, list);
+        return res.status(200).json({ success: true, data: list });
+    } catch (error) {
+        console.error("[MAP] Pincode directory failed:", error.message);
+        // An empty list, not an error: the form offers a text box instead
+        return res.status(200).json({ success: true, data: [] });
+    }
+};
+
+/**
  * GET /api/map/cities?q=
  *
  * The towns this company works in, matched against what is being typed. Reads
@@ -346,4 +411,5 @@ const cities = (req, res) => {
 };
 
 module.exports = {
-    cities, reverseGeocode, searchPlaces, placeDetails, lookupPlace };
+    cities,
+    areas, reverseGeocode, searchPlaces, placeDetails, lookupPlace };

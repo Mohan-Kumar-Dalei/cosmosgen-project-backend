@@ -39,7 +39,7 @@ const clearOptions = {
 };
 
 const PUBLIC_FIELDS =
-    "_id name phone state city address pincode skills profileImage rating isAvailable availabilitySince lastAwayMs activeTicket completedJobs performanceLevel createdAt";
+    "_id name phone state city area address pincode skills profileImage rating isAvailable availabilitySince lastAwayMs activeTicket completedJobs performanceLevel createdAt";
 
 const ACTIVE_STATUSES = ["Assigned", "In-Progress", "Payment-Pending"];
 
@@ -56,7 +56,7 @@ const registerTechnician = async (req, res) => {
     try {
         const {
             phoneToken, name, password, email,
-            pincode, state, city, address, lat, lon,
+            pincode, state, city, area, address, lat, lon,
             skills, hasVehicle,
             accountHolderName, accountNumber, ifsc,
         } = req.body;
@@ -142,6 +142,7 @@ const registerTechnician = async (req, res) => {
             pincode: finalPin,
             state: town.state,
             city: town.city,
+            area: String(area || "").trim(),
             address: String(address).trim(),
             skills: Array.isArray(skills) ? skills : (skills ? JSON.parse(skills) : []),
             hasVehicle: hasVehicle === 'true' || hasVehicle === true,
@@ -591,12 +592,13 @@ const getCashDeposits = async (req, res) => {
 const updateTechProfile = async (req, res) => {
     try {
         const techId = req.technician._id;
-        const { name, state, city, address, pincode } = req.body;
+        const { name, state, city, area, address, pincode } = req.body;
 
         const updateData = {};
         if (name) updateData.name = String(name).trim();
         if (state) updateData.state = String(state).trim();
         if (address) updateData.address = String(address).trim();
+        if (area !== undefined) updateData.area = String(area || "").trim();
 
         // Changing town moves the state with it, for the same reason it does
         // at registration: the two are one fact, not two the vendor can
