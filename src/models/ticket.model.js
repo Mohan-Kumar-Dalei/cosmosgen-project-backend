@@ -326,22 +326,50 @@ ticketSchema.index({ technician: 1, status: 1, updatedAt: -1 });
 ticketSchema.index({ customer: 1, createdAt: -1 });
 ticketSchema.index({ location: "2dsphere" });
 
-// Ticket number: CG-2608-0001
+/*
+ * Ticket number: CG-2608-0001
+ *
+ * $inc is atomic, so two tickets created in the same millisecond cannot take
+ * the same number - but that only holds while the counter and the tickets
+ * agree. They stopped agreeing once: "E11000 duplicate key ... ticketNumber:
+ * CG-2609-0001" means the counter handed out 1 for a month that already had a
+ * ticket 1, which is what happens when the counters are cleared and the
+ * tickets are not, or a database is restored from a point the counter is
+ * behind.
+ *
+ * A booking is too expensive to lose to that. So a number that is already
+ * taken is walked past rather than thrown: the counter is pushed forward and
+ * asked again, and the loop is bounded because a hundred collisions in a row
+ * is not a clash, it is something else entirely.
+ */
+const NUMBER_TRIES = 100;
+
 ticketSchema.pre("validate", async function () {
     if (this.ticketNumber) return;
 
     const now = new Date();
     const prefix = `CG-${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    // $inc is atomic - two tickets created in the same millisecond still
-    // get different numbers
-    const counter = await Counter.findByIdAndUpdate(
-        `ticket-${prefix}`,
-        { $inc: { seq: 1 } },
-        { returnDocument: "after", upsert: true }
-    );
+    for (let i = 0; i < NUMBER_TRIES; i += 1) {
+        const counter = await Counter.findByIdAndUpdate(
+            `ticket-${prefix}`,
+            { $inc: { seq: 1 } },
+            { returnDocument: "after", upsert: true }
+        );
 
-    this.ticketNumber = `${prefix}-${String(counter.seq).padStart(4, "0")}`;
+        const candidate = `${prefix}-${String(counter.seq).padStart(4, "0")}`;
+
+        // eslint-disable-next-line no-await-in-loop
+        const taken = await mongoose.model("Ticket").exists({ ticketNumber: candidate });
+        if (!taken) {
+            this.ticketNumber = candidate;
+            return;
+        }
+
+        console.warn("[TICKET] " + candidate + " is already taken, moving the counter on");
+    }
+
+    throw new Error("Could not find a free ticket number for " + prefix);
 });
 
 module.exports = mongoose.model("Ticket", ticketSchema);

@@ -226,6 +226,30 @@ const isRejected = (error) => {
 };
 
 /**
+ * And what it says when the model itself is busy rather than the key spent.
+ *
+ * "This model is currently experiencing high demand" is a 503, and it is the
+ * single most common thing in this server's error log. It is also the one
+ * error here that is temporary: the key is fine, the prompt is fine, and the
+ * same call a moment later usually works.
+ *
+ * It used to be thrown straight back at the caller, because the loop below
+ * only understood two kinds of failure - a spent key and a wrong one - and
+ * treated everything else as permanent. So a customer's question went
+ * unanswered and a phone call fell silent over a wobble that would have
+ * cleared in half a second.
+ */
+const isBusy = (error) => {
+    const text = (error?.message || "") + " " + (error?.status || "");
+    return /503|UNAVAILABLE|overloaded|high demand|try again later/i.test(text);
+};
+
+/** How long to wait before asking a busy model again, and how many times. */
+const BUSY_WAITS_MS = [400, 1200];
+
+const pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/**
  * Record what a call cost, without making the caller wait for it.
  *
  * The counters are for the office's screen, not for the reply that is already
@@ -312,10 +336,37 @@ const attempt = async (params, call, { pin }) => {
 
     for (const entry of queue) {
         try {
-            const response = await call(clientFor(entry.secret), {
-                ...params,
-                model: (pin && entry.model) || params.model,
-            });
+            /*
+             * A busy model is asked again before the key is blamed.
+             *
+             * Two short waits, and only for a 503 - long enough to ride out
+             * the spike that causes almost all of them, short enough that a
+             * customer on a phone call does not notice. Anything else drops
+             * out of this loop on the first try, exactly as before.
+             */
+            let response = null;
+            let busyError = null;
+
+            for (let attempt = 0; attempt <= BUSY_WAITS_MS.length; attempt += 1) {
+                try {
+                    response = await call(clientFor(entry.secret), {
+                        ...params,
+                        model: (pin && entry.model) || params.model,
+                    });
+                    busyError = null;
+                    break;
+                } catch (error) {
+                    if (!isBusy(error) || attempt === BUSY_WAITS_MS.length) throw error;
+
+                    busyError = error;
+                    console.warn(
+                        "Gemini is busy, waiting " + BUSY_WAITS_MS[attempt] + "ms and asking again"
+                    );
+                    await pause(BUSY_WAITS_MS[attempt]);
+                }
+            }
+
+            if (busyError) throw busyError;
 
             if (entry.row) spend(entry.row);
             return response;
@@ -324,17 +375,24 @@ const attempt = async (params, call, { pin }) => {
 
             const quota = isQuota(error);
             const rejected = isRejected(error);
+            const busy = isBusy(error);
 
             if (entry.row) spend(entry.row, { quota, rejected, error: error.message });
 
-            // Anything that is not the key's fault - a bad prompt, a model
-            // that does not exist, the network - will fail the same way on
-            // every other key, so trying them all just multiplies the wait
-            if (!quota && !rejected) throw error;
+            /*
+             * A key that is spent or wrong is worth swapping. A model that is
+             * still busy after the waits above is worth swapping too - a
+             * different key can land on different capacity. Everything else -
+             * a bad prompt, a model that does not exist, the network - fails
+             * the same way on every key, so trying them all only multiplies
+             * the wait.
+             */
+            if (!quota && !rejected && !busy) throw error;
 
             console.warn(
                 "Gemini key " + (entry.row?.label || "from the environment")
-                + (quota ? " is out of quota" : " was rejected") + ", trying the next one"
+                + (quota ? " is out of quota" : rejected ? " was rejected" : " kept getting a busy model")
+                + ", trying the next one"
             );
         }
     }
@@ -380,4 +438,4 @@ const probe = async (secret, model) => {
     return String(response.text || "").trim().slice(0, 40);
 };
 
-module.exports = { generate, embed, count, health, probe, warm, seemsConfigured, isQuota, isRejected };
+module.exports = { generate, embed, count, health, probe, warm, seemsConfigured, isQuota, isRejected, isBusy };
