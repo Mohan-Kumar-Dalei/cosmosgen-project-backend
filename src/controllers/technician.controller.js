@@ -827,6 +827,41 @@ const updateLocation = async (req, res) => {
     }
 };
 
+/**
+ * POST /api/technician/tickets/:id/on-the-way
+ *
+ * Tapping Directions is what says somebody has set off.
+ *
+ * It used to be the first GPS fix after assignment, which announced a vendor
+ * as travelling because his phone had reported where he was standing. This is
+ * a decision instead, taken by the person taking it, and it is the moment the
+ * customer's page gets a bike, a route and an estimate.
+ *
+ * Safe to call twice: the app fires it beside opening Google Maps, and a
+ * second tap is a vendor checking the road again, not a second departure.
+ */
+const startOnTheWay = async (req, res) => {
+    try {
+        const result = await rideService.markOnTheWay(req.technician._id, req.params.id);
+
+        if (!result.ok) {
+            return res.status(404).json({
+                success: false,
+                message: "That job is not assigned to you, or it has already moved on.",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            already: Boolean(result.already),
+            message: result.already ? "Already on the way" : "The customer can see you coming",
+        });
+    } catch (error) {
+        console.error("On the way error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 /* ================= TICKETS ================= */
 
 /**
@@ -2683,6 +2718,7 @@ module.exports = {
     deleteTechProfile,
     updateStatus,
     updateLocation,
+    startOnTheWay,
     startWork,
     sendJobOtp,
     getWallet,

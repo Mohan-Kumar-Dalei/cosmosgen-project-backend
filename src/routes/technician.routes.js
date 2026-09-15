@@ -75,6 +75,7 @@ router.get("/pricing", isTechAuthenticated, technicianController.getPricing);
 /* ---------- TICKETS ---------- */
 // The customer's code, sent to the customer - see otp.service
 router.post("/tickets/:id/otp/:purpose", isTechAuthenticated, otpLimiter, technicianController.sendJobOtp);
+router.post("/tickets/:id/on-the-way", isTechAuthenticated, technicianController.startOnTheWay);
 router.post("/tickets/:id/start-work", isTechAuthenticated, technicianController.startWork);
 router.post("/tickets/:id/release", isTechAuthenticated, technicianController.releaseTicket);
 router.post("/tickets/:id/refuse", isTechAuthenticated, technicianController.refuseTicket);

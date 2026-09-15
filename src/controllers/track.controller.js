@@ -61,8 +61,18 @@ const getTracking = async (req, res) => {
         // The technician's live position, and only while it is any of the
         // customer's business. Once the job is done, where he went next is
         // not something this link should keep answering.
+        /*
+         * From assignment, not from departure.
+         *
+         * It used to start at "on the way", which left the customer with a
+         * green pin and nothing else for as long as it took somebody to set
+         * off. The page now draws a dashed arc from the vendor to the door the
+         * moment a job has somebody on it, so it needs his position one stage
+         * earlier. Still nothing once the job is done, which is the part that
+         * was actually about privacy.
+         */
         let technicianAt = null;
-        if (stage === "on_the_way" || stage === "arrived") {
+        if (stage === "assigned" || stage === "on_the_way" || stage === "arrived") {
             const tech = await technicianModel
                 .findById(ticket.technician)
                 .select("location lastLocationAt")

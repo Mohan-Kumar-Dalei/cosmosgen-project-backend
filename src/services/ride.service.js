@@ -1,4 +1,5 @@
 const ticketModel = require("../models/ticket.model");
+const technicianModel = require("../models/technician.model");
 const routeService = require("./route.service");
 const notification = require("./notification.service");
 const { emitToRoom, techRoom, trackRoom, adminRoom } = require("../sockets/socket.instance");
@@ -68,27 +69,25 @@ const syncRideProgress = async (technician, lat, lon) => {
 
         const now = new Date();
         const distance = metresBetween(lat, lon, destLat, destLon);
-        const isFirstFix = !ticket.ride?.startedAt;
 
-        if (isFirstFix) {
-            const route = await routeService.computeRoute(
-                { lat, lon },
-                { lat: destLat, lon: destLon }
-            );
+        /*
+         * Nothing here starts the ride any more.
+         *
+         * It used to: the first position that arrived after assignment set
+         * startedAt, so a vendor who simply had the app open was announced to
+         * the customer as on his way. Mohan moved that to the Directions
+         * button - "jab technician wo direction button main click kare tabhi
+         * usko on the way main bhejo" - which is the moment somebody actually
+         * decides to set off, rather than the moment their phone happened to
+         * report where they were standing.
+         *
+         * So until markOnTheWay() has run there is no ride to keep up to date,
+         * and this returns. Arrival is still worked out from the distance
+         * below, because reaching the door is a fact and not a decision.
+         */
+        if (!ticket.ride?.startedAt) return;
 
-            ticket.ride = {
-                startedAt: now,
-                arrivedAt: null,
-                origin: { lat, lon },
-                etaSeconds: route?.durationSeconds ?? null,
-                distanceMeters: route?.distanceMeters ?? null,
-                etaAt: route?.durationSeconds
-                    ? new Date(now.getTime() + route.durationSeconds * 1000)
-                    : null,
-                encodedPolyline: route?.encodedPolyline ?? null,
-                computedAt: route ? now : null,
-            };
-        } else {
+        {
             const computedAt = ticket.ride.computedAt
                 ? new Date(ticket.ride.computedAt).getTime()
                 : 0;
@@ -164,4 +163,70 @@ const syncRideProgress = async (technician, lat, lon) => {
     }
 };
 
-module.exports = { syncRideProgress, metresBetween, ARRIVAL_RADIUS_METRES };
+/**
+ * The vendor has tapped Directions: he is setting off.
+ *
+ * This is the one place a ride begins. It works the route out once, so the
+ * customer's page has a line and an estimate the moment the stage changes, and
+ * it tells that page directly rather than waiting for the first GPS fix - a
+ * vendor in a basement car park can be a minute away from his first position,
+ * and the customer should not spend that minute looking at a screen that has
+ * not moved.
+ */
+const markOnTheWay = async (technicianId, ticketId) => {
+    const ticket = await ticketModel.findOne({
+        _id: ticketId,
+        technician: technicianId,
+        status: "Assigned",
+    });
+
+    if (!ticket) return { ok: false, code: "not_yours" };
+    if (ticket.ride?.startedAt) return { ok: true, ticket, already: true };
+
+    const destLon = ticket.location?.coordinates?.[0];
+    const destLat = ticket.location?.coordinates?.[1];
+
+    const tech = await technicianModel.findById(technicianId).select("location").lean();
+    const coords = tech?.location?.coordinates;
+    const from = Array.isArray(coords) && coords.length === 2
+        ? { lat: coords[1], lon: coords[0] }
+        : null;
+
+    const now = new Date();
+
+    // No route without both ends. The ride still starts - the customer is told
+    // somebody has set off either way - it simply has no line yet.
+    const route = from && Number.isFinite(destLat) && Number.isFinite(destLon)
+        ? await routeService.computeRoute(from, { lat: destLat, lon: destLon })
+        : null;
+
+    ticket.ride = {
+        startedAt: now,
+        arrivedAt: null,
+        origin: from || undefined,
+        etaSeconds: route?.durationSeconds ?? null,
+        distanceMeters: route?.distanceMeters ?? null,
+        etaAt: route?.durationSeconds
+            ? new Date(now.getTime() + route.durationSeconds * 1000)
+            : null,
+        encodedPolyline: route?.encodedPolyline ?? null,
+        computedAt: route ? now : null,
+    };
+
+    await ticket.save();
+
+    if (ticket.tracking?.token) {
+        emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
+            stage: "on_the_way",
+            technicianAt: from ? { ...from, at: now } : null,
+            etaSeconds: ticket.ride.etaSeconds,
+            etaAt: ticket.ride.etaAt,
+            distanceMeters: ticket.ride.distanceMeters,
+            encodedPolyline: ticket.ride.encodedPolyline,
+        });
+    }
+
+    return { ok: true, ticket };
+};
+
+module.exports = { syncRideProgress, markOnTheWay, metresBetween, ARRIVAL_RADIUS_METRES };
