@@ -483,7 +483,7 @@ const getNearbyTechnicians = async (req, res) => {
 
         const PROJECTION = {
             name: 1, phone: 1, profileImage: 1, skills: 1, rating: 1,
-            completedJobs: 1, performanceLevel: 1, city: 1, area: 1, address: 1, state: 1, pincode: 1,
+            completedJobs: 1, performanceLevel: 1, city: 1, area: 1, state: 1, pincode: 1,
             hasVehicle: 1, lastLocationAt: 1, isAvailable: 1, activeTicket: 1,
         };
 
@@ -3577,7 +3577,6 @@ const getWalletSummary = async (req, res) => {
                 name: t.name,
                 phone: t.phone,
                 city: t.city,
-                address: t.address,
                 commissionRate: t.commissionRate,
                 balancePaise: balance,
                 balanceDisplay: paiseToRupees(Math.abs(balance)),

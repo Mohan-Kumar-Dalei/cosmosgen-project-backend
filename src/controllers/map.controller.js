@@ -514,16 +514,38 @@ const googleAreas = async (term, city, sessionToken) => {
     return suggestions
         .map((s) => s.placePrediction)
         .filter(Boolean)
-        .map((prediction) => ({
-            // A placeId rather than a pincode: the pincode arrives from
-            // /api/map/place once one of these is actually chosen, which is
-            // the call that closes the billing session
-            placeId: prediction.placeId,
-            name: prediction.structuredFormat?.mainText?.text
+        .map((prediction) => {
+            const name = prediction.structuredFormat?.mainText?.text
                 || prediction.text?.text
-                || "",
-            detail: prediction.structuredFormat?.secondaryText?.text || "",
-        }))
+                || "";
+            const detail = prediction.structuredFormat?.secondaryText?.text || "";
+
+            return {
+                // A placeId rather than a pincode: the pincode arrives from
+                // /api/map/place once one of these is actually chosen, which
+                // is the call that closes the billing session
+                placeId: name ? prediction.placeId : "",
+                name,
+                detail,
+
+                /*
+                 * Both lines as one, which is what gets saved.
+                 *
+                 * The office used to have a separate address field that
+                 * nobody filled in, because a vendor who has just picked
+                 * "Palasuni, Rasulgarh - Bhubaneswar, Odisha" has already
+                 * said where he is and being asked again reads as the form
+                 * not listening. Google's own full line is that answer, so it
+                 * travels with the suggestion and the two fields become one.
+                 *
+                 * The list still shows the two halves separately: the name is
+                 * what he is looking for and the rest is how he tells it from
+                 * a Palasuni somewhere else.
+                 */
+                full: prediction.text?.text
+                    || [name, detail].filter(Boolean).join(", "),
+            };
+        })
         .filter((row) => row.name);
 };
 
@@ -590,7 +612,8 @@ const areas = async (req, res) => {
                 const key = String(name).trim().toLowerCase();
                 if (!key || seen.has(key)) return;
                 seen.add(key);
-                extra.push({ name: String(name).trim(), pincode: pincode || "" });
+                const clean = String(name).trim();
+                extra.push({ name: clean, pincode: pincode || "", full: clean });
             };
 
             for (const row of extraAreasFor(town.city)) add(row.name, row.pincode);

@@ -10,18 +10,18 @@ const technicianSchema = new mongoose.Schema({
     /*
      * Where the vendor is, in the two halves the office actually uses.
      *
-     * `city` is chosen from a list rather than typed, so "Bhubaneswar",
+     * `city` is picked from a suggestion rather than typed, so "Bhubaneswar",
      * "bhubaneshwar" and "BBSR" cannot all exist side by side and be counted
-     * as three places - and picking one fills in the state and a starting
-     * pincode without a single call to a map provider.
+     * as three places - and picking one settles the state with it.
      *
-     * `address` is the rest of it in the vendor's own words: house, lane,
-     * landmark. The office reads it when a pin lands a few streets off and
-     * somebody has to ring back, which is exactly what the client asked for.
+     * `area` is where inside that town, and it carries the whole line rather
+     * than a word - see below. Between them they are the answer; there is no
+     * separate street address, because that was a third question about the
+     * same thing and it came back empty every time.
      *
-     * This replaced a single `area` field. Note that none of these decide who
-     * gets a job - dispatch is geographic, a $near query against the 2dsphere
-     * index below. These are for reading, searching and ringing back.
+     * Note that none of these decide who gets a job - dispatch is geographic,
+     * a $near query against the 2dsphere index below. These are for reading,
+     * searching and ringing somebody back.
      */
     state: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true },
@@ -35,16 +35,15 @@ const technicianSchema = new mongoose.Schema({
      * SQUARE" were three places as far as the office was concerned, and none
      * of them matched what was written on an envelope.
      *
-     * Town plus locality is the whole answer - "Rasulgarh, Bhubaneswar" is
-     * where a vendor works, and the pincode comes with it rather than being
-     * asked for. Which is why there is no street address here: it was a
-     * question with no reader, since the pin is what an engineer navigates to.
+     * It holds the whole line, not just the name: "Palasuni, Rasulgarh,
+     * Bhubaneswar, Odisha, India" rather than "Palasuni". There was a separate
+     * address field beside this for a while and nobody ever filled it in,
+     * because a vendor who has just picked his locality off a map has already
+     * answered the question - asking again read as the form not listening. So
+     * the two are one field, and what Google calls the place is what the
+     * office reads.
      */
     area: { type: String, required: true, trim: true },
-
-    // Kept, not asked for. Nothing collects it today; it is here so a record
-    // written when the form did ask is not silently dropped.
-    address: { type: String, trim: true, default: "" },
     pincode: { type: String, required: true, trim: true },
 
     profileImage: { type: String, default: "" },
