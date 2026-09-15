@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
 
-const { isAuthenticated, attachUserIfAny } = require("../middlewares/auth.middleware");
+const { isAuthenticated } = require("../middlewares/auth.middleware");
 const customer = require("../controllers/customer.controller");
 const siteImage = require("../controllers/siteImage.controller");
 
@@ -64,17 +64,23 @@ router.get("/images", siteImage.publicImages);
 router.get("/coverage", coverageLimiter, customer.coverage);
 
 /* ---------- THE ASSISTANT ----------
-   Open to visitors, better for somebody signed in: the questions that decide
-   whether a person ever becomes a customer all come before the account does.
-   It answers and it cannot book - the service behind it is never given a
-   booking tool. Rate limited because every turn costs a model call. */
-router.post("/ask", askLimiter, attachUserIfAny, customer.ask);
+   Signed in only, now. It used to answer anybody, on the reasoning that the
+   questions deciding whether a person becomes a customer all come before the
+   account does - but every turn is a model call somebody pays for, and an
+   endpoint that spends money for strangers is one that will eventually be
+   found and spent. A rate limiter slows that down; it does not stop it.
 
-/* Reading one back. Open, because the chat id is the only key a visitor has
-   and nothing in a thread is private to anybody else - the assistant reads a
-   signed-in customer's jobs from their session, never from the stored chat. */
-router.get("/chat/:chatId", customer.chat);
-router.delete("/chat/:chatId", customer.forgetChat);
+   It answers and it cannot book: the service behind it is never given a
+   booking tool. */
+router.post("/ask", askLimiter, isAuthenticated, customer.ask);
+
+/* And the thread itself. These were open because the chat id was the only key
+   a visitor had, which also meant anybody holding an id could read a thread or
+   delete it - a delete that removes the document from the database outright.
+   With the assistant behind a session, the thread belongs to a person and is
+   checked the same way. */
+router.get("/chat/:chatId", isAuthenticated, customer.chat);
+router.delete("/chat/:chatId", isAuthenticated, customer.forgetChat);
 
 /* ---------- THEIR ACCOUNT ---------- */
 router.get("/me", isAuthenticated, customer.me);

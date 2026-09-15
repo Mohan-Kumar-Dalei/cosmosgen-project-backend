@@ -7,8 +7,25 @@ const technicianSchema = new mongoose.Schema({
     phone: { type: String, required: true, unique: true, trim: true },
     password: { type: String, required: true, select: false },
 
+    /*
+     * Where the vendor is, in the two halves the office actually uses.
+     *
+     * `city` is chosen from a list rather than typed, so "Bhubaneswar",
+     * "bhubaneshwar" and "BBSR" cannot all exist side by side and be counted
+     * as three places - and picking one fills in the state and a starting
+     * pincode without a single call to a map provider.
+     *
+     * `address` is the rest of it in the vendor's own words: house, lane,
+     * landmark. The office reads it when a pin lands a few streets off and
+     * somebody has to ring back, which is exactly what the client asked for.
+     *
+     * This replaced a single `area` field. Note that none of these decide who
+     * gets a job - dispatch is geographic, a $near query against the 2dsphere
+     * index below. These are for reading, searching and ringing back.
+     */
     state: { type: String, required: true, trim: true },
-    area: { type: String, required: true, trim: true },
+    city: { type: String, required: true, trim: true },
+    address: { type: String, required: true, trim: true },
     pincode: { type: String, required: true, trim: true },
 
     profileImage: { type: String, default: "" },
@@ -104,7 +121,7 @@ const technicianSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 technicianSchema.index({ location: "2dsphere" });
-technicianSchema.index({ state: 1, area: 1, isAvailable: 1 });
+technicianSchema.index({ state: 1, city: 1, isAvailable: 1 });
 technicianSchema.index({ approvalStatus: 1, isDeleted: 1 });
 
 module.exports = mongoose.model("Technician", technicianSchema);

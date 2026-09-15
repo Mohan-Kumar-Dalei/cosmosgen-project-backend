@@ -23,6 +23,7 @@ const setCache = (key, value) => {
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const keyring = require("../services/keyring.service");
+const { searchCities } = require("../config/cities");
 
 // Every response we build for the frontend keeps the same shape the old
 // Nominatim version returned, so nothing downstream had to change.
@@ -70,8 +71,50 @@ const readComponents = (components = []) => {
  * transport or API failure - so a caller that can carry on without a name is
  * free to swallow it.
  */
+/**
+ * The free map of last resort.
+ *
+ * OpenStreetMap's Nominatim, which this project used before Google and which
+ * is still here for the two cases that actually happen: no key configured on a
+ * machine, and Google refusing - a billing lapse, a quota, a key restricted to
+ * the wrong referrer. None of those are the vendor's fault, and none of them
+ * should be the reason a registration cannot be finished.
+ *
+ * Free, so it is never the first choice: its terms ask for one request per
+ * second and a real user agent, and its Indian addresses are patchier than
+ * Google's. As a floor under a form it is worth far more than an error.
+ *
+ * Never throws. A fallback that can fail loudly is not a fallback.
+ */
+const lookupPlaceFree = async (lat, lon) => {
+    try {
+        const { data } = await axios.get("https://nominatim.openstreetmap.org/reverse", {
+            params: { lat, lon, format: "json", zoom: 18, addressdetails: 1 },
+            headers: { "User-Agent": "Cosmosgen/1.0 (support@cosmosgen.in)" },
+            timeout: 8000,
+        });
+
+        const a = data?.address;
+        if (!a) return null;
+
+        return {
+            results: [{
+                formatted_address: data.display_name || "",
+                state: a.state || "",
+                locality: a.suburb || a.neighbourhood || a.village || "",
+                city: a.city || a.town || a.municipality || a.village || a.county || "",
+                pincode: a.postcode || "",
+            }],
+            provider: "osm",
+        };
+    } catch (err) {
+        console.error("[MAP] OSM fallback failed:", err.message);
+        return null;
+    }
+};
+
 const lookupPlace = async (lat, lon) => {
-    if (!API_KEY) return null;
+    if (!API_KEY) return lookupPlaceFree(lat, lon);
 
     // 4 decimals is roughly 11 metres, which lifts the cache hit rate a lot
     // without moving the pin anywhere the user would notice.
@@ -97,8 +140,11 @@ const lookupPlace = async (lat, lon) => {
     // is the only real signal here.
     if (status === "ZERO_RESULTS") return null;
     if (status !== "OK") {
+        // Not fatal any more. Whatever Google's reason - quota, billing, a key
+        // locked to the wrong site - the free map is asked before giving up,
+        // so a vendor mid-registration gets an address rather than a failure.
         console.error("Google reverse geocode status:", status, response.data?.error_message || "");
-        throw new Error("Reverse geocode failed: " + status);
+        return lookupPlaceFree(lat, lon);
     }
 
     const best = response.data.results[0];
@@ -284,4 +330,20 @@ const placeDetails = async (req, res) => {
     }
 };
 
-module.exports = { reverseGeocode, searchPlaces, placeDetails, lookupPlace };
+/**
+ * GET /api/map/cities?q=
+ *
+ * The towns this company works in, matched against what is being typed. Reads
+ * a bundled list - no provider, no key, no bill, and an answer in under a
+ * millisecond whether or not anything else is reachable.
+ *
+ * This is what replaced Places Autocomplete on the vendor form, where a paid
+ * request went out on every keystroke before anybody had even signed up.
+ */
+const cities = (req, res) => {
+    const list = searchCities(req.query.q, 8);
+    return res.status(200).json({ success: true, data: list });
+};
+
+module.exports = {
+    cities, reverseGeocode, searchPlaces, placeDetails, lookupPlace };

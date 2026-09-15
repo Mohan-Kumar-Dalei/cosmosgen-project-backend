@@ -1,3 +1,17 @@
 node_modules
 .env
-package-lock.json
+
+# package-lock.json is deliberately NOT ignored.
+#
+# It pins the exact dependency tree, and `npm ci` on a server installs from it
+# rather than resolving versions afresh - which is what makes the server run
+# what was tested. It was listed here once; the file stayed tracked only
+# because git ignores .gitignore for files it already follows.
+
+# Local-only notes.
+#
+# Anything named *.local.* stays on this machine. Server notes carry IPs,
+# hostnames and the shape of the box, which belong on the laptop rather than
+# in a public repo - so they live in the project folder for reference and are
+# never committed.
+*.local.*

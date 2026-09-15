@@ -483,7 +483,7 @@ const getNearbyTechnicians = async (req, res) => {
 
         const PROJECTION = {
             name: 1, phone: 1, profileImage: 1, skills: 1, rating: 1,
-            completedJobs: 1, performanceLevel: 1, area: 1, state: 1, pincode: 1,
+            completedJobs: 1, performanceLevel: 1, city: 1, address: 1, state: 1, pincode: 1,
             hasVehicle: 1, lastLocationAt: 1, isAvailable: 1, activeTicket: 1,
         };
 
@@ -514,13 +514,13 @@ const getNearbyTechnicians = async (req, res) => {
             if (!searchTerm) {
                 return res.status(400).json({
                     success: false,
-                    message: "Type a city, area or pincode to search.",
+                    message: "Type a city or pincode to search.",
                 });
             }
 
             const term = new RegExp(escapeRegex(searchTerm), "i");
             const rows = await technicianModel
-                .find({ ...matchQuery, $or: [{ area: term }, { state: term }, { pincode: term }] })
+                .find({ ...matchQuery, $or: [{ city: term }, { state: term }, { pincode: term }] })
                 .select({ ...PROJECTION, location: 1 })
                 .limit(20)
                 .lean();
@@ -1339,7 +1339,7 @@ const getAllTechnicians = async (req, res) => {
             filter.$or = [
                 { name: { $regex: safe, $options: "i" } },
                 { phone: { $regex: safe, $options: "i" } },
-                { area: { $regex: safe, $options: "i" } },
+                { city: { $regex: safe, $options: "i" } },
             ];
         }
 
@@ -3307,7 +3307,7 @@ const getSettlements = async (req, res) => {
         }
 
         const rows = await WalletTransaction.find(filter)
-            .populate("technician", "name phone area commissionRate")
+            .populate("technician", "name phone city commissionRate")
             .sort({ createdAt: -1 })
             .limit(limit)
             .lean();
@@ -3335,7 +3335,7 @@ const getSettlements = async (req, res) => {
                           _id: t.technician._id,
                           name: t.technician.name,
                           phone: t.technician.phone,
-                          area: t.technician.area || null,
+                          city: t.technician.city || null,
                       }
                     : null,
                 amountDisplay: paiseToRupees(t.amountPaise),
@@ -3491,7 +3491,7 @@ const getWalletSummary = async (req, res) => {
             // Searching a name and getting an empty screen reads as "no such
             // technician", so a search shows them with nothing outstanding.
             const rx = new RegExp(escapeRegex(term), "i");
-            filter.$or = [{ name: rx }, { phone: rx }, { area: rx }];
+            filter.$or = [{ name: rx }, { phone: rx }, { city: rx }];
         } else {
             filter.walletBalancePaise = { $ne: 0 };
         }
@@ -3517,7 +3517,7 @@ const getWalletSummary = async (req, res) => {
 
         const technicians = await technicianModel
             .find(filter)
-            .select("name phone walletBalancePaise commissionRate area")
+            .select("name phone walletBalancePaise commissionRate city")
             .sort({ walletBalancePaise: -1 })
             .lean();
 
@@ -3576,7 +3576,8 @@ const getWalletSummary = async (req, res) => {
                 _id: t._id,
                 name: t.name,
                 phone: t.phone,
-                area: t.area,
+                city: t.city,
+                address: t.address,
                 commissionRate: t.commissionRate,
                 balancePaise: balance,
                 balanceDisplay: paiseToRupees(Math.abs(balance)),

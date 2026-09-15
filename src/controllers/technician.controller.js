@@ -12,6 +12,7 @@ const paymentService = require("../services/payment.service");
 const notification = require("../services/notification.service");
 const otpService = require("../services/otp.service");
 const signupOtpService = require("../services/signupOtp.service");
+const { findCity } = require("../config/cities");
 const whatsapp = require("../services/whatsapp.service");
 const voiceController = require("./voice.controller");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
@@ -38,7 +39,7 @@ const clearOptions = {
 };
 
 const PUBLIC_FIELDS =
-    "_id name phone state area pincode skills profileImage rating isAvailable availabilitySince lastAwayMs activeTicket completedJobs performanceLevel createdAt";
+    "_id name phone state city address pincode skills profileImage rating isAvailable availabilitySince lastAwayMs activeTicket completedJobs performanceLevel createdAt";
 
 const ACTIVE_STATUSES = ["Assigned", "In-Progress", "Payment-Pending"];
 
@@ -55,7 +56,7 @@ const registerTechnician = async (req, res) => {
     try {
         const {
             phoneToken, name, password, email,
-            pincode, state, area, lat, lon,
+            pincode, state, city, address, lat, lon,
             skills, hasVehicle,
             accountHolderName, accountNumber, ifsc,
         } = req.body;
@@ -68,9 +69,31 @@ const registerTechnician = async (req, res) => {
             });
         }
 
-        if (!name || !password || !pincode || !state || !area || !skills?.length) {
+        if (!name || !password || !state || !city || !address || !skills?.length) {
             return res.status(400).json({ success: false, message: "Please fill in all the required details" });
         }
+
+        /*
+         * The town is checked against our own list, not taken on trust.
+         *
+         * The form picks from that list, so anything else arriving here is
+         * either a stale page or somebody posting by hand - and a vendor
+         * filed under a town the office does not recognise is a vendor
+         * nobody finds. The state and a starting pincode come from the same
+         * row, which is why neither has to be sent correctly.
+         */
+        const town = findCity(city);
+        if (!town) {
+            return res.status(400).json({
+                success: false,
+                message: "Pick your town from the list so we file you in the right place.",
+            });
+        }
+
+        // The vendor's own pincode wins when they gave one; the town's head
+        // post office is the floor under the question
+        const cleanPin = String(pincode || "").replace(/\D/g, "").slice(0, 6);
+        const finalPin = cleanPin.length === 6 ? cleanPin : town.pincode;
         if (String(password).length < 6) {
             return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
         }
@@ -116,9 +139,10 @@ const registerTechnician = async (req, res) => {
             phone: verified.phone,
             password: await bcrypt.hash(password, 10),
             email: email ? String(email).toLowerCase().trim() : undefined,
-            pincode: String(pincode).trim(),
-            state: String(state).trim(),
-            area: String(area).trim(),
+            pincode: finalPin,
+            state: town.state,
+            city: town.city,
+            address: String(address).trim(),
             skills: Array.isArray(skills) ? skills : (skills ? JSON.parse(skills) : []),
             hasVehicle: hasVehicle === 'true' || hasVehicle === true,
             approvalStatus: "pending",
@@ -170,7 +194,7 @@ const registerTechnician = async (req, res) => {
         emitToRoom(adminRoom(), "technician:new", {
             _id: newTech._id,
             name: newTech.name,
-            area: newTech.area,
+            city: newTech.city,
         });
 
         // No cookie - the account can't sign in until the office approves it
@@ -567,12 +591,27 @@ const getCashDeposits = async (req, res) => {
 const updateTechProfile = async (req, res) => {
     try {
         const techId = req.technician._id;
-        const { name, state, area, pincode } = req.body;
+        const { name, state, city, address, pincode } = req.body;
 
         const updateData = {};
         if (name) updateData.name = String(name).trim();
         if (state) updateData.state = String(state).trim();
-        if (area) updateData.area = String(area).trim();
+        if (address) updateData.address = String(address).trim();
+
+        // Changing town moves the state with it, for the same reason it does
+        // at registration: the two are one fact, not two the vendor can
+        // disagree with themselves about
+        if (city) {
+            const town = findCity(city);
+            if (!town) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Pick your town from the list.",
+                });
+            }
+            updateData.city = town.city;
+            updateData.state = town.state;
+        }
         if (pincode) updateData.pincode = String(pincode).trim();
 
         if (req.body.accountHolderName && req.body.accountNumber && req.body.ifsc) {

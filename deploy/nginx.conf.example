@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Cosmosgen API - nginx site config
+#
+# Copy to /etc/nginx/sites-available/cosmosgen-backend, symlink it into
+# sites-enabled, then run certbot against the domain - certbot rewrites the
+# listen lines and adds the certificate paths itself.
+#
+#   sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/cosmosgen-backend
+#   sudo ln -sf /etc/nginx/sites-available/cosmosgen-backend /etc/nginx/sites-enabled/
+#   sudo rm -f /etc/nginx/sites-enabled/default
+#   sudo certbot --nginx -d api.example.com
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# Every line below exists because its absence broke something in production.
+# ---------------------------------------------------------------------------
+
+server {
+    listen 80;
+    server_name api.example.com;          # <- your API hostname
+
+    # Uploads.
+    #
+    # nginx defaults to 1 MB, and a photo off any modern phone is larger than
+    # that. What made it expensive to find is that nginx refuses with its own
+    # HTML page, so the app - which reads `message` out of a JSON body - had
+    # nothing to show and fell back to a vague sentence for hours.
+    #
+    # Multer is set to 3 MB, and this is deliberately a little higher so the
+    # refusal comes from the application, in words a vendor can act on,
+    # rather than from the proxy.
+    client_max_body_size 5M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        # WebSocket upgrade.
+        #
+        # Two things need it and both are silent when it is missing:
+        # socket.io on /socket.io/ (the panels' live updates, which quietly
+        # degrade to slow polling) and the Exotel voicebot on /voice-stream,
+        # which does not degrade at all - the call connects and nobody speaks.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # The app sets `trust proxy`, so it reads the caller's real address
+        # out of these. Without them every visitor shares one IP and the
+        # login rate limiter locks out the whole world at once.
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # A voice call holds its socket open for the length of the
+        # conversation. The default 60s read timeout cuts it mid-sentence.
+        proxy_read_timeout  600s;
+        proxy_send_timeout  600s;
+
+        proxy_buffering off;
+    }
+}
