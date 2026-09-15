@@ -30,6 +30,25 @@ const EXO = {
 
 const exotelConfigured = () => Boolean(EXO.sid && EXO.key && EXO.token && EXO.callerId && EXO.appId);
 
+/**
+ * This server's own address, as Exotel has to be able to reach it.
+ *
+ * The carrier calls us back - it posts the status of every call to the URL
+ * built from this - so it has to be the public address, not localhost, and it
+ * has to be reachable from outside.
+ *
+ * It was referenced twice in this file and declared nowhere, which is a
+ * ReferenceError rather than a missing setting: isTelephonyReady() reads it
+ * before anything is placed, so every attempt to ring a customer threw on
+ * that line and came back as a 500. Nothing about it looked like a
+ * configuration problem, because the readiness check never got far enough to
+ * report one.
+ *
+ * The trailing slash is taken off here so the paths appended to it cannot come
+ * out with two.
+ */
+const PUBLIC_URL = String(process.env.PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
+
 /*
  * One carrier now.
  *

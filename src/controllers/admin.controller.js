@@ -1012,8 +1012,22 @@ const callCustomer = async (req, res) => {
             message: "Calling " + phone + " now. The answer will appear on this ticket.",
         });
     } catch (err) {
-        console.error("callCustomer error:", err.message);
-        return res.status(500).json({ success: false, message: "Could not place the call" });
+        /*
+         * The whole error, and the reason said out loud.
+         *
+         * This used to log err.message and answer "Could not place the call",
+         * which is the same sentence for a bad number, an Exotel rejection and
+         * a bug in our own code - so a 500 in the panel told the office
+         * nothing and told us nothing either. There is no customer on the far
+         * side of this route; it is the backoffice asking the system why it
+         * would not do something, and the answer belongs on their screen.
+         */
+        console.error("callCustomer failed for ticket " + req.params.id + ":", err);
+
+        return res.status(500).json({
+            success: false,
+            message: "Could not place the call: " + (err.message || "unknown error"),
+        });
     }
 };
 
