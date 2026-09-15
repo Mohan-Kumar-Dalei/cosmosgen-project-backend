@@ -102,15 +102,21 @@ const SYNTH_RATE = Number(process.env.SARVAM_TTS_RATE) || 22050;
 /** How fast the voice reads. One is Sarvam's own conversational speed. */
 const TTS_PACE = Number(process.env.SARVAM_TTS_PACE) || 1;
 
-/**
- * The assistant's name, said out loud on every call.
+/*
+ * The assistant has no name, and does not invent one.
  *
- * A caller who is told they are speaking to an assistant, by name, asks it
- * things - and forgives it for being one. A voice that opens with nothing but
- * business sounds like a recording, which is what Mohan heard. Settable
- * because he chose this name for now rather than for ever.
+ * It was called Sara, and Mohan took the name back out of the whole product
+ * until he picks one properly - "jab tak humne name dene ke liye nahi bolte
+ * tab tak sab main Sara word hata do". What has to survive is the reason the
+ * name was there: a caller who is told they are speaking to an assistant asks
+ * it things and forgives it for being one, while a voice that opens with
+ * nothing but business sounds like a recording and gets hung up on. So it
+ * still introduces itself and still says what it is - as "Cosmosgen's AI
+ * assistant" and nothing more.
+ *
+ * When a name is chosen it goes into the three intro lines below and the
+ * prompt that tells it who it is. Nowhere else names it.
  */
-const ASSISTANT_NAME = process.env.ASSISTANT_NAME || "Sara";
 
 /** Finds the samples in a wav rather than assuming a 44 byte header. */
 const pcmFromWav = (wav) => {
@@ -657,7 +663,7 @@ const STYLE = {
             "  back may be Odia, English or a mix - understand it either way and never\n" +
             "  ask them to speak differently.",
         nods: '"ହଉ", "ଆଚ୍ଛା", "ଠିକ ଅଛି"',
-        intro: "ନମସ୍କାର, ମୁଁ Cosmosgen ର AI assistant " + ASSISTANT_NAME + " କହୁଛି।",
+        intro: "ନମସ୍କାର, ମୁଁ Cosmosgen ର AI assistant କହୁଛି।",
     },
 
     hinglish: {
@@ -667,7 +673,7 @@ const STYLE = {
         script: "Write the Hindi in Devanagari and the English words in English letters, in\n" +
             "  the same sentence. That is how it is read aloud correctly.",
         nods: '"हाँ", "अच्छा", "ठीक है"',
-        intro: "नमस्ते, मैं Cosmosgen की AI assistant " + ASSISTANT_NAME + " बोल रही हूँ।",
+        intro: "नमस्ते, मैं Cosmosgen का AI assistant बोल रहा हूँ।",
     },
 
     english: {
@@ -675,7 +681,7 @@ const STYLE = {
         mix: "plain English. Do not mix in Odia or Hindi words.",
         script: "Write in ordinary English.",
         nods: '"Right", "Okay", "Sure"',
-        intro: "Hello, this is " + ASSISTANT_NAME + ", Cosmosgen's AI assistant.",
+        intro: "Hello, this is Cosmosgen's AI assistant.",
     },
 };
 
@@ -722,8 +728,9 @@ SOUND LIKE A PERSON ON THE PHONE, NOT A NOTICE BEING READ
   different way.
 
 YOU ARE AN ASSISTANT, NOT A RECORDING
-- You are ` + ASSISTANT_NAME + `, Cosmosgen's AI assistant, and you say so when
-  you introduce yourself. People are willing to talk to an assistant; they hang
+- You are Cosmosgen's AI assistant. You have no name - if they ask for one,
+  say you are the company's assistant and carry on - and you say what you are
+  when you introduce yourself. People are willing to talk to an assistant; they hang
   up on a recording.
 - Whatever they ask, ANSWER IT FIRST, then come back to your own question. If
   they ask who you are, what the charge is, when somebody will come, what the

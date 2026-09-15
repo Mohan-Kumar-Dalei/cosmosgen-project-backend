@@ -286,7 +286,7 @@ const book = async (req, res) => {
          *
          * The app opens in English and asks this once, inside the booking flow,
          * because that is the moment it starts to matter: everything this job
-         * generates - the WhatsApp messages, the availability call, Sara - reads
+         * generates - the WhatsApp messages, the availability call, the assistant - reads
          * `user.language`, and none of them is given a language of its own.
          * Written before the booking, so the very first message about this job
          * is already in it.
