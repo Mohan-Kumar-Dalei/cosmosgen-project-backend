@@ -246,6 +246,20 @@ const ticketSchema = new mongoose.Schema({
 
     billing: {
         invoiceNumber: { type: String },
+
+        /**
+         * Where the customer's copy of the invoice lives.
+         *
+         * Written once, when the job closes, and never worked out from the
+         * invoice number: ImageKit appends its own suffix when a file name is
+         * already taken, so the only address that reliably points at this
+         * ticket's document is the one it handed back on upload.
+         *
+         * Absent on an older ticket, and on one whose upload failed - both
+         * mean the same thing to a screen, which is that there is no document
+         * to offer yet.
+         */
+        invoicePdfUrl: { type: String },
         lineItems: [{
             description: { type: String },
             amountPaise: { type: Number },

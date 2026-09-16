@@ -93,7 +93,7 @@ const lookupPlaceFree = async (lat, lon) => {
     try {
         const { data } = await axios.get("https://nominatim.openstreetmap.org/reverse", {
             params: { lat, lon, format: "json", zoom: 18, addressdetails: 1 },
-            headers: { "User-Agent": "Cosmosgen/1.0 (support@cosmosgen.in)" },
+            headers: { "User-Agent": "Cosmosgen/1.0 (support@cosmosgen.com)" },
             timeout: 8000,
         });
 

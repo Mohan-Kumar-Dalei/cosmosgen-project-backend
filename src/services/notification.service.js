@@ -193,6 +193,31 @@ const resetConversation = async (ticket) => {
     }
 };
 
+/**
+ * The invoice itself, once it has somewhere to live.
+ *
+ * Sent after the closing message rather than with it: the figures are what
+ * the customer wants to read in the chat, and a document arriving on top of
+ * them would bury the one line - the amount - that they actually check. This
+ * is the copy they keep.
+ *
+ * Nothing is said when it fails. The bill has already reached them in words,
+ * the URL is on the ticket for both apps to offer, and an apology for a PDF
+ * that did not arrive is a message about our plumbing, not about their job.
+ */
+const sendCustomerInvoice = async (ticket, url) => {
+    const phone = ticket?.customerSnapshot?.phone;
+    if (!phone || !url) return;
+
+    const number = ticket.billing?.invoiceNumber || ticket.ticketNumber;
+
+    await whatsapp.sendDocument(phone, {
+        url,
+        filename: String(number).replace(/[^A-Za-z0-9-]/g, "-") + ".pdf",
+        caption: "Invoice " + number + " for " + (ticket.serviceLabel || "your job") + ".",
+    });
+};
+
 /* ---------- TECHNICIAN ---------- */
 
 const notifyTechnicianAssigned = (ticket) => {
@@ -498,6 +523,7 @@ module.exports = {
     notifyCustomerTechnicianEnRoute,
     notifyCustomerArrived,
     notifyCustomerCancelled,
+    sendCustomerInvoice,
     resetConversation,
     notifyTechnicianAssigned,
     notifyTechnicianAssignedOnWhatsApp,

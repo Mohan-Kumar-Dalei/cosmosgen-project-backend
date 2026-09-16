@@ -38,7 +38,7 @@ const examples = () => SERVICE_CATALOG.slice(0, 2).map((s) => ({
     })),
 }));
 
-const INSTRUCTION = `You write catalogue entries for Cosmosgen Engineers Pvt. Ltd., which sends approved engineers to homes across Odisha, India.
+const INSTRUCTION = `You write catalogue entries for Cosmosgen Engineers Pvt. Ltd., which sends approved engineers to people's homes across India.
 
 You are given the name of a service the office wants to start offering, and sometimes a note about it. Return ONE JSON object and nothing else.
 
@@ -46,7 +46,7 @@ Shape:
 {
   "key": "UPPER_SNAKE_CASE, short, unique, derived from the name",
   "label": "the service as a customer would see it, title case, under 40 characters",
-  "labelHinglish": "the same, as a Hindi speaker in Odisha would say it - keep English words people actually use",
+  "labelHinglish": "the same, as a Hindi speaker here would say it - keep English words people actually use",
   "labelOdia": "the same, as an Odia speaker would say it, written in Odia script - keep the English words people actually use in English letters",
   "worker": "one lower-case noun for the person who does it: electrician, plumber, carpenter, cleaner, technician",
   "keywords": ["lower case words that would appear in an engineer's own description of their skills"],

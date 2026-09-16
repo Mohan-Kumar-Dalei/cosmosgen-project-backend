@@ -402,7 +402,8 @@ const book = async (req, res) => {
 const TICKET_FIELDS =
     "ticketNumber status serviceKey serviceLabel selectedIssues problemDescription "
     + "technicianSnapshot scheduling ride billing.totalPaise billing.invoiceNumber billing.workDone "
-    + "payment.method payment.status tracking.token otp.start otp.close cancelReason createdAt updatedAt";
+    + "payment.method payment.status tracking.token otp.start otp.close cancelReason "
+    + "billing.invoicePdfUrl createdAt updatedAt";
 
 const shape = (t) => ({
     id: t._id,
@@ -462,6 +463,18 @@ const shape = (t) => ({
             workDone: t.billing.workDone || null,
             method: t.payment?.method || null,
             paid: t.payment?.status === "Collected" || t.payment?.status === "Verified",
+
+            /*
+             * The document itself, where there is one.
+             *
+             * Written when the job closed and uploaded to ImageKit, so this is
+             * a plain link the app can open or hand to the phone's own
+             * downloader. Null on an older ticket and on one whose upload
+             * failed - both mean the same thing to a screen, which is that
+             * there is nothing to offer yet, and the figures above are still
+             * the bill.
+             */
+            pdfUrl: t.billing.invoicePdfUrl || null,
         }
         : null,
 

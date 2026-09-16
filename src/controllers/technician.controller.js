@@ -10,6 +10,7 @@ const WalletTransaction = require("../models/walletTransaction.model");
 const uploadImage = require("../utils/imagekit");
 const paymentService = require("../services/payment.service");
 const notification = require("../services/notification.service");
+const invoiceService = require("../services/invoice.service");
 const otpService = require("../services/otp.service");
 const signupOtpService = require("../services/signupOtp.service");
 const { findCity } = require("../config/cities");
@@ -1940,6 +1941,25 @@ const collectCash = async (req, res) => {
                 "Invoice: " + updated.billing?.invoiceNumber + "\n\n" +
                 "Thank you for choosing Cosmosgen. Ticket " + updated.ticketNumber + " is now closed.",
         });
+
+        /*
+         * The invoice, as a document they keep.
+         *
+         * Not awaited. Drawing the page and putting it on ImageKit takes a
+         * second or two, and a technician standing at a door waiting for his
+         * screen to say "collected" must not wait on it - nor should a failed
+         * upload be able to undo a payment that has already been taken. The
+         * bill has reached the customer in words either way; this is the copy
+         * they can forward to a landlord next year.
+         *
+         * The URL it writes onto the ticket is what the app and the web panel
+         * offer as "Download invoice", so both get it without a second route.
+         */
+        if (!wasRefused || updated.billing?.invoiceNumber) {
+            invoiceService.publishInvoice(updated)
+                .then((url) => (url ? notification.sendCustomerInvoice(updated, url) : null))
+                .catch(() => { /* said nothing about - see above */ });
+        }
 
         notification.notifyAdminsPaymentCollected(updated, req.technician.name);
 

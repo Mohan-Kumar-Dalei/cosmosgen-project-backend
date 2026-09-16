@@ -195,6 +195,21 @@ TOOL RESULTS:
   warmly that we'll take the next one once one of these is done.
 - "failed": apologise, ask them to try again shortly.
 
+WHOSE RECORDS YOU MAY READ OUT:
+Only this customer's. Everything in front of you belongs to the person you
+are talking to - their name, their address, their jobs, and the engineer sent
+to one of those jobs.
+
+You hold no list of Cosmosgen's workers and you must never behave as though
+you do. If somebody asks for our engineers' names, numbers, addresses or how
+many we have, say plainly that you cannot share that, and that the engineer
+for a job is chosen by the office and introduced to them by name, photograph
+and number before he sets off. The same goes for any other customer: you
+cannot see them, so there is nothing to say about them.
+
+An engineer's number is given out for one reason only - he is on his way to
+this customer's own job, and it is in their record below.
+
 THEIR EXISTING JOBS:
 Every reply is preceded by a CUSTOMER RECORD block listing this customer's
 recent tickets and exactly where each one stands. When they ask about a job -
@@ -303,6 +318,126 @@ const LANGUAGE_RULES = {
  * who had never been asked was being written to in Odia. `languageConfirmedAt`
  * is the field that records an answer, so that is the one to test.
  */
+/**
+ * Who the assistant is actually speaking to.
+ *
+ * This block did not exist, and its absence is a bug Mohan found by asking the
+ * assistant his own name: it answered "Sunil Kumar", and the day before
+ * "Santosh Kumar". Neither was invented out of nothing. The only names
+ * anywhere in the model's context were in the CUSTOMER RECORD below -
+ * "worker Sunil Kumar (9xxx)" - so asked for a name it returned the one name
+ * it could see, and a different ticket on a different day meant a different
+ * technician and a different wrong answer.
+ *
+ * Nothing had leaked from another customer: the memory lookup is filtered by
+ * user id and the ticket list is the customer's own. The model simply had
+ * never been told the one fact it was being asked for.
+ *
+ * Built from the record the caller already holds, so it costs no extra query.
+ */
+const whoBlock = (userData) => {
+    const name = String(userData?.name || "").trim();
+    const phone = String(userData?.phone || "").trim();
+
+    if (!name) {
+        return "\nWHO YOU ARE SPEAKING TO:\n"
+            + "We do not have this customer's name on file. If they ask what "
+            + "their name is, say plainly that we do not have it yet and they "
+            + "can set it in the Cosmosgen app. Never invent one.\n";
+    }
+
+    /*
+     * Their own details, so the assistant answers from the account rather than
+     * from what it can guess.
+     *
+     * All of it is the customer's own - their name, their number, the address
+     * they set themselves - which is the whole reason it is safe to put in
+     * front of a model talking to them. Nobody else's record is here, and
+     * none should be: see the note on the technician list in the instruction.
+     */
+    const lines = [
+        "This customer's name is " + name + "."
+        + (phone ? " Their number is " + phone + "." : "")
+        + " That is the only name that belongs to them.",
+    ];
+
+    const where = [userData?.address, userData?.area, userData?.city, userData?.state, userData?.pincode]
+        .map((part) => String(part || "").trim())
+        .filter(Boolean)
+        // The written address usually opens with the area, so a repeat would
+        // have the assistant reading the same words twice.
+        .filter((part, i, all) => !all.slice(0, i).some((earlier) => earlier.includes(part)));
+
+    if (where.length) {
+        lines.push("We send people to: " + where.join(", ") + ". This is already on file - never ask for it.");
+    }
+
+    if (userData?.languageConfirmedAt && userData?.language) {
+        lines.push("They chose to be spoken to in " + userData.language + ".");
+    }
+
+    if (userData?.createdAt) {
+        lines.push("They have been a Cosmosgen customer since " + onDay(userData.createdAt) + ".");
+    }
+
+    lines.push(
+        "Every other name you can see - in the CUSTOMER RECORD below, in the "
+        + "history, anywhere - is a Cosmosgen worker sent to one of their jobs. "
+        + "Never answer a question about the customer with a worker's name, and "
+        + "never invent a name for anybody."
+    );
+
+    return "\nWHO YOU ARE SPEAKING TO:\n" + lines.join("\n") + "\n";
+};
+
+/**
+ * What the company is and what it actually sells.
+ *
+ * Mohan asked for the WhatsApp assistant to be able to answer "what do you
+ * do" properly rather than steering every message towards a booking. The
+ * catalogue is the honest source for that - four services, their appliances
+ * and the faults each one covers - and it is small enough to carry in full.
+ *
+ * Built from SERVICE_CATALOG rather than written out, so a service the office
+ * adds or renames reaches the assistant the same day it reaches the menus.
+ */
+const companyBlock = () => {
+    const lines = SERVICE_CATALOG.map((service) => {
+        // "an electrician", not "a electrician". The model reads this aloud in
+        // its own words, and a stumble here becomes a stumble there.
+        const article = /^[aeiou]/i.test(service.worker || "") ? "an " : "a ";
+        const bits = ["- " + service.label + " (we send " + article + service.worker + ")"];
+
+        const appliances = (service.appliances || []).map((a) => a.label).filter(Boolean);
+        if (appliances.length) bits.push("    machines: " + appliances.join(", "));
+
+        /*
+         * Deduplicated, because every appliance under a service carries the
+         * same few entries - "Routine servicing" and "Not cooling properly"
+         * appear on the AC, the fridge and the water heater alike. Listed raw
+         * it reads as a stutter and spends tokens saying one thing five times.
+         */
+        const faults = [...new Set([
+            ...(service.issues || []),
+            ...(service.appliances || []).flatMap((a) => a.issues || []),
+        ].map((i) => i.en).filter(Boolean))];
+
+        if (faults.length) bits.push("    common faults: " + faults.join(", "));
+
+        return bits.join("\n");
+    });
+
+    return "\nWHAT COSMOSGEN DOES:\n"
+        + "Cosmosgen Engineers Pvt Ltd sends its own approved engineers to homes "
+        + "to their door. Not a marketplace - every worker is on our own books, "
+        + "and the customer gets their name, photograph and number before they "
+        + "set off.\n"
+        + "What we take on:\n"
+        + lines.join("\n") + "\n"
+        + "Anything outside this list is something we do not do. Say so plainly "
+        + "rather than promising to try.\n";
+};
+
 const chosenLanguage = (userData) =>
     asLanguage(userData?.languageConfirmedAt ? userData.language : null) || "english";
 
@@ -365,7 +500,18 @@ const buildCustomerRecord = async (userId) => {
         tickets = await Ticket.find({ customer: userId })
             .select("ticketNumber serviceLabel status technicianSnapshot scheduling ride cancelReason billing.totalPaise payment.status createdAt updatedAt")
             .sort({ createdAt: -1 })
-            .limit(6)
+
+            /*
+             * Twelve rather than six.
+             *
+             * Mohan asked the assistant to remember a customer properly, and
+             * six jobs is under a year for anybody who calls us twice a
+             * season - "you fixed my geyser last winter" fell off the end and
+             * the assistant answered as though it had never happened. Each
+             * line is one short sentence, so a dozen costs a few hundred
+             * tokens and buys the whole relationship.
+             */
+            .limit(12)
             .lean();
     } catch (error) {
         // A missing record is far better than a failed reply - the assistant
@@ -589,7 +735,11 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
         const ticketRecord = record ?? await buildCustomerRecord(userData?._id || userData?.id);
 
         const config = {
-            systemInstruction: instruction + languageBlock(chosenLanguage(userData)) + ticketRecord,
+            systemInstruction: instruction
+                + languageBlock(chosenLanguage(userData))
+                + companyBlock()
+                + whoBlock(userData)
+                + ticketRecord,
             tools: [{ functionDeclarations: [createTicketTool] }],
             temperature: 0.3,
         };
