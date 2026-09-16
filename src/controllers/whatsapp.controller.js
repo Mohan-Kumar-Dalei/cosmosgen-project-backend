@@ -166,6 +166,31 @@ const handleMessage = async (phone, message, profileName) => {
     const interactiveId = message.interactive?.list_reply?.id || message.interactive?.button_reply?.id;
     const text = message.text?.body?.trim();
 
+    /*
+     * A tap on Yes or No under the booking question.
+     *
+     * Handled before the step switch rather than inside it, because the
+     * question can be asked from more than one place - mid-diagnosis, or after
+     * a "why" has been answered - and the answer means the same thing wherever
+     * it was asked. Going through runAI rather than booking directly is
+     * deliberate: the consent gate, the open-job limit and the reply the
+     * customer reads all live on that path, and a second way in would be a
+     * second set of rules to keep in step.
+     *
+     * The button's own title is what is fed back, because that is the message
+     * WhatsApp itself would have delivered had they typed it - so the thread
+     * reads as a conversation rather than as a machine talking to itself.
+     */
+    if (convo.user && (interactiveId === "book_yes" || interactiveId === "book_no")) {
+        const t = copyFor(convo.language);
+        const said = message.interactive?.button_reply?.title
+            || (interactiveId === "book_yes" ? t.bookYes : t.bookNo);
+
+        await runAI(convo, said);
+        await convo.save();
+        return;
+    }
+
     // A customer stuck mid-flow needs a way back to the menu. But this must
     // not wipe a conversation with a live ticket attached - "hi, where is
     // your guy?" is a question about that ticket, not a fresh start.
@@ -771,11 +796,55 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * account overwriting the account. Left out, it dispatches to the address
      * the customer set on the app, as it stands right now.
      */
-    const reply = await aiService.generateResponse(contents, user, userMessage, null, record);
+    const raw = await aiService.generateResponse(contents, user, userMessage, null, record);
+
+    /*
+     * The booking question goes out with a Yes and a No under it.
+     *
+     * Every other choice in this flow is a tap - the language, the service,
+     * the appliance, the fault - and then the one question that actually
+     * commits somebody to a visit asked them to type. That is the step where
+     * typing does the most damage too: "hnn j hele kn pain" is a yes with a
+     * question inside it, and the whole consent gate in ai.service exists
+     * because a typed yes cannot be trusted. A tapped one can.
+     *
+     * The model marks that message and nothing else - see readBooking. When
+     * it forgets, the reply simply goes out as text and the customer types,
+     * exactly as before.
+     */
+    const { text: reply, asksToBook } = aiService.readBooking(raw);
+
+    /*
+     * Buttons only where WhatsApp will actually take them.
+     *
+     * An interactive body is capped at 1024 characters and cannot be empty,
+     * and a message that breaks either rule is rejected outright - which would
+     * mean the customer gets nothing at all rather than a question without
+     * buttons. A plain text message has neither limit, so it is what anything
+     * out of range falls back to.
+     */
+    const canTap = asksToBook && reply.length > 0 && reply.length <= 1024;
 
     // Reply goes out first. Everything below is bookkeeping the customer
     // has no reason to wait for.
-    await whatsapp.sendText(convo.phone, reply);
+    let sent = null;
+
+    if (canTap) {
+        const t = copyFor(convo.language);
+        sent = await whatsapp.sendButtons(convo.phone, {
+            body: reply,
+            buttons: [
+                { id: "book_yes", title: t.bookYes },
+                { id: "book_no", title: t.bookNo },
+            ],
+        });
+    }
+
+    // Said in words when the buttons could not be sent, whatever the reason -
+    // the question still has to reach them, and a customer who never sees it
+    // is a booking that never happens.
+    if (!sent) await whatsapp.sendText(convo.phone, reply);
+
     convo.lastOutboundAt = new Date();
 
     // Store the customer's own words, not the wrapped version - system notes

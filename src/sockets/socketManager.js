@@ -348,12 +348,23 @@ function registerCustomerHandlers(socket, userIdString) {
                 }],
             };
 
-            const response = await aiService.generateResponse(
+            const raw = await aiService.generateResponse(
                 [...shortTermMemory, currentTurn],
                 socket.actor,
                 content,
                 messagePayload.location
             );
+
+            /*
+             * The booking marker is stripped here too, and only stripped.
+             *
+             * WhatsApp turns it into a Yes and a No the customer can tap; this
+             * channel has no such thing, so the question is asked in words and
+             * answered in words exactly as before. What must never happen is
+             * the marker reaching a screen, which is why every caller of
+             * generateResponse runs its reply through readBooking.
+             */
+            const { text: response } = aiService.readBooking(raw);
 
             socket.emit("ai-response", { content: response, chat: chatId });
             console.log("[SOCKET] ai-response emitted");

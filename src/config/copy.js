@@ -53,6 +53,11 @@ const COPY = {
         issueButton: "Choose issue",
         issueSection: "Common issues",
         somethingElse: "Something else",
+
+        // The two taps under the booking question. WhatsApp caps a reply
+        // button at 20 characters, which assertCopyLengths below enforces.
+        bookYes: "Yes, book it",
+        bookNo: "Not now",
         ownWords: "No problem - tell me what's happening in your own words.",
         aiUnavailable: "Sorry, I could not process that just now. Please try again in a moment.",
     },
@@ -79,6 +84,9 @@ const COPY = {
         issueButton: "Choose issue",
         issueSection: "Common issues",
         somethingElse: "Something else",
+
+        bookYes: "Haan, book karein",
+        bookNo: "Abhi nahi",
         ownWords: "Koi baat nahi - apne shabdon mein bataiye kya ho raha hai.",
         aiUnavailable: "Maaf kijiye, abhi process nahi kar paya. Kripya thodi der baad try karein.",
     },
@@ -119,6 +127,9 @@ const COPY = {
         issueButton: "Choose issue",
         issueSection: "Common issues",
         somethingElse: "Something else",
+
+        bookYes: "ହଁ, book କରନ୍ତୁ",
+        bookNo: "ଏବେ ନୁହେଁ",
         ownWords: "ଠିକ ଅଛି - ନିଜ ଭାଷାରେ କୁହନ୍ତୁ କଣ ହେଉଛି।",
         aiUnavailable: "ଦୁଃଖିତ, ଏବେ process କରି ପାରିଲି ନାହିଁ। ଟିକେ ପରେ ଆଉ ଥରେ ଚେଷ୍ଟା କରନ୍ତୁ।",
     },
@@ -141,7 +152,13 @@ const copyFor = (language) => COPY[asLanguage(language)] || COPY.english;
 
 const assertCopyLengths = () => {
     const tooLong = [];
-    const limits = { serviceButton: 20, applianceButton: 20, issueButton: 20, serviceSection: 24, issueSection: 24 };
+    const limits = {
+        serviceButton: 20, applianceButton: 20, issueButton: 20,
+        serviceSection: 24, issueSection: 24,
+
+        // Reply buttons are capped tighter than list buttons by WhatsApp.
+        bookYes: 20, bookNo: 20,
+    };
 
     Object.entries(COPY).forEach(([language, strings]) => {
         Object.entries(limits).forEach(([field, max]) => {

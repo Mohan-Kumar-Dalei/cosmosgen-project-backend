@@ -102,6 +102,12 @@ const getTracking = async (req, res) => {
                     name: tech.name || null,
                     phone: tech.phone || null,
                     rating: tech.rating ? Number(tech.rating).toFixed(1) : null,
+
+                    // And his face. Somebody watching a bike come towards
+                    // their house is about to open the door to whoever gets
+                    // off it, and knowing what he looks like before then is
+                    // worth more than any of the rest of this.
+                    photo: tech.profileImage || null,
                 },
 
                 technicianAt,

@@ -154,6 +154,15 @@ Never call the tool in the same turn the issue was picked.
 Never call it if step 4 wasn't its own separate message.
 If they say No, accept it and say they can message anytime.
 
+MARK THE BOOKING QUESTION:
+When, and only when, a message of yours is that booking question from step 4,
+put [[BOOK]] at the very end of it, after the last full stop, on its own.
+Write nothing after it. That marker is never shown to the customer - it tells
+WhatsApp to put a Yes and a No under your question so they can tap instead of
+typing. Do not put it on a diagnostic question, on an answer, on a
+confirmation, or on any message that is asking something other than whether
+to book. Never write the word BOOK or those brackets anywhere else.
+
 Everything quoted above is written in English only to show the SHAPE of a turn
 - one question, asked on its own. Those are not sentences to send. Never copy
 a quoted line word for word; write your own, in the language named in the
@@ -610,6 +619,35 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
 const generateResponse = (contents, userData, userMessage, userLocation, record) =>
     runConversation({ contents, userData, userLocation, instruction: CHAT_INSTRUCTION, record });
 
+/**
+ * The marker the instruction asks for, and the only place it is understood.
+ *
+ * The model ends its booking question - and nothing else - with [[BOOK]], so a
+ * channel that can offer a tap knows which message to offer it on. WhatsApp
+ * turns that into a Yes and a No underneath the question; everywhere else it
+ * is simply removed.
+ *
+ * Every caller must run its reply through this before showing it to anybody.
+ * The marker is instruction scaffolding, not words for a customer, and a model
+ * that puts it somewhere unexpected must not be able to leak it onto a screen.
+ * A reply without it comes back unchanged and asksToBook false, which is the
+ * old behaviour - so a turn where the model forgets simply falls back to the
+ * customer typing yes, rather than breaking.
+ */
+const BOOK_MARK = "[[BOOK]]";
+
+const readBooking = (raw) => {
+    const text = String(raw ?? "");
+    const asksToBook = text.includes(BOOK_MARK);
+
+    return {
+        // Removed wherever it landed, not just off the end, and the blank line
+        // it leaves behind goes with it.
+        text: text.split(BOOK_MARK).join("").replace(/\s+$/, "").trim(),
+        asksToBook,
+    };
+};
+
 async function generateVector(content) {
     if (!content || (typeof content === "string" && !content.trim())) return [];
 
@@ -627,4 +665,4 @@ async function generateVector(content) {
     }
 }
 
-module.exports = { generateResponse, generateVector, buildCustomerRecord };
+module.exports = { generateResponse, generateVector, buildCustomerRecord, readBooking };
