@@ -105,33 +105,56 @@ const COPY = {
      * those is what makes a line read as a translation rather than as
      * somebody speaking.
      */
+    /*
+     * Odia, written the way somebody is spoken to here - not translated at
+     * them.
+     *
+     * Mohan read this block back and the word he used was "unrespected". Two
+     * things were wrong with it. Odia carries respect in its grammar: the
+     * customer is ଆପଣ, an instruction ends in -ନ୍ତୁ, and anything said about
+     * them or about our own engineer takes the honorific - ଆସିବେ, not ଆସିବ.
+     * And our technician was ଲୋକ, which is "a man"; he is ଆମ technician.
+     *
+     * The other half was plain awkwardness. "ଯଦି ସେଠିକୁ ଲୋକ ପଠାଇବାକୁ
+     * ଚାହୁଁନାହାନ୍ତି" is a sentence nobody speaks. What a customer needs to be
+     * told is where we are sending somebody, and how to change it - said
+     * once, warmly, in that order.
+     *
+     * Every line below is addressed to ଆପଣ, asks with ଦୟାକରି and apologises
+     * with କ୍ଷମା କରିବେ. LANGUAGE_RULES.odia in ai.service.js holds the
+     * assistant to the same register, so the menus and the conversation do
+     * not read as two different companies.
+     */
     odia: {
-        appNeedsLocation: "ଆପଣଙ୍କର Cosmosgen account ଅଛି, କିନ୍ତୁ ସେଥିରେ location save ହୋଇନାହିଁ।" + "\n\n" +
-            "App ଖୋଲନ୍ତୁ, ଦୁଆର ପାଖରେ ଠିଆ ହୋଇ Use my current location ଦବାନ୍ତୁ ଏବଂ save କରନ୍ତୁ। " +
-            "ସେହି pin ରୁ ହିଁ office ଆପଣଙ୍କ ପାଖର ଲୋକ ଖୋଜେ - ତାହା ବିନା କାମ କେଉଁଠିକୁ ପଠାଯାଇ ପାରିବ ନାହିଁ।",
-        appOnly: "Cosmosgen ରେ booking କରିବା ପାଇଁ ଆପଣଙ୍କର ଆମ app ରେ account ଦରକାର।" + "\n\n" +
-            "ଥରେ ସେଠାରେ register କରନ୍ତୁ - ସେଠାରେ ହିଁ ସେହି ଠିକଣା ଦିଅନ୍ତି ଯେଉଁଠିକୁ engineer ଯିବେ, " +
-            "ତେଣୁ ଏଠାରେ ବାରମ୍ବାର location ମାଗିବାକୁ ପଡ଼େ ନାହିଁ। ତାପରେ ଏଠାରେ message କରନ୍ତୁ, ଆମେ ଆଗକୁ ବଢ଼ିବା।",
+        appNeedsLocation: "ଆଜ୍ଞା, ଆପଣଙ୍କର Cosmosgen account ଅଛି, କିନ୍ତୁ ସେଥିରେ ଠିକଣା save ହୋଇନାହିଁ।" + "\n\n" +
+            "ଦୟାକରି app ଖୋଲନ୍ତୁ, ଦୁଆର ପାଖରେ ଠିଆ ହୋଇ Use my current location ଦବାନ୍ତୁ ଏବଂ save କରନ୍ତୁ। " +
+            "ସେହି ଠିକଣାରୁ ହିଁ ଆମ office ଆପଣଙ୍କ ପାଖରେ ଥିବା technician ଖୋଜନ୍ତି - ତାହା ବିନା ଆମେ କାହାକୁ ପଠାଇ ପାରିବୁ ନାହିଁ।",
+        appOnly: "ନମସ୍କାର। Cosmosgen ରେ booking କରିବା ପାଇଁ ଆପଣଙ୍କର ଆମ app ରେ ଗୋଟିଏ account ଦରକାର।" + "\n\n" +
+            "ଦୟାକରି ଥରେ ସେଠାରେ register କରିନିଅନ୍ତୁ। ସେଠାରେ ଆପଣ ଯେଉଁ ଠିକଣା ଦେବେ, ଆମ technician ସେଇଠିକୁ ଆସିବେ - " +
+            "ତେଣୁ ଏଠାରେ ଆପଣଙ୍କୁ ବାରମ୍ବାର location ଦେବାକୁ ପଡ଼ିବ ନାହିଁ। ତାପରେ ଏଠାରେ ଟିକେ message କରନ୍ତୁ, ଆମେ ଆଗକୁ ବଢ଼ିବା।",
         welcomeVerified: (name, place) =>
-            "Verify ହୋଇଗଲା: " + name + (place ? " - " + place : "") + "।" + "\n\n" +
-            "Cosmosgen services କୁ ସ୍ୱାଗତ। ଯଦି ସେଠିକୁ ଲୋକ ପଠାଇବାକୁ ଚାହୁଁନାହାନ୍ତି, app ରେ ଠିକଣା ବଦଳାନ୍ତୁ।",
-        alreadyHaveLocation: "ଦରକାର ନାହିଁ - ଆପଣ app ରେ save କରିଥିବା ଠିକଣା ଆମ ପାଖରେ ଅଛି, ସେଠିକୁ ହିଁ ଲୋକ ଯିବେ।",
-        languageDone: (name) => "ଠିକ ଅଛି, ଆମେ " + name + " ରେ କଥା ହେବା।",
-        welcomeBack: (name) => "ନମସ୍କାର" + name + "! Cosmosgen କୁ ପୁଣି ସ୍ୱାଗତ।",
-        serviceBody: "ଆଜି ଆପଣଙ୍କୁ କେଉଁ କାମରେ ସାହାଯ୍ୟ ଦରକାର?",
+            "ନମସ୍କାର " + name + "! ଆପଣଙ୍କ ବିବରଣୀ verify ହୋଇଗଲା।" + "\n\n" +
+            "Cosmosgen Services କୁ ଆପଣଙ୍କୁ ସ୍ୱାଗତ।" +
+            (place ? " ଆମ technician " + place + " ରେ ଥିବା ଆପଣଙ୍କ ଠିକଣାକୁ ଆସିବେ।" : " ଆପଣ app ରେ save କରିଥିବା ଠିକଣାକୁ ଆମ technician ଆସିବେ।") +
+            " ଅନ୍ୟ ଠିକଣାକୁ ଡାକିବାକୁ ଚାହିଁଲେ ଦୟାକରି app ରେ ଠିକଣା ବଦଳାଇଦିଅନ୍ତୁ।",
+        alreadyHaveLocation: "ଆଜ୍ଞା, ଏହାର ଆବଶ୍ୟକତା ନାହିଁ। ଆପଣ app ରେ ଯେଉଁ ଠିକଣା save କରିଛନ୍ତି ତାହା ଆମ ପାଖରେ ଅଛି, ଆମ technician ସେଇଠିକୁ ହିଁ ଆସିବେ। ବଦଳାଇବାକୁ ଚାହିଁଲେ ଦୟାକରି app ରେ ବଦଳାଇଦିଅନ୍ତୁ।",
+        languageDone: (name) => "ଠିକ ଅଛି ଆଜ୍ଞା। ଆମେ ଏବେଠାରୁ " + name + " ରେ କଥା ହେବା।",
+        welcomeBack: (name) => "ନମସ୍କାର" + name + "! Cosmosgen କୁ ପୁଣିଥରେ ସ୍ୱାଗତ।",
+        serviceBody: "ଆଜି ଆପଣଙ୍କୁ କେଉଁ କାମରେ ସାହାଯ୍ୟ ଦରକାର ଆଜ୍ଞା?",
         serviceButton: "Choose service",
         serviceSection: "Our services",
-        applianceBody: "କେଉଁ appliance ରେ ସମସ୍ୟା ହେଉଛି?",
+        applianceBody: "ଆପଣଙ୍କ କେଉଁ appliance ରେ ସମସ୍ୟା ହେଉଛି?",
         applianceButton: "Choose appliance",
-        issueBody: (heading) => heading + " - କଣ ସମସ୍ୟା ହେଉଛି?",
+        issueBody: (heading) => heading + " ରେ କଣ ସମସ୍ୟା ହେଉଛି ଆଜ୍ଞା?",
         issueButton: "Choose issue",
         issueSection: "Common issues",
         somethingElse: "Something else",
 
         bookYes: "ହଁ, book କରନ୍ତୁ",
         bookNo: "ଏବେ ନୁହେଁ",
-        ownWords: "ଠିକ ଅଛି - ନିଜ ଭାଷାରେ କୁହନ୍ତୁ କଣ ହେଉଛି।",
-        aiUnavailable: "ଦୁଃଖିତ, ଏବେ process କରି ପାରିଲି ନାହିଁ। ଟିକେ ପରେ ଆଉ ଥରେ ଚେଷ୍ଟା କରନ୍ତୁ।",
+
+        ownWords: "ଠିକ ଅଛି ଆଜ୍ଞା - ଦୟାକରି ନିଜ ଭାଷାରେ କୁହନ୍ତୁ କଣ ହେଉଛି।",
+        aiUnavailable: "କ୍ଷମା କରିବେ, ଏବେ ମୁଁ ଏହା process କରିପାରିଲି ନାହିଁ। ଦୟାକରି ଟିକେ ପରେ ଆଉ ଥରେ ଚେଷ୍ଟା କରନ୍ତୁ।",
     },
 };
 

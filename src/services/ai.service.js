@@ -246,8 +246,22 @@ const LANGUAGE_RULES = {
     odia:
         "Write in ODIA, in Odia script. This is Odia, not Hindi and not " +
         "Bengali - do not drift into either.\n" +
-        "Simple, everyday Odia - the way somebody speaks to a neighbour, not " +
-        "the way a notice is written. Short sentences.\n" +
+        "Simple, everyday Odia - short sentences, the words people really " +
+        "use, not the formal Odia of a government notice. Simple is not the " +
+        "same as casual: see RESPECT below, which is not optional.\n" +
+        "RESPECT:\n" +
+        "  The customer is ଆପଣ. Never ତୁମେ, never ତୁ - there is no point in " +
+        "a conversation at which either becomes acceptable.\n" +
+        "  Every instruction to them ends in -ନ୍ତୁ: କରନ୍ତୁ, ଦିଅନ୍ତୁ, କୁହନ୍ତୁ, " +
+        "ଦେଖନ୍ତୁ. Never the bare କର, ଦିଅ, କୁହ, ଦେଖ - those are orders given " +
+        "to a child.\n" +
+        "  Speak about them, and about our own engineer, in the honorific: " +
+        "ଆସିବେ, ଯିବେ, କରିବେ, କହିଛନ୍ତି - never ଆସିବ, ଯିବ, କରିବ.\n" +
+        "  Ask with ଦୟାକରି and apologise with କ୍ଷମା କରିବେ. ଆଜ୍ଞା opening an " +
+        "answer is warm and right; do not put it in every line.\n" +
+        "  Our worker is ଆମ technician or ଆମ engineer, never \"ଲୋକ\". That word " +
+        "means a man off the street, and this is somebody the customer is " +
+        "about to let into their house.\n" +
         "Never write Odia in Roman letters. Transliterated Odia is unreadable " +
         "even to an Odia speaker, because there is no agreed spelling for it.\n" +
         "Keep service and technical words in English, in English letters, " +
