@@ -101,6 +101,22 @@ const technicianSchema = new mongoose.Schema({
 
     isAvailable: { type: Boolean, default: false },
 
+    /**
+     * Where to reach this phone when the app is not running.
+     *
+     * The socket only exists while the app is in front of somebody. Press the
+     * home button and Android freezes the process - no socket, no JavaScript,
+     * no alert - which is how a job could be assigned to a vendor standing
+     * there holding a silent phone. A push goes through the platform instead
+     * of through us, so it lands whatever state the app is in.
+     *
+     * One token, not a list: a vendor signs in on one phone, and a token
+     * written by a second device should replace the first rather than ring
+     * both. Unset rather than emptied when a device stops accepting it - see
+     * DeviceNotRegistered in push.service.js.
+     */
+    pushToken: { type: String, trim: true },
+
     /*
      * When the current answer to `isAvailable` began, and how long the last
      * absence lasted.

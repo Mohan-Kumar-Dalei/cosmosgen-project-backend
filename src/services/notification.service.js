@@ -3,6 +3,7 @@ const ticketModel = require("../models/ticket.model");
 const trackController = require("../controllers/track.controller");
 const Conversation = require("../models/conversation.model");
 const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
+const push = require("./push.service");
 
 // Google Maps deep link - no API key, no cost. Opens the Maps app with
 // navigation ready to go.
@@ -218,6 +219,25 @@ const notifyTechnicianAssigned = (ticket) => {
         },
         directionsUrl: buildDirectionsUrl(lat, lon),
     });
+
+    /*
+     * And through the platform, for the phone that is not listening.
+     *
+     * The emit above only reaches a vendor whose app is in front of them.
+     * Press the home button and Android freezes the process - the socket
+     * goes with it, and so does the code that would have made a sound.
+     * This is the one thing that still lands, because Android delivers it
+     * rather than us.
+     *
+     * Deliberately not awaited. Assigning a job must not get slower, or
+     * fail, because a push server is having a bad minute.
+     */
+    push.sendToTechnician(ticket.technician, {
+        title: "New job assigned",
+        body: [ticket.serviceLabel, ticket.customerSnapshot?.area].filter(Boolean).join(" - ")
+            || "A job has been given to you. Open it to see where.",
+        data: { kind: "ticket:assigned", ticketId: String(ticket._id) },
+    });
 };
 
 /**
@@ -255,6 +275,16 @@ const notifyTechnicianQueued = (ticket) => {
         customerName: ticket.customerSnapshot?.name,
         area: ticket.customerSnapshot?.area,
         scheduledFor: ticket.scheduling?.scheduledFor || null,
+    });
+
+    // Quieter than an assignment - it is work for later, not work now -
+    // but it still has to reach a closed app, or the vendor finds out
+    // about tomorrow's job by opening the app tomorrow.
+    push.sendToTechnician(ticket.technician, {
+        title: "Another job queued",
+        body: [ticket.serviceLabel, ticket.customerSnapshot?.area].filter(Boolean).join(" - ")
+            || "One more job is waiting behind your current one.",
+        data: { kind: "ticket:queued", ticketId: String(ticket._id) },
     });
 };
 

@@ -788,6 +788,33 @@ const updateStatus = async (req, res) => {
     }
 };
 
+/**
+ * PUT /api/technician/push-token
+ *
+ * Where to reach this phone once the app is closed. The app sends it on every
+ * start, because a token can be reissued by the platform at any time and the
+ * one we hold is only as good as the last time it was confirmed.
+ *
+ * An empty body clears it, which is what signing out does - a phone that has
+ * been handed back or signed out of must stop ringing for somebody else's
+ * jobs.
+ */
+const savePushToken = async (req, res) => {
+    try {
+        const token = String(req.body?.token || "").trim();
+
+        await technicianModel.updateOne(
+            { _id: req.technician._id },
+            token ? { $set: { pushToken: token } } : { $unset: { pushToken: 1 } }
+        );
+
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Push token not saved:", error.message);
+        return res.status(500).json({ success: false, message: "Could not save the push token." });
+    }
+};
+
 const updateLocation = async (req, res) => {
     try {
         const lat = Number(req.body.lat);
@@ -2725,6 +2752,7 @@ module.exports = {
     deleteTechProfile,
     updateStatus,
     updateLocation,
+    savePushToken,
     startOnTheWay,
     startWork,
     sendJobOtp,

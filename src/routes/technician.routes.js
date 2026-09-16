@@ -69,6 +69,10 @@ const locationLimiter = rateLimit({
 });
 router.post("/location", isTechAuthenticated, locationLimiter, technicianController.updateLocation);
 
+// Written on every app start, and cleared on sign out. Not rate limited
+// alongside location: it fires once per launch, not once per movement.
+router.put("/push-token", isTechAuthenticated, technicianController.savePushToken);
+
 /* ---------- PRICING ---------- */
 router.get("/pricing", isTechAuthenticated, technicianController.getPricing);
 
