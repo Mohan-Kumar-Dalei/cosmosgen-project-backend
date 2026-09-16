@@ -252,6 +252,54 @@ const buildSkillRegex = (serviceKey) => {
     return new RegExp(service.keywords.map(escapeRegex).join("|"), "i");
 };
 
+/**
+ * A stored issue, as words rather than as a database key.
+ *
+ * The app picks faults from chips and sends back what it was given, which is
+ * the catalogue key - NOT_COOLING, ROUTINE_SERVICE. Those went straight onto
+ * the ticket and straight onto the customer's own screen, shouting in capitals
+ * with underscores in the middle. WhatsApp never had the problem because that
+ * flow stores the label it showed.
+ *
+ * So the keys are turned back into words here, on the way in, and both
+ * channels store the same thing: a phrase in the customer's own language.
+ *
+ * The key can belong to the service itself or to any appliance under it - the
+ * app does not say which, and it does not need to, because a key is unique
+ * within a service. Anything not found is passed through with its underscores
+ * opened out, which is better than dropping a fault the customer chose.
+ */
+const issuePhrases = (serviceKey, values, language) => {
+    const service = getServiceByKey(serviceKey);
+
+    const pool = [
+        ...(service?.issues || []),
+        ...(service?.appliances || []).flatMap((a) => a.issues || []),
+    ];
+
+    return (Array.isArray(values) ? values : [])
+        .map((value) => {
+            if (typeof value !== "string") return "";
+
+            const raw = value.trim();
+            if (!raw) return "";
+
+            const found = pool.find((i) => i.key === raw);
+            if (found) return issueLabel(found, language);
+
+            // Not a key we know. If it reads like one - SHOUTED_WITH_
+            // UNDERSCORES - open it out; otherwise it is already a phrase
+            // somebody typed and it is left exactly as they wrote it.
+            if (/^[A-Z0-9]+(_[A-Z0-9]+)+$/.test(raw)) {
+                const words = raw.toLowerCase().split("_").join(" ");
+                return words.charAt(0).toUpperCase() + words.slice(1);
+            }
+
+            return raw;
+        })
+        .filter(Boolean);
+};
+
 module.exports = {
     SERVICE_CATALOG,
     setCatalog,
@@ -259,6 +307,7 @@ module.exports = {
     getServiceByLabel,
     getAppliance,
     issueLabel,
+    issuePhrases,
     displayLabel,
     buildSkillRegex,
     escapeRegex,

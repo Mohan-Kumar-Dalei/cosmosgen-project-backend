@@ -13,7 +13,7 @@ const paymentService = require("../services/payment.service");
 const assistant = require("../services/assistant.service");
 const WebChat = require("../models/webChat.model");
 const { lookupPlace } = require("./map.controller");
-const { SERVICE_CATALOG, getServiceByKey, buildSkillRegex, escapeRegex } = require("../config/services");
+const { SERVICE_CATALOG, issuePhrases, getServiceByKey, buildSkillRegex, escapeRegex } = require("../config/services");
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -291,25 +291,65 @@ const book = async (req, res) => {
          * Written before the booking, so the very first message about this job
          * is already in it.
          */
-        if (LANGUAGES.includes(language) && language !== req.user.language) {
+        const running = await booking.openTicketsFor(req.user._id);
+
+        /*
+         * A language can only be set when nothing is running.
+         *
+         * Mohan's rule is that a job keeps the language it was booked in from
+         * the first message to the last. The app already hides the question
+         * while work is in hand, but the rule belongs here as well as there -
+         * WhatsApp books through the same account, and a second booking made
+         * from a different channel must not turn a visit that is already on
+         * its way into another language halfway through.
+         */
+        if (!running.length && LANGUAGES.includes(language) && language !== req.user.language) {
             await userModel.updateOne(
                 { _id: req.user._id },
                 { $set: { language, languageConfirmedAt: new Date() } }
             );
         }
 
-        const description = String(problemDescription || "").trim();
-        if (description.length < 5) {
+        /*
+         * The faults, as words rather than as catalogue keys.
+         *
+         * The app sends back the keys it was given - NOT_COOLING,
+         * ROUTINE_SERVICE - and those were being written onto the ticket and
+         * read back on the customer's own screen in capitals with underscores
+         * in them. WhatsApp always stored the label it had shown; this makes
+         * the two channels agree, in whichever language the customer is using.
+         */
+        const chosenLanguage = (!running.length && LANGUAGES.includes(language))
+            ? language
+            : req.user.language;
+        const issues = issuePhrases(serviceKey, selectedIssues, chosenLanguage);
+
+        /*
+         * Describing it in your own words is optional once faults are picked.
+         *
+         * Mohan's point: the customer has already said what is wrong by
+         * choosing from the list, and then the next screen refused to go
+         * forward until they had written it out again. The words still matter
+         * where nothing was picked - a service with no list, or a fault that
+         * is not on it - so one of the two is required, not both.
+         */
+        const written = String(problemDescription || "").trim();
+
+        if (!issues.length && written.length < 5) {
             return res.status(400).json({
                 success: false,
-                message: "Tell us what the problem is, in a line or two.",
+                message: "Pick what is wrong, or tell us in a line or two.",
             });
         }
+
+        // Written words lead, because they are specific to this house. The
+        // chosen faults stand in when there are none.
+        const description = written.length >= 5 ? written : issues.join(", ");
 
         const result = await booking.bookJob({
             customerId: req.user._id,
             serviceKey,
-            selectedIssues,
+            selectedIssues: issues,
             problemDescription: description,
             channel: "app",
             location: { lat, lon, address, area, state },
@@ -362,7 +402,7 @@ const book = async (req, res) => {
 const TICKET_FIELDS =
     "ticketNumber status serviceKey serviceLabel selectedIssues problemDescription "
     + "technicianSnapshot scheduling ride billing.totalPaise billing.invoiceNumber billing.workDone "
-    + "payment.method payment.status tracking.token otp.start otp.close createdAt updatedAt";
+    + "payment.method payment.status tracking.token otp.start otp.close cancelReason createdAt updatedAt";
 
 const shape = (t) => ({
     id: t._id,
@@ -386,6 +426,20 @@ const shape = (t) => ({
 
     scheduledFor: t.scheduling?.scheduledFor || null,
     trackingToken: t.tracking?.token || null,
+
+    /*
+     * Why it was called off, if it was.
+     *
+     * Only the office can cancel a ticket, and the reason it records is the
+     * only honest answer to "what happened to my job". Without it the app
+     * shows a job that has simply stopped, which reads as the company having
+     * lost it - and the customer rings to ask something the screen could have
+     * told them.
+     *
+     * A technician handing a job back is not this. That is a refusal, it is
+     * settled inside the office, and the customer is never shown it.
+     */
+    cancelReason: t.status === "Cancelled" ? (t.cancelReason || null) : null,
 
     /*
      * The two codes read out at the door.

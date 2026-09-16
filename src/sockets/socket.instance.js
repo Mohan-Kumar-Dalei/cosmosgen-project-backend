@@ -26,6 +26,27 @@ const emitToRoom = (room, event, payload) => {
 };
 
 /**
+ * How many devices are actually listening to a room, right now.
+ *
+ * `emit` succeeds whether or not anybody is there - it is a broadcast into a
+ * room, not a delivery to a person - and that is what makes "the phone did not
+ * ring" so hard to chase: the server log says the event was sent, and it was,
+ * to nobody. This answers the only question that matters at that moment, which
+ * is whether there was anyone to send it to.
+ *
+ * Zero on any failure. A count that cannot be read must not be reported as
+ * listeners present, because the whole point of asking is to notice absence.
+ */
+const roomSize = (room) => {
+    if (!io) return 0;
+    try {
+        return io.sockets.adapter.rooms.get(room)?.size || 0;
+    } catch {
+        return 0;
+    }
+};
+
+/**
  * Cut every live socket in a room, now.
  *
  * The connect-time check runs once. A vendor who is deleted or blocked while
@@ -46,4 +67,4 @@ const dropRoom = (room) => {
     }
 };
 
-module.exports = { setIo, getIo, userRoom, techRoom, trackRoom, adminRoom, emitToRoom, dropRoom };
+module.exports = { setIo, getIo, userRoom, techRoom, trackRoom, adminRoom, emitToRoom, roomSize, dropRoom };

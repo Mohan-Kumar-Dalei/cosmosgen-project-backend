@@ -2,7 +2,7 @@ const whatsapp = require("./whatsapp.service");
 const ticketModel = require("../models/ticket.model");
 const trackController = require("../controllers/track.controller");
 const Conversation = require("../models/conversation.model");
-const { emitToRoom, userRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
+const { emitToRoom, userRoom, techRoom, adminRoom, roomSize } = require("../sockets/socket.instance");
 const push = require("./push.service");
 
 // Google Maps deep link - no API key, no cost. Opens the Maps app with
@@ -200,6 +200,25 @@ const notifyTechnicianAssigned = (ticket) => {
 
     const lat = ticket.customerSnapshot?.lat;
     const lon = ticket.customerSnapshot?.lon;
+
+    /*
+     * Whether there is anybody there to hear it.
+     *
+     * An emit into an empty room succeeds. That is what made "the phone did
+     * not ring" impossible to chase from this end: the log said the job was
+     * sent, and it was - into a room with nothing in it, because the vendor
+     * app only holds a socket while the vendor is on duty. Counting first
+     * turns the silence into a sentence.
+     */
+    const listening = roomSize(techRoom(ticket.technician));
+
+    console.log(
+        "[NOTIFY] " + ticket.ticketNumber + " assigned to "
+        + (ticket.technicianSnapshot?.name || ticket.technician)
+        + (listening
+            ? " - " + listening + " device(s) listening, the app will ring"
+            : " - NO device listening (app closed or vendor off duty), so only the push and WhatsApp can reach them")
+    );
 
     emitToRoom(techRoom(ticket.technician), "ticket:assigned", {
         ticketId: String(ticket._id),

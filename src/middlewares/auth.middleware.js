@@ -28,7 +28,19 @@ const isAuthenticated = async (req, res, next) => {
         // Ye middleware HAR request pe chalta hai, isliye yahan speed matter karti hai
         const user = await userModel
             .findById(userId)
-            .select("_id name phone address state area lat lon role")
+            /*
+             * `language` and `languageConfirmedAt` belong here.
+             *
+             * GET /customer/me hands back exactly what this attaches, so
+             * leaving them out meant the app could never see what the customer
+             * had actually chosen - the booking screen fell back to English
+             * while WhatsApp wrote to them in Odia, and neither could be told
+             * from the other. `languageConfirmedAt` is the one that matters:
+             * everywhere else in this codebase it is the test for "have they
+             * chosen", because `language` always holds a value whether they
+             * picked it or not.
+             */
+            .select("_id name phone address state area lat lon role language languageConfirmedAt")
             .lean();
 
         if (!user) {

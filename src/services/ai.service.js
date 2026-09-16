@@ -237,8 +237,18 @@ const LANGUAGE_RULES = {
         "\"aap\", not \"hai\", not \"theek\", not \"namaste\". Say \"Hello\", " +
         "\"you\", \"okay\". Plain and warm, the way a support agent writes.",
     hinglish:
-        "Write in HINGLISH - Hindi in Roman script mixed with English, the way " +
-        "people actually chat. Never Devanagari script, and no Odia words.",
+        "Write in HINGLISH: Hindi words spelled in ENGLISH LETTERS, mixed with " +
+        "English, the way people actually type on a phone here.\n" +
+        "NEVER Devanagari. Not one word of it, not a single character. If you " +
+        "are about to write \"\u0915\u094d\u092f\", write \"kya\". If you are about to " +
+        "write \"\u0906\u092a\", write \"aap\". This is the whole point of Hinglish: the " +
+        "customer reads Roman letters, which is why they picked it over Hindi " +
+        "script.\n" +
+        "Right: \"Aapke AC mein kya problem ho rahi hai?\"\n" +
+        "  \"Kitne din se ye problem hai?\"\n" +
+        "  \"Main aapke liye technician book kar doon?\"\n" +
+        "Wrong: \"\u0906\u092a\u0915\u0947 AC \u092e\u0947\u0902 \u0915\u094d\u092f\u093e \u092a\u094d\u0930\u0949\u092c\u094d\u0932\u092e \u0939\u0948?\" - right words, wrong script.\n" +
+        "No Odia words and no Odia script either.",
     // Spelled out with examples on purpose. Asked only for "Odia in Roman
     // script", a small model drifts into Hindi within a turn or two, because
     // that is what most of its Roman-script Indian-language training looks

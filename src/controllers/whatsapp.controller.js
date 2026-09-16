@@ -535,7 +535,26 @@ const resumeOnboarding = async (convo, known) => {
 
     if (onFile.languageConfirmedAt) convo.language = onFile.language;
 
-    if (!onFile.languageConfirmedAt) {
+    /*
+     * The language is settled for the life of a job, and asked again after it.
+     *
+     * Mohan's rule: whichever language a customer books in, everything about
+     * that job stays in it until the job ends - and the next booking is a
+     * fresh choice, on WhatsApp and in the app alike. So the test is not "have
+     * they ever chosen", which locks the answer forever after the first time,
+     * but "is there a job running right now that has already settled it".
+     *
+     * With work in hand, the choice they made for it stands and nobody is
+     * asked to pick again mid-job. With nothing open, they are asked - the
+     * house has no memory of last month's preference, and somebody who wanted
+     * Odia once should not be stuck with it.
+     */
+    const running = await Ticket.exists({
+        customer: onFile._id,
+        status: { $in: OPEN_STATUSES },
+    });
+
+    if (!running || !onFile.languageConfirmedAt) {
         await askForLanguage(convo);
         return;
     }
