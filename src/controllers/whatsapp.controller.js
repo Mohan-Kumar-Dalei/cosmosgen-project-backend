@@ -15,7 +15,23 @@ const OPEN_STATUSES = ["Pending", "Queued", "Assigned", "In-Progress", "Payment-
 // Booking conversations finish in four or five turns, so a short window
 // carries the whole flow without paying for tokens nobody reads
 const HISTORY_LIMIT = 8;
-const RAG_TIMEOUT_MS = 400;
+/*
+ * How long the long-term memory lookup gets before the reply goes on without
+ * it.
+ *
+ * This was 400ms, and 400ms is not enough to do the two things it has to do.
+ * The lookup is an embedding call to Gemini and then a query to Pinecone, one
+ * after the other: the embedding alone is usually 200-600ms and the query adds
+ * another 50-150 on top. So the race was lost almost every time, the fallback
+ * of "no memories" was returned, and - because a lost race is not an error -
+ * nothing anywhere said so. Memories were being written faithfully and never
+ * read once.
+ *
+ * The cost of the larger budget is bounded: this only runs on the opening turn
+ * of a conversation (see isOpeningTurn below), so it is once per customer per
+ * conversation, not once per message.
+ */
+const RAG_TIMEOUT_MS = 1500;
 const MEMORY_CHAR_CAP = 300;
 
 // Anything a customer types to get back to the start
@@ -732,8 +748,23 @@ const handleIssuePick = async (convo, interactiveId) => {
 /* AI                                                                   */
 /* ------------------------------------------------------------------ */
 
-const withTimeout = (promise, ms, fallback) =>
-    Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]);
+/**
+ * Give a promise a deadline, and say out loud when it misses it.
+ *
+ * The silence was the real bug the last time this was tuned: a lost race
+ * returns the fallback and looks exactly like a lookup that legitimately found
+ * nothing, so "the memory does not work" had no trace to follow anywhere in
+ * the logs. Naming the thing that timed out costs one line and makes the next
+ * tuning an observation rather than a guess.
+ */
+const withTimeout = (promise, ms, fallback, what = "lookup") =>
+    Promise.race([
+        promise,
+        new Promise((resolve) => setTimeout(() => {
+            console.log("[MEMORY] " + what + " gave up after " + ms + "ms - answering without it");
+            resolve(fallback);
+        }, ms)),
+    ]);
 
 const runAI = async (convo, userMessage, opts = {}) => {
     const user = await userModel.findById(convo.user);
@@ -774,7 +805,8 @@ const runAI = async (convo, userMessage, opts = {}) => {
                     )
                     .catch(() => []),
                 RAG_TIMEOUT_MS,
-                []
+                [],
+                "past visits"
             )
             : Promise.resolve([]),
 
@@ -791,6 +823,21 @@ const runAI = async (convo, userMessage, opts = {}) => {
         .filter(Boolean)
         .join(" | ")
         .slice(0, MEMORY_CHAR_CAP);
+
+    /*
+     * Said out loud on the turn it is looked up.
+     *
+     * "Is the memory working?" is not answerable from the outside: a lookup
+     * that found nothing, one that timed out and one that was never attempted
+     * all produce the same silence and the same reply. One line per opening
+     * turn distinguishes them, and it is only the opening turn, so it is not
+     * noise.
+     */
+    if (isOpeningTurn) {
+        console.log(memoryText
+            ? "[MEMORY] recalled " + (memory || []).length + " past exchange(s) for this customer"
+            : "[MEMORY] nothing recalled - either a new customer or nothing close enough to the question");
+    }
 
     let currentText = userMessage;
     if (priorTurns.length === 0 && service) {

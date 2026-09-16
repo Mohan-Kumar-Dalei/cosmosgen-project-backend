@@ -1,9 +1,35 @@
 const path = require("path");
 const fs = require("fs");
-const PDFDocument = require("pdfkit");
 const uploadImage = require("../utils/imagekit");
 const ticketModel = require("../models/ticket.model");
 const { paiseToRupees } = require("./payment.service");
+
+/**
+ * pdfkit, loaded when an invoice is actually drawn.
+ *
+ * It was required at the top of this file, and a deploy that pulled the code
+ * without running `npm install` did not fail to make invoices - it failed to
+ * start the server. The require chain runs invoice.service -> technician
+ * controller -> routes -> app -> server, so one missing package took down
+ * bookings, tracking, payments and the WhatsApp webhook, and the only clue in
+ * the log was MODULE_NOT_FOUND on line 3.
+ *
+ * utils/imagekit.js already learned this lesson for the same reason. A
+ * dependency that serves one feature must only be able to break that feature.
+ */
+let PDFDocument = null;
+
+const pdfLibrary = () => {
+    if (PDFDocument) return PDFDocument;
+
+    try {
+        PDFDocument = require("pdfkit");
+    } catch {
+        throw new Error("pdfkit is not installed - run npm install on this server");
+    }
+
+    return PDFDocument;
+};
 
 /**
  * The invoice, as a document the customer keeps.
@@ -96,7 +122,7 @@ const rule = (doc, left, right, y, colour = RULE) => {
 const buildInvoicePdf = (ticket) =>
     new Promise((resolve, reject) => {
         try {
-            const doc = new PDFDocument({ size: "A4", margin: 0, compress: true });
+            const doc = new (pdfLibrary())({ size: "A4", margin: 0, compress: true });
 
             const chunks = [];
             doc.on("data", (c) => chunks.push(c));
