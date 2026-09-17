@@ -97,6 +97,33 @@ const notifyCustomerAssigned = async (ticket) => {
 };
 
 /**
+ * The technician has accepted, so now the customer hears about him.
+ *
+ * This used to fire the moment the office assigned somebody, which meant a
+ * technician who turned the job down had already been introduced by name and
+ * phone number - and the next one was introduced the same way a few minutes
+ * later. Nothing goes out until somebody has agreed to come.
+ *
+ * Two wordings, because a technician can accept a job he cannot start yet. A
+ * queued job is a promise; telling the customer to expect somebody at the door
+ * would be a lie, so it says what is actually true and leaves the arrival to
+ * the "on the way" message that follows when he sets off.
+ */
+const notifyCustomerAccepted = async (ticket) => {
+    if (ticket.status !== "Queued") return notifyCustomerAssigned(ticket);
+
+    const tech = ticket.technicianSnapshot || {};
+
+    await notifyCustomer({
+        ticket,
+        text:
+            "Your request " + ticket.ticketNumber + " has been assigned to " + tech.name + ".\n\n" +
+            "They're finishing another job right now and will reach you soon. " +
+            "We'll message you as soon as they're on the way.",
+    });
+};
+
+/**
  * The code the technician has to be told before he can start, or close.
  *
  * Sent to the customer, never to the technician - the whole point is that he
@@ -391,7 +418,35 @@ const notifyTechnicianBlocked = (technicianId) => {
     });
 };
 
+/**
+ * The technician is out for the rest of the day.
+ *
+ * Told to him over his own socket so the app can put a wall up immediately,
+ * and to the office because his queue has just landed back on their desk.
+ * Neither is a courtesy: somebody has to reassign those jobs today.
+ */
+const notifyTechnicianPaused = (technicianId, count, until) => {
+    emitToRoom(techRoom(technicianId), "account:paused", {
+        declines: count,
+        until,
+        message: "You have turned down " + count + " jobs today. Your account is paused until tomorrow morning.",
+    });
+};
+
 /* ---------- ADMINS ---------- */
+
+const notifyAdminsTechnicianPaused = (technician, count, until) => {
+    notifyTechnicianPaused(technician._id, count, until);
+
+    emitToRoom(adminRoom(), "technician:paused", {
+        technicianId: String(technician._id),
+        name: technician.name,
+        phone: technician.phone,
+        declines: count,
+        until,
+    });
+};
+
 
 const notifyAdminsNewTicket = (ticket) => {
     emitToRoom(adminRoom(), "ticket:new", {
@@ -517,6 +572,7 @@ module.exports = {
     buildPinUrl,
     notifyCustomer,
     notifyCustomerAssigned,
+    notifyCustomerAccepted,
     sendCustomerOtp,
     ensureTrackingLink,
     notifyCustomerWorkStarted,
@@ -535,6 +591,8 @@ module.exports = {
     notifyTechnicianBlocked,
     notifyAdminsNewTicket,
     notifyAdminsTicketRejected,
+    notifyAdminsTechnicianPaused,
+    notifyTechnicianPaused,
     notifyAdminsScheduledStartedEarly,
     notifyAdminsRideStarted,
     notifyAdminsTicketTaken,

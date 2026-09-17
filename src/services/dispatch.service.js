@@ -63,8 +63,9 @@ const promoteQueuedTicket = async (technicianId) => {
         { isAvailable: false, activeTicket: promoted._id }
     );
 
+    // The customer hears when the technician accepts, not when the queue
+    // moves - he may still hand this one back.
     notification.notifyTechnicianAssigned(promoted);
-    await notification.notifyCustomerAssigned(promoted);
 
     return promoted;
 };
@@ -129,7 +130,6 @@ const promoteDueScheduledTickets = async () => {
     // The technician is on the road when this fires - their panel is closed,
     // so WhatsApp is the only channel that reaches them
     await notification.notifyTechnicianAssignedOnWhatsApp(promoted);
-    await notification.notifyCustomerAssigned(promoted);
         promotedCount += 1;
     }
 
@@ -139,4 +139,49 @@ const promoteDueScheduledTickets = async () => {
     return promotedCount;
 };
 
-module.exports = { promoteQueuedTicket, promoteDueScheduledTickets };
+/**
+ * Give a technician's queued jobs back to the office.
+ *
+ * Used when he stops being able to work at all - today, that is a vendor
+ * paused for turning too many jobs down. The jobs themselves are fine; it is
+ * only the person they were parked behind who is not, and a customer should
+ * not wait until tomorrow to find that out.
+ *
+ * Only Queued ones. A job he is standing in front of is his to finish.
+ */
+const releaseQueueOf = async (technicianId, reason) => {
+    const queued = await ticketModel
+        .find({ technician: technicianId, status: "Queued" })
+        .select("_id status")
+        .lean();
+
+    if (!queued.length) return [];
+
+    const at = new Date();
+
+    await ticketModel.updateMany(
+        { _id: { $in: queued.map((t) => t._id) } },
+        {
+            status: "Pending",
+            technician: null,
+            technicianSnapshot: {},
+            assignedBy: null,
+            assignedAt: null,
+            acceptedAt: null,
+            queuedAt: null,
+            $push: {
+                statusHistory: {
+                    from: "Queued",
+                    to: "Pending",
+                    actorRole: "system",
+                    reason,
+                    at,
+                },
+            },
+        }
+    );
+
+    return queued.map((t) => t._id);
+};
+
+module.exports = { promoteQueuedTicket, promoteDueScheduledTickets, releaseQueueOf };

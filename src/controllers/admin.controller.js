@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const adminModel = require("../models/admin.model");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
+const { isSuspended } = require("../services/discipline.service");
 const Payment = require("../models/payment.model");
 const WalletTransaction = require("../models/walletTransaction.model");
 const ServicePricing = require("../models/servicePricing.model");
@@ -675,13 +676,28 @@ const assignTicket = async (req, res) => {
 
         const tech = await technicianModel
             .findOne({ _id: technicianId, isDeleted: false })
-            .select("name phone profileImage rating isAvailable activeTicket")
+            .select("name phone profileImage rating isAvailable activeTicket suspendedUntil")
             .lean();
 
 
 
         if (!tech) {
             return res.status(404).json({ success: false, message: "Vendor not found" });
+        }
+
+        /*
+         * A paused vendor takes no new work.
+         *
+         * Checked here as well as in the app, because the office assigns from
+         * a list and the list does not stop somebody clicking. Sending a job
+         * to a vendor who cannot accept it would leave the customer waiting on
+         * an offer nobody can answer.
+         */
+        if (isSuspended(tech)) {
+            return res.status(409).json({
+                success: false,
+                message: tech.name + " is paused until tomorrow after turning down too many jobs today.",
+            });
         }
 
         // 👇 NAYA WALLET LOCK CODE 👇
@@ -733,6 +749,11 @@ const assignTicket = async (req, res) => {
                 },
                 assignedBy: req.admin._id,
                 assignedAt: isBusy ? null : new Date(),
+
+                // A new technician has agreed to nothing, so the customer
+                // hears nothing until he does.
+                acceptedAt: null,
+
                 queuedAt: isBusy ? new Date() : null,
                 distanceAtAssignment: Number(distanceInMeters) || undefined,
                 $push: {
@@ -765,19 +786,18 @@ const assignTicket = async (req, res) => {
 
         notification.notifyAdminsTicketTaken(ticket._id, req.admin.name);
 
+        /*
+         * The technician is told; the customer is not, yet.
+         *
+         * Both messages that used to go out here now go out when he accepts -
+         * see acceptTicket. Assigning somebody is the office deciding who
+         * should go, and that is not the same as somebody having agreed to.
+         */
         if (!isBusy) {
             notification.notifyTechnicianAssigned(ticket);
             await notification.notifyTechnicianAssignedOnWhatsApp(ticket);
-            await notification.notifyCustomerAssigned(ticket);
         } else {
             notification.notifyTechnicianQueued(ticket);
-            await notification.notifyCustomer({
-                ticket,
-                text:
-                    "Your request " + ticket.ticketNumber + " has been assigned to " + tech.name + ".\n\n" +
-                    "They're finishing another job right now and will reach you soon. " +
-                    "We'll message you as soon as they're on the way.",
-            });
         }
 
         return res.status(200).json({
@@ -820,6 +840,7 @@ const unassignTicket = async (req, res) => {
                 technicianSnapshot: {},
                 assignedBy: null,
                 assignedAt: null,
+                acceptedAt: null,
                 queuedAt: null,
                 $push: {
                     statusHistory: {
@@ -877,11 +898,26 @@ const reassignTicket = async (req, res) => {
 
         const newTech = await technicianModel
             .findOne({ _id: technicianId, isDeleted: false })
-            .select("name phone profileImage rating activeTicket")
+            .select("name phone profileImage rating activeTicket suspendedUntil")
             .lean();
 
         if (!newTech) {
             return res.status(404).json({ success: false, message: "Vendor not found" });
+        }
+
+        /*
+         * A paused vendor takes no new work.
+         *
+         * Checked here as well as in the app, because the office assigns from
+         * a list and the list does not stop somebody clicking. Sending a job
+         * to a vendor who cannot accept it would leave the customer waiting on
+         * an offer nobody can answer.
+         */
+        if (isSuspended(newTech)) {
+            return res.status(409).json({
+                success: false,
+                message: newTech.name + " is paused until tomorrow after turning down too many jobs today.",
+            });
         }
 
         const isBusy = Boolean(newTech.activeTicket);
@@ -941,9 +977,9 @@ const reassignTicket = async (req, res) => {
             notification.notifyTechnicianUnassigned(ticket.technician, updated);
         }
 
+        // Again, no word to the customer until the new technician accepts.
         if (!isBusy) {
             notification.notifyTechnicianAssigned(updated);
-            await notification.notifyCustomerAssigned(updated);
         } else {
             notification.notifyTechnicianQueued(updated);
         }
@@ -1064,11 +1100,26 @@ const rescheduleTicket = async (req, res) => {
 
         const tech = await technicianModel
             .findOne({ _id: targetTechnicianId, isDeleted: false, isBlacklisted: false })
-            .select("name phone profileImage rating activeTicket")
+            .select("name phone profileImage rating activeTicket suspendedUntil")
             .lean();
 
         if (!tech) {
             return res.status(404).json({ success: false, message: "Vendor not found" });
+        }
+
+        /*
+         * A paused vendor takes no new work.
+         *
+         * Checked here as well as in the app, because the office assigns from
+         * a list and the list does not stop somebody clicking. Sending a job
+         * to a vendor who cannot accept it would leave the customer waiting on
+         * an offer nobody can answer.
+         */
+        if (isSuspended(tech)) {
+            return res.status(409).json({
+                success: false,
+                message: tech.name + " is paused until tomorrow after turning down too many jobs today.",
+            });
         }
 
         const wasTheirActiveJob = String(ticket.technician) === String(targetTechnicianId)
@@ -1085,6 +1136,7 @@ const rescheduleTicket = async (req, res) => {
             },
             assignedBy: req.admin._id,
             assignedAt: null,
+            acceptedAt: null,
             queuedAt: new Date(),
             "scheduling.scheduledFor": newDate,
             "scheduling.slotWindow": slotWindow || undefined,
@@ -1369,7 +1421,7 @@ const getAllTechnicians = async (req, res) => {
         const [technicians, total] = await Promise.all([
             technicianModel
                 .find(filter)
-                .select("name phone profileImage skills rating completedJobs performanceLevel city area state isAvailable availabilitySince lastAwayMs activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted deletedAt createdAt")
+                .select("name phone profileImage skills rating completedJobs performanceLevel city area state isAvailable availabilitySince lastAwayMs activeTicket hasVehicle lastLocationAt location approvalStatus isBlacklisted isDeleted deletedAt createdAt suspendedUntil declines.today declines.total")
                 .sort({ createdAt: -1 })
                 .skip((page - 1) * limit)
                 .limit(limit)
@@ -1377,9 +1429,20 @@ const getAllTechnicians = async (req, res) => {
             technicianModel.countDocuments(filter),
         ]);
 
+        /*
+         * "Paused" outranks the rest of the live status.
+         *
+         * Somebody paused is offline by definition, but reading "offline" in
+         * the roster tells the office he stepped away - which is exactly the
+         * wrong thing to think about a vendor who has been stopped. The
+         * decline counts ride along so the reason is one glance away.
+         */
         const data = technicians.map((t) => ({
             ...t,
-            liveStatus: t.activeTicket ? "on_job" : t.isAvailable ? "available" : "offline",
+            paused: Boolean(t.suspendedUntil) && new Date(t.suspendedUntil) > new Date(),
+            liveStatus: (Boolean(t.suspendedUntil) && new Date(t.suspendedUntil) > new Date())
+                ? "paused"
+                : t.activeTicket ? "on_job" : t.isAvailable ? "available" : "offline",
             hasLocation: Array.isArray(t.location?.coordinates) && t.location.coordinates.length === 2,
         }));
 

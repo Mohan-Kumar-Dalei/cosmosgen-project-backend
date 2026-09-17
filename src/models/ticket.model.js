@@ -55,6 +55,21 @@ const ticketSchema = new mongoose.Schema({
 
     assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", default: null },
     assignedAt: { type: Date },
+
+    /*
+     * When the technician said yes.
+     *
+     * Assignment is the office's decision; acceptance is his. Until this is
+     * set the job is an offer, and the customer has not been told anything at
+     * all - not the technician's name, not his number, nothing. That is the
+     * whole point: a customer who is told about Ramesh and then about Suresh
+     * has been shown our dispatch problem, and they did not ask to see it.
+     *
+     * Cleared whenever the job changes hands, because the next technician has
+     * not agreed to anything yet.
+     */
+    acceptedAt: { type: Date, default: null },
+
     distanceAtAssignment: { type: Number },
 
     scheduling: {

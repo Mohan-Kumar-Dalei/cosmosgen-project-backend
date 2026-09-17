@@ -16,7 +16,8 @@ const signupOtpService = require("../services/signupOtp.service");
 const { findCity } = require("../config/cities");
 const whatsapp = require("../services/whatsapp.service");
 const voiceController = require("./voice.controller");
-const { promoteQueuedTicket } = require("../services/dispatch.service");
+const { promoteQueuedTicket, releaseQueueOf } = require("../services/dispatch.service");
+const { recordDecline, isSuspended } = require("../services/discipline.service");
 const rideService = require("../services/ride.service");
 const { emitToRoom, userRoom, techRoom, adminRoom, dropRoom } = require("../sockets/socket.instance");
 const walletService = require("../services/wallet.service");
@@ -40,7 +41,7 @@ const clearOptions = {
 };
 
 const PUBLIC_FIELDS =
-    "_id name phone state city area pincode skills profileImage rating isAvailable availabilitySince lastAwayMs activeTicket completedJobs performanceLevel createdAt";
+    "_id name phone state city area pincode skills profileImage rating isAvailable availabilitySince lastAwayMs activeTicket completedJobs performanceLevel createdAt suspendedUntil declines.today declines.total";
 
 const ACTIVE_STATUSES = ["Assigned", "In-Progress", "Payment-Pending"];
 
@@ -520,7 +521,7 @@ const bootstrap = async (req, res) => {
         const [activeTicket, nextJobs, scheduledJobs, history, cashSummary] = await Promise.all([
             ticketModel
                 .findOne({ technician: techId, status: { $in: ACTIVE_STATUSES } })
-                .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot location ride refusal status billing payment scheduling createdAt assignedAt")
+                .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot location ride refusal status billing payment scheduling createdAt assignedAt acceptedAt")
                 .sort({ createdAt: -1 })
                 .lean(),
 
@@ -532,7 +533,7 @@ const bootstrap = async (req, res) => {
                     status: "Queued",
                     "scheduling.scheduledFor": { $in: [null, undefined] },
                 })
-                .select("ticketNumber serviceLabel problemDescription customerSnapshot queuedAt")
+                .select("ticketNumber serviceLabel problemDescription customerSnapshot queuedAt acceptedAt")
                 .sort({ queuedAt: 1 })
                 .lean(),
 
@@ -543,7 +544,7 @@ const bootstrap = async (req, res) => {
                     status: "Queued",
                     "scheduling.scheduledFor": { $ne: null },
                 })
-                .select("ticketNumber serviceLabel problemDescription customerSnapshot scheduling queuedAt")
+                .select("ticketNumber serviceLabel problemDescription customerSnapshot scheduling queuedAt acceptedAt")
                 .sort({ "scheduling.scheduledFor": 1 })
                 .lean(),
 
@@ -1049,6 +1050,84 @@ const startWork = async (req, res) => {
 };
 
 /**
+ * POST /api/technician/tickets/:id/accept
+ *
+ * The technician agrees to do the job.
+ *
+ * Assigning is the office's decision and it does not need his permission -
+ * the ticket is his either way, and it stays his until he hands it back or
+ * the office moves it. What this changes is only who has been told.
+ *
+ * Before it, the customer knows nothing: not the technician's name, not his
+ * number, not the tracking link. That is deliberate. The old flow introduced
+ * a technician the moment the office picked one, so a job that was turned
+ * down and handed to somebody else produced two introductions and one very
+ * confused customer. Mohan's rule is that the customer hears once, about the
+ * person who is actually coming.
+ *
+ * There is no timer on it. A technician in somebody's kitchen should not lose
+ * a job because he did not look at his phone for three minutes, and a job in
+ * the same street as the one he is on is exactly the job he should get. It
+ * waits until he answers it or hands it back.
+ */
+const acceptTicket = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+            status: { $in: ["Queued", "Assigned"] },
+        }).lean();
+
+        if (!ticket) {
+            return res.status(404).json({ success: false, message: "Job not found or not currently yours" });
+        }
+
+        // Accepting twice is not an error - a slow network and an impatient
+        // thumb produce it often - but the customer must only hear once.
+        if (ticket.acceptedAt) {
+            return res.status(200).json({ success: true, message: "Already accepted", data: ticket });
+        }
+
+        const now = new Date();
+
+        const updated = await ticketModel.findOneAndUpdate(
+            { _id: ticket._id, technician: req.technician._id, acceptedAt: null },
+            {
+                acceptedAt: now,
+                $push: {
+                    statusHistory: {
+                        from: ticket.status,
+                        to: ticket.status,
+                        actorRole: "technician",
+                        actorId: req.technician._id,
+                        reason: "Accepted the job",
+                        at: now,
+                    },
+                },
+            },
+            { returnDocument: "after" }
+        ).lean();
+
+        // Lost the race to another request of his own. Nothing to do and
+        // nothing to say - the customer has already been told by that one.
+        if (!updated) {
+            return res.status(200).json({ success: true, message: "Already accepted", data: ticket });
+        }
+
+        await notification.notifyCustomerAccepted(updated);
+
+        return res.status(200).json({
+            success: true,
+            message: "Accepted. The customer has been told you are coming.",
+            data: updated,
+        });
+    } catch (error) {
+        console.error("Accept ticket error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
  * The technician hands a job back.
  *
  * Two different things arrive here as one: "I cannot do this job" and "the
@@ -1096,6 +1175,7 @@ const releaseTicket = async (req, res) => {
                 technicianSnapshot: {},
                 assignedBy: null,
                 assignedAt: null,
+                acceptedAt: null,
                 queuedAt: null,
                 rejection: {
                     rejectedByName: req.technician.name,
@@ -1123,8 +1203,39 @@ const releaseTicket = async (req, res) => {
             { returnDocument: "after" }
         ).lean();
 
-        // Only pull in their next job if this was the one they were on
-        if (wasActive) {
+        /*
+         * Counted, but only when it was his decision.
+         *
+         * "The customer heard the price and said no" is not a refusal by this
+         * technician - it arrived through him, and counting it would teach him
+         * to stop reporting it, which is the last thing the office wants.
+         */
+        const discipline = customerRefused
+            ? { suspended: false }
+            : await recordDecline(req.technician._id, ticket, reason);
+
+        if (discipline.suspended) {
+            /*
+             * Paused, so nothing else may be handed to him today.
+             *
+             * His queue goes back to the office with him. Leaving it would
+             * park real customers behind somebody who cannot work until
+             * tomorrow, and they would find that out by waiting.
+             */
+            await releaseQueueOf(req.technician._id, "Technician paused after " + discipline.counted + " refusals today");
+
+            await technicianModel.updateOne(
+                { _id: req.technician._id },
+                { isAvailable: false, activeTicket: null }
+            );
+
+            notification.notifyAdminsTechnicianPaused(
+                req.technician,
+                discipline.counted,
+                discipline.until
+            );
+        } else if (wasActive) {
+            // Only pull in their next job if this was the one they were on
             await promoteQueuedTicket(req.technician._id);
         }
 
@@ -1136,9 +1247,13 @@ const releaseTicket = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            message: customerRefused
-                ? "Recorded. The office will speak to the customer before anyone else goes."
-                : "The office has been notified",
+            suspended: Boolean(discipline.suspended),
+            suspendedUntil: discipline.until || null,
+            message: discipline.suspended
+                ? "That is " + discipline.counted + " jobs turned down today. Your account is paused until tomorrow morning."
+                : customerRefused
+                    ? "Recorded. The office will speak to the customer before anyone else goes."
+                    : "The office has been notified",
             data: updated,
         });
     } catch (error) {
@@ -1424,6 +1539,17 @@ const startScheduledNow = async (req, res) => {
             {
                 status: "Assigned",
                 assignedAt: new Date(),
+
+                /*
+                 * Pulling a job forward is agreeing to it.
+                 *
+                 * Nobody starts a job they mean to hand back, so there is no
+                 * sense in asking him to accept a second time - and the
+                 * customer has to be told now, because somebody is on the way
+                 * to them either way.
+                 */
+                acceptedAt: ticket.acceptedAt || new Date(),
+
                 $push: {
                     statusHistory: {
                         from: "Queued",
@@ -1447,7 +1573,10 @@ const startScheduledNow = async (req, res) => {
             return res.status(409).json({ success: false, message: "This job was just changed. Refresh and try again." });
         }
 
-        await notification.notifyCustomerAssigned(updated);
+        // Only if he had not already accepted it in the queue - in that case
+        // the customer was introduced to him then, and once is the rule.
+        if (!ticket.acceptedAt) await notification.notifyCustomerAssigned(updated);
+
         notification.notifyAdminsScheduledStartedEarly(updated, req.technician.name);
 
         return res.status(200).json({
@@ -2777,6 +2906,7 @@ module.exports = {
     startWork,
     sendJobOtp,
     getWallet,
+    acceptTicket,
     releaseTicket,
     refuseTicket,
     billVisitCharge,

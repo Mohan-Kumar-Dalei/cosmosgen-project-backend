@@ -3,7 +3,7 @@ const router = express.Router();
 const rateLimit = require("express-rate-limit");
 
 const upload = require("../middlewares/multer");
-const { isTechAuthenticated } = require("../middlewares/techAuth.middleware");
+const { isTechAuthenticated, isTechNotPaused } = require("../middlewares/techAuth.middleware");
 const technicianController = require("../controllers/technician.controller");
 
 // One limiter per route, never shared. express-rate-limit counts per
@@ -55,7 +55,7 @@ router.put("/profile/update", isTechAuthenticated, upload.single("profileImage")
 router.delete("/profile/delete", isTechAuthenticated, technicianController.deleteTechProfile);
 
 /* ---------- STATUS ---------- */
-router.put("/status", isTechAuthenticated, technicianController.updateStatus);
+router.put("/status", isTechAuthenticated, isTechNotPaused, technicianController.updateStatus);
 
 /* ---------- LOCATION ---------- */
 // Its own limiter: a technician on the road pings every 20-30 seconds, which
@@ -81,6 +81,7 @@ router.get("/pricing", isTechAuthenticated, technicianController.getPricing);
 router.post("/tickets/:id/otp/:purpose", isTechAuthenticated, otpLimiter, technicianController.sendJobOtp);
 router.post("/tickets/:id/on-the-way", isTechAuthenticated, technicianController.startOnTheWay);
 router.post("/tickets/:id/start-work", isTechAuthenticated, technicianController.startWork);
+router.post("/tickets/:id/accept", isTechAuthenticated, isTechNotPaused, technicianController.acceptTicket);
 router.post("/tickets/:id/release", isTechAuthenticated, technicianController.releaseTicket);
 router.post("/tickets/:id/refuse", isTechAuthenticated, technicianController.refuseTicket);
 router.post("/tickets/:id/visit-charge", isTechAuthenticated, technicianController.billVisitCharge);

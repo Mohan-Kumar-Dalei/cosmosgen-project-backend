@@ -135,6 +135,67 @@ const technicianSchema = new mongoose.Schema({
     lastAwayMs: { type: Number },
     activeTicket: { type: mongoose.Schema.Types.ObjectId, ref: "Ticket", default: null },
 
+    /*
+     * Jobs handed back, counted - because one is a reason and five is a habit.
+     *
+     * A technician saying "I cannot do this one" is a normal thing to say, and
+     * the office would rather hear it than have somebody drive out and waste
+     * the trip. What it must not be is free: a vendor who turns down every job
+     * that is far, awkward or cheap leaves the good ones for everybody else
+     * and the office chasing him.
+     *
+     * A refusal by the customer is not counted here. That is the customer's
+     * decision about a price, arriving through whoever happened to be standing
+     * on the doorstep, and holding it against him would teach him to hide it.
+     *
+     * `today` resets by comparing `dayKey` rather than by a scheduled job -
+     * nothing has to run at midnight, and a server that was asleep then still
+     * gets the right answer on the first request of the morning. The key is an
+     * Indian date, because that is the day the vendor is working.
+     */
+    declines: {
+        total: { type: Number, default: 0 },
+        today: { type: Number, default: 0 },
+        dayKey: { type: String, default: "" },
+
+        /*
+         * The last few, in the vendor's own words.
+         *
+         * A count tells the office that somebody is refusing a lot; only the
+         * reasons tell them whether he is dodging work or whether dispatch
+         * keeps sending him jobs across the city. Capped, because this is
+         * evidence for a conversation, not an audit log.
+         */
+        recent: [{
+            ticket: { type: mongoose.Schema.Types.ObjectId, ref: "Ticket" },
+            ticketNumber: { type: String },
+            reason: { type: String },
+            at: { type: Date },
+        }],
+    },
+
+    /*
+     * Paused until this moment. Null means working.
+     *
+     * Set to the start of the next Indian day when the limit is reached, so
+     * the rest of that day is lost and the morning is clean. It is one field
+     * on purpose: if the client ever wants a fine instead of a lost day, the
+     * payment only has to clear this - see liftSuspension in
+     * services/discipline.service.js.
+     */
+    suspendedUntil: { type: Date, default: null },
+
+    /** Every pause, kept so a pattern is visible even after it has expired. */
+    suspensions: [{
+        at: { type: Date },
+        until: { type: Date },
+        declines: { type: Number },
+
+        // Only set when a pause was ended early, which is the case somebody
+        // reading this list later most needs explained.
+        reason: { type: String },
+    }],
+
         // Where payouts go. The account number is select:false so it can never
     // ride along in a response by accident - anything that needs it has to
     // ask for it explicitly.

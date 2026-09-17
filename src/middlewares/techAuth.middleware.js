@@ -72,6 +72,33 @@ const isTechAuthenticated = async (req, res, next) => {
     }
 };
 
+/**
+ * Blocks a technician who has been paused for turning too many jobs down.
+ *
+ * Only on the routes that take work on - going on duty, and accepting a job.
+ * Deliberately not on the rest: a technician who is standing in somebody's
+ * kitchen with the back off a fridge has to be able to finish, take the money
+ * and close the ticket. Stopping him there would punish the customer for what
+ * the technician did, which is not what a pause is for.
+ *
+ * The end of the pause needs nothing to run at midnight - it is a date, and
+ * the comparison is made whenever somebody asks.
+ */
+const isTechNotPaused = (req, res, next) => {
+    const until = req.technician?.suspendedUntil;
+
+    if (until && new Date(until) > new Date()) {
+        return res.status(403).json({
+            success: false,
+            paused: true,
+            suspendedUntil: until,
+            message: "Your account is paused until tomorrow morning after too many jobs were turned down.",
+        });
+    }
+
+    return next();
+};
+
 // No isSuperAdmin here - that lives in adminAuth.middleware.js and reads
 // req.admin, which technician routes never have
-module.exports = { isTechAuthenticated };
+module.exports = { isTechAuthenticated, isTechNotPaused };
