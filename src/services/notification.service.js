@@ -213,7 +213,28 @@ const notifyCustomerTechnicianEnRoute = async (ticket) => {
     await notifyCustomer({ ticket, text });
 };
 
-const notifyCustomerArrived = async (ticket) => { const text = (ticket.technicianSnapshot?.name || "Your technician") + " has arrived at your location.\n\nReply here if you need to reach us."; await notifyCustomer({ ticket, text }); };
+/**
+ * They are at the door.
+ *
+ * Two ways, because they answer different situations. WhatsApp always goes -
+ * it is the one channel every customer has and the one that survives the app
+ * being uninstalled. The push is what reaches somebody who has the app and is
+ * not looking at it, which is precisely the person waiting for this.
+ */
+const notifyCustomerArrived = async (ticket) => {
+    const who = ticket.technicianSnapshot?.name || "Your technician";
+
+    await notifyCustomer({
+        ticket,
+        text: who + " has arrived at your location.\n\nReply here if you need to reach us.",
+    });
+
+    push.sendToCustomer(ticket.customer, {
+        title: who + " has arrived",
+        body: "They are at your address for " + (ticket.serviceLabel || "your job") + ".",
+        data: { ticketId: String(ticket._id), kind: "arrived" },
+    });
+};
 
 const notifyCustomerCancelled = async (ticket) => {
     const text =

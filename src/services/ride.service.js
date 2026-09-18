@@ -12,7 +12,19 @@ const { emitToRoom, techRoom, trackRoom, adminRoom } = require("../sockets/socke
  * tighter than this would leave technicians standing at the door with the
  * message never sent. Wider starts firing while they are still driving past.
  */
-const ARRIVAL_RADIUS_METRES = 120;
+/*
+ * How close counts as arrived.
+ *
+ * It was 120 m, and in the field that declared arrival while the technician
+ * was still a street away - which the customer can see on their own map, and
+ * which stops the tracking dead, because an arrived ride is not synced again.
+ *
+ * Tunable from the environment, because the right number is a thing to find
+ * out on real roads rather than argue about: a city fix is good to 10-30 m, a
+ * flat is not where its pin is, and too tight simply never fires. Fifty is a
+ * starting point that is clearly at the door without being at the wrong one.
+ */
+const ARRIVAL_RADIUS_METRES = Number(process.env.ARRIVAL_RADIUS_METRES) || 50;
 
 /**
  * The stored ETA is refreshed at most this often. Each refresh is a billed

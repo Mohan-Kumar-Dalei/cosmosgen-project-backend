@@ -85,6 +85,7 @@ router.delete("/chat/:chatId", isAuthenticated, customer.forgetChat);
 /* ---------- THEIR ACCOUNT ---------- */
 router.get("/me", isAuthenticated, customer.me);
 router.put("/profile", isAuthenticated, customer.updateProfile);
+router.put("/push-token", isAuthenticated, customer.savePushToken);
 
 /* ---------- THEIR JOBS ---------- */
 // Saved addresses. The list is the customer's own, so every one of these is

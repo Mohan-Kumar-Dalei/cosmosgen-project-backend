@@ -1,4 +1,5 @@
 const technicianModel = require("../models/technician.model");
+const userModel = require("../models/user.model");
 
 /**
  * Waking a phone that has stopped listening.
@@ -123,4 +124,57 @@ const sendToTechnician = async (technicianId, { title, body, data = {} }) => {
     }
 };
 
-module.exports = { sendToTechnician, JOB_CHANNEL };
+/**
+ * The same thing, to a customer.
+ *
+ * Separate from sendToTechnician rather than merged with it, because the two
+ * differ in the parts that matter: a different collection, a different channel
+ * - a customer's phone should not buzz like a work phone - and a different
+ * answer when the token is dead.
+ *
+ * Silent when there is no token, which is every customer until the app has
+ * been built with Firebase credentials for its own package. Nothing here
+ * fails; the WhatsApp message is still the message that always arrives.
+ */
+const sendToCustomer = async (customerId, { title, body, data = {} }) => {
+    if (!customerId) return;
+
+    try {
+        const user = await userModel.findById(customerId).select("name pushToken").lean();
+
+        if (!looksLikeAToken(user?.pushToken)) return;
+
+        const res = await fetch(EXPO_PUSH_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify([{
+                to: user.pushToken,
+                title,
+                body,
+                data,
+                sound: "default",
+                priority: "high",
+                channelId: "updates",
+            }]),
+        });
+
+        const out = await res.json().catch(() => null);
+        const ticket = out?.data?.[0];
+
+        /*
+         * A token the device has stopped accepting is cleared, not retried.
+         * Keeping it means every later message is sent into nothing and the
+         * log fills with the same failure.
+         */
+        if (ticket?.details?.error === "DeviceNotRegistered") {
+            await userModel.updateOne({ _id: customerId }, { $unset: { pushToken: 1 } }).catch(() => {});
+            return;
+        }
+
+        console.log("[PUSH] sent to customer " + (user.name || customerId) + ": " + title);
+    } catch (err) {
+        console.error("[PUSH] customer send failed:", err.message);
+    }
+};
+
+module.exports = { sendToTechnician, sendToCustomer, JOB_CHANNEL };

@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 
 const userModel = require("../models/user.model");
 const addressService = require("../services/address.service");
+const { stageOf } = require("./track.controller");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const booking = require("../services/booking.service");
@@ -405,7 +406,7 @@ const book = async (req, res) => {
 
 /** What a customer is allowed to see about the person coming to their house. */
 const TICKET_FIELDS =
-    "ticketNumber status serviceKey serviceLabel selectedIssues problemDescription location "
+    "ticketNumber status acceptedAt serviceKey serviceLabel selectedIssues problemDescription location "
     + "technicianSnapshot scheduling ride billing.totalPaise billing.invoiceNumber billing.workDone "
     + "payment.method payment.status tracking.token otp.start otp.close cancelReason "
     + "billing.invoicePdfUrl createdAt updatedAt";
@@ -432,6 +433,17 @@ const shape = (t) => ({
 
     scheduledFor: t.scheduling?.scheduledFor || null,
     trackingToken: t.tracking?.token || null,
+
+    /*
+     * What the customer should be told this job is doing.
+     *
+     * Worked out from the same rule the tracking page uses rather than from
+     * the raw status, because the two are not the same thing: a ticket is
+     * "Assigned" from the moment the office picks somebody, and the customer
+     * should not read that as "on the way" until that somebody has agreed to
+     * come. One rule, one answer, wherever it is shown.
+     */
+    stage: stageOf(t),
 
     /*
      * The door this job is for.
@@ -918,7 +930,34 @@ const makeAddressDefault = async (req, res) => {
     }
 };
 
+
+/**
+ * PUT /api/customer/push-token
+ *
+ * Where to reach this phone when the app is shut.
+ *
+ * One token per account, replaced rather than collected: a customer who signs
+ * in on a new phone should be rung on the new one, not on both. An empty value
+ * clears it, which is what signing out sends.
+ */
+const savePushToken = async (req, res) => {
+    try {
+        const token = String(req.body?.token || "").trim();
+
+        await userModel.updateOne(
+            { _id: req.user._id },
+            token ? { pushToken: token } : { $unset: { pushToken: 1 } }
+        );
+
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Save push token error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 module.exports = {
+    savePushToken,
     listAddresses,
     addAddress,
     updateAddress,

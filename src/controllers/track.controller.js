@@ -32,7 +32,18 @@ const stageOf = (ticket) => {
     if (["Closed", "Payment-Pending", "Cancelled"].includes(ticket.status)) return "done";
     if (ticket.status === "In-Progress") return "working";
     if (ticket.ride?.arrivedAt) return "arrived";
-    if (ticket.ride?.startedAt) return "on_the_way";
+
+    /*
+     * Accepting is what tells the customer somebody is coming.
+     *
+     * It used to be the Directions tap alone, which left a gap: the office had
+     * picked somebody, that somebody had agreed to come, and the customer was
+     * still being told we were looking. Mohan's rule is that the moment the
+     * technician says yes is the moment the job is on its way - the route
+     * turns up a little later, when he actually sets off.
+     */
+    if (ticket.ride?.startedAt || ticket.acceptedAt) return "on_the_way";
+
     return "assigned";
 };
 

@@ -41,6 +41,17 @@ const userSchema = new mongoose.Schema({
      * to a driver rather than a destination - the technician's map needs a
      * point, and the arrival test measures against it.
      */
+    /*
+     * Where to reach this phone when the app is not open.
+     *
+     * The same idea as the technician's, and for the same reason: the socket
+     * only exists while somebody is looking at the app, so "your technician
+     * has arrived" reached them on WhatsApp and nowhere else. One token, not a
+     * list - a customer signs in on one phone, and a token written by a second
+     * device should replace the first rather than ring both.
+     */
+    pushToken: { type: String, trim: true },
+
     addresses: [{
         // What the customer calls it: Home, Office, Mum's place.
         label: { type: String, default: "", trim: true },
