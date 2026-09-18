@@ -405,7 +405,7 @@ const book = async (req, res) => {
 
 /** What a customer is allowed to see about the person coming to their house. */
 const TICKET_FIELDS =
-    "ticketNumber status serviceKey serviceLabel selectedIssues problemDescription "
+    "ticketNumber status serviceKey serviceLabel selectedIssues problemDescription location "
     + "technicianSnapshot scheduling ride billing.totalPaise billing.invoiceNumber billing.workDone "
     + "payment.method payment.status tracking.token otp.start otp.close cancelReason "
     + "billing.invoicePdfUrl createdAt updatedAt";
@@ -432,6 +432,19 @@ const shape = (t) => ({
 
     scheduledFor: t.scheduling?.scheduledFor || null,
     trackingToken: t.tracking?.token || null,
+
+    /*
+     * The door this job is for.
+     *
+     * Sent so the app can draw the map from the moment of booking rather than
+     * only once somebody is on the way - which is what a customer expects
+     * after ordering anything. Where the technician is comes over the tracking
+     * socket, not from here: it changes every few seconds and this payload is
+     * fetched once.
+     */
+    destination: Number.isFinite(t.location?.coordinates?.[1])
+        ? { lat: t.location.coordinates[1], lon: t.location.coordinates[0] }
+        : null,
 
     /*
      * Why it was called off, if it was.

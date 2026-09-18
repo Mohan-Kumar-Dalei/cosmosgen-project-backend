@@ -62,6 +62,27 @@ const publicOrigin = () =>
  * new one, so a customer who scrolled back to the first message still has a
  * link that works.
  */
+/**
+ * Where to watch the technician, now that it is not a link.
+ *
+ * The public tracking page still exists and the token is still minted - the
+ * app's own tracking screen is built on it. What stopped is sending the URL
+ * over WhatsApp. Opening it there loads a whole web page inside WhatsApp's own
+ * browser, on a phone that already has the app installed, and it was slower
+ * and worse than the screen the customer could have been looking at instead.
+ *
+ * The download link only appears once there is one. Until the Play listing
+ * exists, APP_DOWNLOAD_URL is empty and a sentence is better than a broken
+ * link.
+ */
+const trackInApp = () => {
+    const url = String(process.env.APP_DOWNLOAD_URL || "").trim();
+
+    return url
+        ? "Track them live in the Cosmosgen app:\n" + url
+        : "Track them live in the Cosmosgen app.";
+};
+
 const ensureTrackingLink = async (ticket) => {
     if (ticket.tracking?.token) return publicOrigin() + "/track/" + ticket.tracking.token;
 
@@ -80,7 +101,14 @@ const ensureTrackingLink = async (ticket) => {
 
 const notifyCustomerAssigned = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
-    const link = await ensureTrackingLink(ticket);
+    /*
+     * Called for the token, not for the URL.
+     *
+     * This is what mints the tracking token, and the app's own tracking screen
+     * is built on it - dropping the call because the link is no longer sent
+     * would leave the customer with an app screen that has nothing to open.
+     */
+    await ensureTrackingLink(ticket);
 
     const text =
         "Your technician has been assigned.\n\n" +
@@ -89,7 +117,7 @@ const notifyCustomerAssigned = async (ticket) => {
         "Technician: " + tech.name + "\n" +
         "Phone: " + tech.phone + "\n" +
         "Rating: " + (tech.rating ? Number(tech.rating).toFixed(1) : "5.0") + "\n\n" +
-        "Track them live here:\n" + link + "\n\n" +
+        trackInApp() + "\n\n" +
         "They will reach your address soon. Feel free to call them directly " +
         "if you need anything.";
 
@@ -164,14 +192,21 @@ const notifyCustomerWorkStarted = async (ticket) => {
  */
 const notifyCustomerTechnicianEnRoute = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
-    const link = await ensureTrackingLink(ticket);
+    /*
+     * Called for the token, not for the URL.
+     *
+     * This is what mints the tracking token, and the app's own tracking screen
+     * is built on it - dropping the call because the link is no longer sent
+     * would leave the customer with an app screen that has nothing to open.
+     */
+    await ensureTrackingLink(ticket);
 
     let text =
         (tech.name || "Your technician") + " is on the way to you.\n\n" +
         "Ticket: " + ticket.ticketNumber + "\n" +
         "Service: " + ticket.serviceLabel + "\n";
 
-    if (link) text += "\nFollow them here:\n" + link + "\n";
+    text += "\n" + trackInApp() + "\n";
 
     text += "\nReply here if you need to reach us.";
 
