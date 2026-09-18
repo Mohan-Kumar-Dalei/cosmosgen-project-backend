@@ -142,7 +142,23 @@ const sendToCustomer = async (customerId, { title, body, data = {} }) => {
     try {
         const user = await userModel.findById(customerId).select("name pushToken").lean();
 
-        if (!looksLikeAToken(user?.pushToken)) return;
+        /*
+         * Said out loud, because silence here is indistinguishable from a push
+         * that was sent and never arrived.
+         *
+         * A customer with no token is a customer whose phone never registered:
+         * permission refused, an old build, or a signed-out app. Nothing is
+         * broken and nothing can be done about it here - but it is the first
+         * question to ask when somebody says the notification did not come,
+         * and it used to leave no trace at all.
+         */
+        if (!looksLikeAToken(user?.pushToken)) {
+            console.log(
+                "[PUSH] no usable token for customer " + (user?.name || customerId)
+                + " - they get WhatsApp only"
+            );
+            return;
+        }
 
         const res = await fetch(EXPO_PUSH_URL, {
             method: "POST",
@@ -167,7 +183,24 @@ const sendToCustomer = async (customerId, { title, body, data = {} }) => {
          * log fills with the same failure.
          */
         if (ticket?.details?.error === "DeviceNotRegistered") {
+            console.log("[PUSH] customer " + (user.name || customerId) + " has a dead token - cleared");
             await userModel.updateOne({ _id: customerId }, { $unset: { pushToken: 1 } }).catch(() => {});
+            return;
+        }
+
+        /*
+         * Every other refusal, in Expo's own words.
+         *
+         * The one that matters most is InvalidCredentials, which means Expo
+         * has no FCM key for this app's package and therefore cannot deliver
+         * to any phone at all. That is a five minute fix in the Expo dashboard
+         * and an evening of guessing without this line.
+         */
+        if (ticket?.status === "error") {
+            console.error(
+                "[PUSH] Expo refused a customer push: " + (ticket.message || "no reason given")
+                + (ticket.details?.error ? " (" + ticket.details.error + ")" : "")
+            );
             return;
         }
 

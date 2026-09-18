@@ -181,8 +181,21 @@ const syncRideProgress = async (technician, lat, lon) => {
         const destLat = ticket.location?.coordinates?.[1];
         if (!Number.isFinite(destLat) || !Number.isFinite(destLon)) return;
 
-        // Already arrived - nothing left to track until the job moves on.
-        if (ticket.ride?.arrivedAt) return;
+        /*
+         * Arrived is not the end of the ride.
+         *
+         * This used to stop dead here, which froze the bike on the customer's
+         * map at whatever point it crossed the hundred metre line - so the
+         * marker sat in the middle of a road while the vendor was walking up
+         * to the door, and the last hundred metres, which is the stretch the
+         * customer is actually watching, never happened on screen. Mohan's
+         * rule: the bike goes to the door and stops beside it.
+         *
+         * So positions keep flowing. What does not happen twice is the
+         * announcement, the route refresh - both pointless at this range - and
+         * the geocode.
+         */
+        const alreadyArrived = Boolean(ticket.ride?.arrivedAt);
 
         const now = new Date();
         const distance = metresBetween(lat, lon, destLat, destLon);
@@ -256,6 +269,7 @@ const syncRideProgress = async (technician, lat, lon) => {
             // Skip the refresh when we are about to declare arrival anyway -
             // paying for a route to a point 100 m away is money for nothing.
             const worthRefreshing =
+                !alreadyArrived &&
                 distance > ARRIVAL_RADIUS_METRES &&
                 (age > ETA_RECOMPUTE_MS || (lost && age > DRIFT_RECHECK_MS));
 
@@ -304,7 +318,11 @@ const syncRideProgress = async (technician, lat, lon) => {
         }
 
         const hasArrived = distance <= ARRIVAL_RADIUS_METRES;
-        if (hasArrived) ticket.ride.arrivedAt = now;
+
+        // The moment it crosses the line, once. Everything after that is just
+        // the last few metres being drawn.
+        const justArrived = hasArrived && !alreadyArrived;
+        if (justArrived) ticket.ride.arrivedAt = now;
 
         await ticket.save();
 
@@ -325,7 +343,9 @@ const syncRideProgress = async (technician, lat, lon) => {
                  * button exists. Arriving still overrides everything, because
                  * being at the door is a fact whatever the record says.
                  */
-                stage: hasArrived ? "arrived" : (started ? "on_the_way" : "assigned"),
+                stage: (hasArrived || alreadyArrived)
+                    ? "arrived"
+                    : (started ? "on_the_way" : "assigned"),
                 etaSeconds: ticket.ride?.etaSeconds ?? null,
                 etaAt: ticket.ride?.etaAt || null,
                 distanceMeters: ticket.ride?.distanceMeters ?? null,
@@ -345,7 +365,7 @@ const syncRideProgress = async (technician, lat, lon) => {
          * from markOnTheWay, which is the moment it describes anyway.
          */
 
-        if (hasArrived) {
+        if (justArrived) {
             await notification.notifyCustomerArrived(plain);
             emitToRoom(techRoom(technician._id), "ride:arrived", {
                 ticketId: String(ticket._id),

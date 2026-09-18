@@ -4,7 +4,7 @@ const jwt = require("jsonwebtoken");
 
 const userModel = require("../models/user.model");
 const addressService = require("../services/address.service");
-const { stageOf } = require("./track.controller");
+const { stageOf, issueToken } = require("./track.controller");
 const { ARRIVAL_RADIUS_METRES } = require("../services/ride.service");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
@@ -536,6 +536,38 @@ const shape = (t) => ({
 });
 
 /**
+ * Every open job has a tracking token, even the ones booked before it did.
+ *
+ * The token is what the map on a job is built on - no token, no socket, no
+ * arc, no bike - and it is minted at booking now. Jobs taken before that
+ * change got theirs only when somebody was assigned, so an old ticket sitting
+ * in the app shows a job with no picture of where it is going, which is
+ * exactly the thing the map was added to fix.
+ *
+ * One write, once per ticket, on a read that was happening anyway.
+ */
+const ensureTokens = async (tickets) => {
+    const missing = tickets.filter((t) => !t.tracking?.token);
+    if (!missing.length) return tickets;
+
+    await Promise.all(missing.map(async (t) => {
+        const token = issueToken();
+
+        await ticketModel.updateOne(
+            { _id: t._id, "tracking.token": { $in: [null, ""] } },
+            { $set: { "tracking.token": token, "tracking.issuedAt": new Date() } },
+        ).catch(() => {});
+
+        // Read back rather than trusting our own token: another write in the
+        // same instant may have won.
+        const saved = await ticketModel.findById(t._id).select("tracking.token").lean().catch(() => null);
+        t.tracking = { ...(t.tracking || {}), token: saved?.tracking?.token || token };
+    }));
+
+    return tickets;
+};
+
+/**
  * GET /api/customer/tickets
  *
  * Both halves in one call: what is running now, and what is finished. The app
@@ -558,6 +590,8 @@ const myTickets = async (req, res) => {
                 .limit(30)
                 .lean(),
         ]);
+
+        await ensureTokens(open);
 
         return res.status(200).json({
             success: true,
@@ -585,6 +619,8 @@ const ticketDetail = async (req, res) => {
         if (!ticket) {
             return res.status(404).json({ success: false, message: "We could not find that job on your account." });
         }
+
+        await ensureTokens([ticket]);
 
         return res.status(200).json({ success: true, data: shape(ticket) });
     } catch (error) {
