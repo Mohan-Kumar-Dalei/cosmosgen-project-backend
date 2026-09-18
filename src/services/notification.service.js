@@ -138,9 +138,24 @@ const notifyCustomerAssigned = async (ticket) => {
  * the "on the way" message that follows when he sets off.
  */
 const notifyCustomerAccepted = async (ticket) => {
-    if (ticket.status !== "Queued") return notifyCustomerAssigned(ticket);
-
     const tech = ticket.technicianSnapshot || {};
+
+    /*
+     * The same moment, on the phone as well.
+     *
+     * Until somebody accepts, the customer's app shows a map with an arc on it
+     * and no name - so being told who is coming is real news, and it is the
+     * news they have been waiting on since they booked. WhatsApp carries it
+     * either way; this is what reaches the person who booked in the app and
+     * then put it down.
+     */
+    push.sendToCustomer(ticket.customer, {
+        title: "Your technician has been assigned",
+        body: (tech.name || "A technician") + " is coming for " + (ticket.serviceLabel || "your job") + ".",
+        data: { ticketId: String(ticket._id), kind: "accepted" },
+    });
+
+    if (ticket.status !== "Queued") return notifyCustomerAssigned(ticket);
 
     await notifyCustomer({
         ticket,

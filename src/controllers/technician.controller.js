@@ -1116,6 +1116,10 @@ const acceptTicket = async (req, res) => {
 
         await notification.notifyCustomerAccepted(updated);
 
+        // And the map they may already be watching, which otherwise stays on
+        // "Finding somebody" until the next position ping happens along.
+        rideService.announceAccepted(updated);
+
         return res.status(200).json({
             success: true,
             message: "Accepted. The customer has been told you are coming.",
@@ -1210,6 +1214,16 @@ const releaseTicket = async (req, res) => {
          * technician - it arrived through him, and counting it would teach him
          * to stop reporting it, which is the last thing the office wants.
          */
+        /*
+         * The arc goes with him.
+         *
+         * Before anybody accepts, the customer's map draws a dashed bow from
+         * whoever currently has the job to their door. He no longer has it, so
+         * leaving the bow up would show a rider coming who has just walked
+         * away - and it would stay up until the office found somebody else.
+         */
+        rideService.announceAssignment(updated, null);
+
         const discipline = customerRefused
             ? { suspended: false }
             : await recordDecline(req.technician._id, ticket, reason);

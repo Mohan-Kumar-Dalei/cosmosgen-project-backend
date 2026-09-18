@@ -1,6 +1,7 @@
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const notification = require("./notification.service");
+const rideService = require("./ride.service");
 
 /**
  * Called when a technician finishes a job. Pulls in their next job if one
@@ -64,8 +65,10 @@ const promoteQueuedTicket = async (technicianId) => {
     );
 
     // The customer hears when the technician accepts, not when the queue
-    // moves - he may still hand this one back.
+    // moves - he may still hand this one back. Their map is told, though: the
+    // dashed arc follows whoever currently has the job.
     notification.notifyTechnicianAssigned(promoted);
+    rideService.announceAssignment(promoted, technicianId);
 
     return promoted;
 };
@@ -127,6 +130,7 @@ const promoteDueScheduledTickets = async () => {
         ).lean();
 
     notification.notifyTechnicianAssigned(promoted);
+    rideService.announceAssignment(promoted, tech._id);
     // The technician is on the road when this fires - their panel is closed,
     // so WhatsApp is the only channel that reaches them
     await notification.notifyTechnicianAssignedOnWhatsApp(promoted);

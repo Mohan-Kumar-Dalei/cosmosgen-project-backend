@@ -13,7 +13,8 @@ const { buildSkillRegex, escapeRegex } = require("../config/services");
 // Blocking or purging a vendor has to reach the socket he already holds - the
 // connect-time check cannot, having already run
 const { techRoom, dropRoom } = require("../sockets/socket.instance");
-const { metresBetween } = require("../services/ride.service");
+const rideService = require("../services/ride.service");
+const { metresBetween } = rideService;
 const { lookupPlace } = require("./map.controller");
 const routeService = require("../services/route.service");
 const voiceController = require("./voice.controller");
@@ -817,6 +818,16 @@ const assignTicket = async (req, res) => {
             notification.notifyTechnicianQueued(ticket);
         }
 
+        /*
+         * The customer is not told who, but their map is told where from.
+         *
+         * A dashed bow appears from the assigned vendor to their door - enough
+         * to see that somebody is out there and roughly how far, which is what
+         * the wait is actually about, without naming a man who has not yet
+         * agreed to come.
+         */
+        rideService.announceAssignment(ticket, technicianId);
+
         return res.status(200).json({
             success: true,
             message: isBusy
@@ -872,6 +883,9 @@ const unassignTicket = async (req, res) => {
             },
             { returnDocument: "after" }
         ).lean();
+
+        // Nobody has it now, so nothing should be drawn coming from anybody.
+        rideService.announceAssignment(updated, null);
 
         if (oldTechnicianId) {
             if (wasActive) {
@@ -1000,6 +1014,9 @@ const reassignTicket = async (req, res) => {
         } else {
             notification.notifyTechnicianQueued(updated);
         }
+
+        // And the arc moves to whoever has it now - see announceAssignment.
+        rideService.announceAssignment(updated, updated.technician);
 
         return res.status(200).json({
             success: true,

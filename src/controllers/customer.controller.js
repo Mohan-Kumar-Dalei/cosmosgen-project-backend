@@ -412,6 +412,24 @@ const TICKET_FIELDS =
     + "payment.method payment.status tracking.token otp.start otp.close cancelReason "
     + "billing.invoicePdfUrl createdAt updatedAt";
 
+/**
+ * Whether the customer has been told who is coming.
+ *
+ * The office picking somebody is not a promise; the technician saying yes is.
+ * Between the two the customer sees the map and the dashed arc - somebody is
+ * out there and roughly where from - and no name, no number, no face. If that
+ * vendor hands the job back, nothing has to be taken off the screen, because
+ * nothing about him was ever on it.
+ *
+ * The started and finished checks are for jobs that predate accepting, and for
+ * the history, where the name is the whole point of the entry.
+ */
+const isAccepted = (t) => Boolean(
+    t.acceptedAt
+    || t.ride?.startedAt
+    || ["In-Progress", "Payment-Pending", "Closed"].includes(t.status),
+);
+
 const shape = (t) => ({
     id: t._id,
     ticketNumber: t.ticketNumber,
@@ -422,8 +440,9 @@ const shape = (t) => ({
     problemDescription: t.problemDescription,
 
     // The name and photograph of whoever is coming, and nothing else about
-    // them - not their wallet, not their other jobs
-    technician: t.technicianSnapshot?.name
+    // them - not their wallet, not their other jobs. And only once he has
+    // accepted: see isAccepted above.
+    technician: (isAccepted(t) && t.technicianSnapshot?.name)
         ? {
             name: t.technicianSnapshot.name,
             phone: t.technicianSnapshot.phone || null,

@@ -61,7 +61,7 @@ const getTracking = async (req, res) => {
 
         const ticket = await ticketModel
             .findOne({ "tracking.token": token })
-            .select("ticketNumber serviceLabel status customerSnapshot location ride technicianSnapshot technician createdAt assignedAt")
+            .select("ticketNumber serviceLabel status customerSnapshot location ride technicianSnapshot technician createdAt assignedAt acceptedAt")
             .lean();
 
         if (!ticket) {
@@ -99,6 +99,10 @@ const getTracking = async (req, res) => {
         const tech = ticket.technicianSnapshot || {};
         const customer = ticket.customerSnapshot || {};
 
+        // Anything past "assigned" means somebody has agreed to come - which
+        // is the point at which the customer is allowed to know who.
+        const accepted = stage !== "assigned";
+
         return res.status(200).json({
             success: true,
             data: {
@@ -115,17 +119,25 @@ const getTracking = async (req, res) => {
                 // The name and the number, because the one thing a waiting
                 // customer wants more than a map is to be able to ring the
                 // person on it.
-                technician: {
-                    name: tech.name || null,
-                    phone: tech.phone || null,
-                    rating: tech.rating ? Number(tech.rating).toFixed(1) : null,
+                //
+                // Held back until he has accepted, though. Before that the
+                // office has offered the job and nobody has agreed to it, and
+                // naming a man who may hand it back is a promise the company
+                // has not made. The map and the arc say somebody is out there,
+                // which is all that is true yet.
+                technician: accepted
+                    ? {
+                        name: tech.name || null,
+                        phone: tech.phone || null,
+                        rating: tech.rating ? Number(tech.rating).toFixed(1) : null,
 
-                    // And his face. Somebody watching a bike come towards
-                    // their house is about to open the door to whoever gets
-                    // off it, and knowing what he looks like before then is
-                    // worth more than any of the rest of this.
-                    photo: tech.profileImage || null,
-                },
+                        // And his face. Somebody watching a bike come towards
+                        // their house is about to open the door to whoever gets
+                        // off it, and knowing what he looks like before then is
+                        // worth more than any of the rest of this.
+                        photo: tech.profileImage || null,
+                    }
+                    : { name: null, phone: null, rating: null, photo: null },
 
                 technicianAt,
 

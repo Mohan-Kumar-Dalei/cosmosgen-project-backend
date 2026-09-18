@@ -200,7 +200,15 @@ const syncRideProgress = async (technician, lat, lon) => {
          * except startedAt. markOnTheWay() fills that in, and that is the only
          * thing the customer's stage is read from.
          */
-        const started = Boolean(ticket.ride?.startedAt);
+        /*
+         * Accepting counts as well, not only pressing Directions.
+         *
+         * The customer's stage turns on the moment somebody agrees to come,
+         * and this emit has to answer the same way the REST payload does, or a
+         * position ping arriving between the accept and the Directions tap
+         * would quietly put the screen back to "Finding somebody".
+         */
+        const started = Boolean(ticket.ride?.startedAt || ticket.acceptedAt);
         const isFirstFix = !ticket.ride?.computedAt;
 
         if (isFirstFix) {
@@ -491,4 +499,84 @@ const markOnTheWay = async (technicianId, ticketId, at = null) => {
     return { ok: true, ticket };
 };
 
-module.exports = { syncRideProgress, markOnTheWay, metresBetween, ARRIVAL_RADIUS_METRES };
+/**
+ * Tells whoever is watching the map that the job has changed hands.
+ *
+ * The arc the customer sees before anybody accepts is drawn from the assigned
+ * vendor to their door, and it has to follow the assignment: the office moves
+ * the job, the arc moves with it; the vendor hands it back, the arc goes. None
+ * of that reaches the page on its own, because the page is fed by position
+ * pings and a vendor who no longer has the job stops sending them - so the arc
+ * would sit where he was, pointing at a house nobody is going to.
+ *
+ * Called with no technician for a hand-back, which sends the marker away and
+ * puts the screen back to "Finding somebody".
+ */
+const announceAssignment = async (ticket, technicianId) => {
+    if (!ticket?.tracking?.token) return;
+
+    let technicianAt = null;
+
+    if (technicianId) {
+        const tech = await technicianModel
+            .findById(technicianId)
+            .select("location lastLocationAt")
+            .lean()
+            .catch(() => null);
+
+        const coords = tech?.location?.coordinates;
+        if (Array.isArray(coords) && coords.length === 2) {
+            technicianAt = { lat: coords[1], lon: coords[0], at: tech.lastLocationAt || null };
+        }
+    }
+
+    emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
+        stage: "assigned",
+        technicianAt,
+
+        // The route belonged to the last ride. There is no route until somebody
+        // sets off, and the screens clear theirs on seeing this stage.
+        encodedPolyline: null,
+        etaSeconds: null,
+        etaAt: null,
+        distanceMeters: null,
+        nearPlace: null,
+    });
+};
+
+/**
+ * And that somebody has said yes.
+ *
+ * Nothing about the ride changes here - he has not set off - but the customer
+ * moves from "Finding somebody" to being told who is coming, and the screen
+ * should do that without waiting for the next position ping.
+ */
+const announceAccepted = async (ticket) => {
+    if (!ticket?.tracking?.token) return;
+
+    const tech = ticket.technicianSnapshot || {};
+
+    emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
+        stage: "on_the_way",
+
+        // Who, in the same breath. The page has been showing a nameless arc
+        // and this is the answer to it - waiting for the next position ping to
+        // carry it would leave a gap of several seconds on the one update the
+        // customer has been sitting there for.
+        technician: {
+            name: tech.name || null,
+            phone: tech.phone || null,
+            rating: tech.rating ? Number(tech.rating).toFixed(1) : null,
+            photo: tech.profileImage || null,
+        },
+    });
+};
+
+module.exports = {
+    syncRideProgress,
+    markOnTheWay,
+    metresBetween,
+    announceAssignment,
+    announceAccepted,
+    ARRIVAL_RADIUS_METRES,
+};
