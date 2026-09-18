@@ -126,6 +126,10 @@ const getTracking = async (req, res) => {
                     etaAt: ticket.ride?.etaAt || null,
                     distanceMeters: ticket.ride?.distanceMeters ?? null,
                     encodedPolyline: ticket.ride?.encodedPolyline || null,
+
+                    // Roughly where he is, in words. Worked out on the server
+                    // so one lookup serves every screen watching this job.
+                    nearPlace: ticket.ride?.nearPlace || null,
                 },
             },
         });

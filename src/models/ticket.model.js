@@ -146,6 +146,22 @@ const ticketSchema = new mongoose.Schema({
         etaAt: { type: Date },
         encodedPolyline: { type: String },
         computedAt: { type: Date },
+
+        /*
+         * Roughly where the technician is, in words.
+         *
+         * A customer watching a bike cross a map can see it moving and still
+         * not know where it is - the one thing they would say out loud is the
+         * name of the place. It is stored rather than worked out on demand so
+         * that every screen watching this job gets the same answer from one
+         * lookup, and `placeAt` is the position it was taken at, which is what
+         * stops it being bought again every few seconds.
+         */
+        nearPlace: { type: String },
+        placeAt: {
+            lat: { type: Number },
+            lon: { type: Number },
+        },
     },
 
     /**

@@ -1,6 +1,7 @@
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const routeService = require("./route.service");
+const { lookupPlace } = require("../controllers/map.controller");
 const notification = require("./notification.service");
 const { emitToRoom, techRoom, trackRoom, adminRoom } = require("../sockets/socket.instance");
 
@@ -25,6 +26,18 @@ const ETA_RECOMPUTE_MS = 5 * 60 * 1000;
  * width, so this is generous enough that ordinary noise never triggers it.
  */
 const OFF_ROUTE_METRES = 150;
+
+/*
+ * How far the technician has to travel before we ask where he is.
+ *
+ * "He is in Rasulgarh" is the one thing a customer watching a map actually
+ * wants said out loud, and a name is worth an occasional geocode. Asking on
+ * every fix would not be - the position changes every few seconds and the
+ * answer changes every few minutes, so the same name would be bought over and
+ * over. Four hundred metres is about the distance between one locality reading
+ * differently from the next.
+ */
+const PLACE_RECHECK_METRES = 400;
 
 /** The floor between drift-triggered refreshes, so this cannot loop. */
 const DRIFT_RECHECK_MS = 60 * 1000;
@@ -54,6 +67,9 @@ const metresBetween = (aLat, aLon, bLat, bLon) => {
  * Returns null when there is no line to measure against, which the caller
  * treats as "no reason to think anything is wrong".
  */
+/** Already at the door - no point naming where he is. */
+const hasArrivedAlready = (ticket) => Boolean(ticket.ride?.arrivedAt);
+
 const metresFromRoute = (encoded, lat, lon) => {
     if (!encoded) return null;
 
@@ -236,6 +252,33 @@ const syncRideProgress = async (technician, lat, lon) => {
             }
         }
 
+        /*
+         * And where that is, in words, when he has moved far enough to be
+         * somewhere else.
+         *
+         * Looked up here rather than on each customer's phone, so one geocode
+         * serves the app, the web page and anybody else watching. It never
+         * fails the ride: a name is a nicety and the map is the substance.
+         */
+        const namedAt = ticket.ride?.placeAt;
+        const movedSincePlace = Number.isFinite(namedAt?.lat)
+            ? metresBetween(lat, lon, namedAt.lat, namedAt.lon)
+            : Infinity;
+
+        if (!hasArrivedAlready(ticket) && movedSincePlace > PLACE_RECHECK_METRES) {
+            try {
+                const place = (await lookupPlace(lat, lon))?.results?.[0];
+                const name = String(place?.locality || place?.city || "").trim();
+
+                if (name) {
+                    ticket.ride.nearPlace = name;
+                    ticket.ride.placeAt = { lat, lon };
+                }
+            } catch (err) {
+                console.error("[RIDE] place lookup failed:", err.message);
+            }
+        }
+
         const hasArrived = distance <= ARRIVAL_RADIUS_METRES;
         if (hasArrived) ticket.ride.arrivedAt = now;
 
@@ -263,6 +306,7 @@ const syncRideProgress = async (technician, lat, lon) => {
                 etaAt: ticket.ride?.etaAt || null,
                 distanceMeters: ticket.ride?.distanceMeters ?? null,
                 encodedPolyline: ticket.ride?.encodedPolyline || null,
+                nearPlace: ticket.ride?.nearPlace || null,
             });
         }
 
