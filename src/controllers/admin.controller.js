@@ -1049,9 +1049,16 @@ const callCustomer = async (req, res) => {
         const call = await voiceController.placeCall({ ticket, purpose: "availability" });
 
         if (!call) {
+            /*
+             * Two reasons, and the office should be told which. "Check the
+             * settings" sends somebody hunting through a configuration screen
+             * for a decision that was taken deliberately.
+             */
             return res.status(502).json({
                 success: false,
-                message: "The call could not be placed. Check the voice settings.",
+                message: voiceController.voiceCallsEnabled()
+                    ? "The call could not be placed. Check the voice settings."
+                    : "Voice calls are paused at the moment. Ring the customer yourself for now.",
             });
         }
 

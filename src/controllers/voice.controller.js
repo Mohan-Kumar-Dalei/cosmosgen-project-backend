@@ -62,6 +62,26 @@ const PUBLIC_URL = String(process.env.PUBLIC_API_URL || "").trim().replace(/\/+$
  */
 const provider = () => (exotelConfigured() ? "exotel" : null);
 
+/**
+ * Whether the company is making voice calls at all.
+ *
+ * Paused rather than removed. The Exotel trial credit ran out, and every call
+ * the platform still tried to place would fail against a dead balance - two
+ * per job, each one a failed attempt Exotel is entitled to bill for, and a
+ * queue of "queued" call records nobody will ever listen to. Sarvam stops with
+ * it, because the only thing that speaks is a call.
+ *
+ * Off unless the environment says otherwise, so a deploy is all it takes to
+ * stop. Turning it back on is one line in the server's .env and a restart:
+ *
+ *   VOICE_CALLS_ENABLED=true
+ *
+ * Nothing else was touched. The Flow, the socket, the speech, the two places
+ * that ask for a call - all of it is exactly as it was, waiting.
+ */
+const voiceCallsEnabled = () =>
+    String(process.env.VOICE_CALLS_ENABLED || "").trim().toLowerCase() === "true";
+
 const isTelephonyReady = () => Boolean(provider() && PUBLIC_URL && voice.isVoiceReady());
 
 /**
@@ -141,6 +161,18 @@ const prepareOpening = async (call, ticket) => {
  * and returns null rather than taking the caller down with it.
  */
 const placeCall = async ({ ticket, purpose, to, callerId }) => {
+    /*
+     * The one gate, before anything is created or dialled.
+     *
+     * Every call in the platform comes through here - the availability call on
+     * booking, the office's own button, the feedback call after closing - so
+     * one check covers all three and none of them had to learn about it.
+     */
+    if (!voiceCallsEnabled()) {
+        console.log("[VOICE] calls are paused (VOICE_CALLS_ENABLED is not true) - skipping the " + purpose + " call");
+        return null;
+    }
+
     if (!isTelephonyReady()) {
         console.log("[VOICE] telephony is not configured, skipping the " + purpose + " call");
         return null;
@@ -530,6 +562,7 @@ const onStatus = async (req, res) => {
 module.exports = {
     placeCall,
     isTelephonyReady,
+    voiceCallsEnabled,
     // Shared with the voicebot socket, which runs the same conversation over
     // a live stream instead of over webhooks
     contextFor,
