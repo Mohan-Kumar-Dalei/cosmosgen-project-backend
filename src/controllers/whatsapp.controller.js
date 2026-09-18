@@ -403,7 +403,7 @@ const handleLanguagePick = async (convo, id) => {
     }
 
     await whatsapp.sendText(convo.phone, copyFor(picked.key).languageDone(picked.title));
-    await resumeOnboarding(convo);
+    await resumeOnboarding(convo, null, { justPicked: true });
 };
 
 /**
@@ -536,7 +536,7 @@ const handleSharedLocation = async (convo) => {
  * raised against, taken off their own account, and corrects it in the app
  * rather than being asked to type it again here.
  */
-const resumeOnboarding = async (convo, known) => {
+const resumeOnboarding = async (convo, known, opts = {}) => {
     const onFile = known || (convo.user
         ? await userModel
             .findById(convo.user)
@@ -570,7 +570,17 @@ const resumeOnboarding = async (convo, known) => {
         status: { $in: OPEN_STATUSES },
     });
 
-    if (!running || !onFile.languageConfirmedAt) {
+    /*
+     * Except when they have this second answered it.
+     *
+     * This test decides whether to put the question, and it was also being
+     * applied immediately after the answer came back - handleLanguagePick
+     * saves the choice and calls this, which found no job running and asked
+     * again. Tap a language, get the list back, tap again, forever. Which
+     * language was tapped never mattered; whether a job happened to be open
+     * did, which is why it looked like only one of them worked.
+     */
+    if (!opts.justPicked && (!running || !onFile.languageConfirmedAt)) {
         await askForLanguage(convo);
         return;
     }
