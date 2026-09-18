@@ -3,6 +3,7 @@ const UserModel = require("../models/user.model");
 const notification = require("./notification.service");
 const voiceController = require("../controllers/voice.controller");
 const { getServiceByKey } = require("../config/services");
+const addressService = require("./address.service");
 
 /**
  * Registering a job, wherever the customer asked from.
@@ -51,6 +52,16 @@ const bookJob = async ({
     problemDescription,
     channel = "app",
     location,
+
+    /*
+     * Which of the customer's saved addresses this job is for.
+     *
+     * Absent means the account's own, which is what every caller sent before
+     * the list existed and is still what the WhatsApp flow sends. Present
+     * means somebody picked - the office rather than the house - and it
+     * changes only this ticket, never where the customer lives.
+     */
+    addressId,
 }) => {
     const service = getServiceByKey(serviceKey);
     if (!service) return { ok: false, code: "unknown_service" };
@@ -103,19 +114,29 @@ const bookJob = async ({
         };
     }
 
+    /*
+     * The pin the technician will drive to, and the address the office reads.
+     *
+     * Taken once, here, so the snapshot and the point can never disagree -
+     * the arrival test measures against the point and the office rings the
+     * number on the snapshot, and a job where those two describe different
+     * places is a job somebody has to sort out by phone.
+     */
+    const where = await addressService.resolve(user, addressId);
+
     const ticket = await Ticket.create({
         channel,
         customer: user._id,
         customerSnapshot: {
             name: user.name,
             phone: user.phone,
-            address: user.address,
-            area: user.area,
-            state: user.state,
-            lat: user.lat,
-            lon: user.lon,
+            address: where.address,
+            area: where.area,
+            state: where.state,
+            lat: where.lat,
+            lon: where.lon,
         },
-        location: { type: "Point", coordinates: [user.lon, user.lat] },
+        location: { type: "Point", coordinates: [where.lon, where.lat] },
         serviceKey: service.key,
         serviceLabel: service.label,
         selectedIssues: Array.isArray(selectedIssues) ? selectedIssues : [],

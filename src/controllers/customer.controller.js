@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 
 const userModel = require("../models/user.model");
+const addressService = require("../services/address.service");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const booking = require("../services/booking.service");
@@ -353,6 +354,10 @@ const book = async (req, res) => {
             problemDescription: description,
             channel: "app",
             location: { lat, lon, address, area, state },
+
+            // Which saved address this one is for. Absent is the account's
+            // own, which is what the app sent before there was a list.
+            addressId: req.body.addressId,
         });
 
         if (result.ok) {
@@ -840,7 +845,72 @@ const ask = async (req, res) => {
     }
 };
 
+
+/* ------------------------------------------------------------------ */
+/* ADDRESSES                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The customer's saved places.
+ *
+ * Thin on purpose - every rule about defaults and about keeping the account's
+ * own address in step lives in services/address.service.js, because those
+ * rules have to hold whichever door they are changed through.
+ */
+
+const listAddresses = async (req, res) => {
+    try {
+        return res.status(200).json({ success: true, data: await addressService.list(req.user._id) });
+    } catch (error) {
+        console.error("List addresses error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const addAddress = async (req, res) => {
+    try {
+        const saved = await addressService.add(req.user._id, req.body);
+        return res.status(201).json({ success: true, data: saved });
+    } catch (error) {
+        // "needs a point on the map" and "no such customer" are both the
+        // caller's problem, not the server's.
+        return res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+const updateAddress = async (req, res) => {
+    try {
+        const saved = await addressService.update(req.user._id, req.params.id, req.body);
+        return res.status(200).json({ success: true, data: saved });
+    } catch (error) {
+        return res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+const deleteAddress = async (req, res) => {
+    try {
+        await addressService.remove(req.user._id, req.params.id);
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        return res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+const makeAddressDefault = async (req, res) => {
+    try {
+        const saved = await addressService.setDefault(req.user._id, req.params.id);
+        return res.status(200).json({ success: true, data: saved });
+    } catch (error) {
+        return res.status(400).json({ success: false, message: error.message });
+    }
+};
+
 module.exports = {
+    listAddresses,
+    addAddress,
+    updateAddress,
+    deleteAddress,
+    makeAddressDefault,
     sendOtp,
     verifyOtp,
     me,

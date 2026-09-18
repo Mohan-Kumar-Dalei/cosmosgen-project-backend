@@ -42,6 +42,13 @@ const createTicketTool = {
                 type: "STRING",
                 description: "Clear summary of the problem in one or two lines",
             },
+            addressLabel: {
+                type: "STRING",
+                description:
+                    "Which of the customer's saved addresses this job is for, by its label exactly as listed "
+                    + "in WHO YOU ARE SPEAKING TO - for example Home or Office. Leave it out when they have "
+                    + "only one address, or when they have not said which.",
+            },
         },
         required: ["serviceKey", "problemDescription"],
     },
@@ -372,6 +379,34 @@ const whoBlock = (userData) => {
         lines.push("We send people to: " + where.join(", ") + ". This is already on file - never ask for it.");
     }
 
+    /*
+     * The other places they have saved, and the one question worth asking.
+     *
+     * A customer with only a home address is never asked anything - the job
+     * goes there, as it always did. A customer who has saved an office has
+     * told us they sometimes want somebody sent somewhere else, and the only
+     * moment that matters is the booking. Asking once, by label, is cheaper
+     * than a technician driving to an empty flat.
+     */
+    const saved = Array.isArray(userData?.addresses) ? userData.addresses : [];
+
+    if (saved.length > 1) {
+        const listed = saved
+            .map((a) => {
+                const label = String(a.label || "").trim() || "Unnamed";
+                const line = [a.address, a.area, a.city].map((x) => String(x || "").trim()).filter(Boolean).join(", ");
+                return "- " + label + (line ? " (" + line + ")" : "") + (a.isDefault ? " [default]" : "");
+            })
+            .join("\n");
+
+        lines.push(
+            "They have more than one address saved:\n" + listed
+            + "\nBefore booking, ask which one this job is for and pass its label as addressLabel. "
+            + "Do not read the full addresses out - the labels are enough. "
+            + "If they do not say, use the default and tell them which one you used."
+        );
+    }
+
     if (userData?.languageConfirmedAt && userData?.language) {
         lines.push("They chose to be spoken to in " + userData.language + ".");
     }
@@ -596,6 +631,19 @@ const buildCustomerRecord = async (userId) => {
  * model can read back to the customer.
  */
 const handleCreateTicket = async (args, userData, userLocation) => {
+    /*
+     * A label, not an id.
+     *
+     * The model is given labels because it can read them back to the customer
+     * and because an opaque id is something it would invent. Matching happens
+     * here, where the account is - an unmatched label simply falls through to
+     * the default, which is the same behaviour as not asking at all.
+     */
+    const wanted = String(args.addressLabel || "").trim().toLowerCase();
+    const match = wanted
+        ? (userData?.addresses || []).find((a) => String(a.label || "").trim().toLowerCase() === wanted)
+        : null;
+
     const result = await booking.bookJob({
         customerId: userData?._id || userData?.id,
         serviceKey: args.serviceKey,
@@ -603,6 +651,7 @@ const handleCreateTicket = async (args, userData, userLocation) => {
         problemDescription: args.problemDescription,
         channel: userData.channel || "whatsapp",
         location: userLocation,
+        addressId: match?._id,
     });
 
     if (result.ok) {

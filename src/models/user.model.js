@@ -23,6 +23,48 @@ const userSchema = new mongoose.Schema({
     lon: { type: Number },
 
     /*
+     * Every place this customer might want somebody sent.
+     *
+     * The account used to hold exactly one address - the one given at sign-up
+     * - and every job went there. So a customer who registered at home and
+     * then wanted the office AC looked at had no way to say so: the booking
+     * went to the house, and the technician drove to an empty flat.
+     *
+     * The fields above are still the customer's main address, and still what
+     * registration, the WhatsApp flow and the web panel read. They stay in
+     * step with whichever entry here is marked default, so nothing that
+     * already worked has to learn about this list. What the list adds is the
+     * others, and the ability to point a single booking at one of them
+     * without changing where the customer lives.
+     *
+     * Each carries its own pin, because a label without coordinates is a note
+     * to a driver rather than a destination - the technician's map needs a
+     * point, and the arrival test measures against it.
+     */
+    addresses: [{
+        // What the customer calls it: Home, Office, Mum's place.
+        label: { type: String, default: "", trim: true },
+
+        address: { type: String, default: "", trim: true },
+        area: { type: String, default: "", trim: true },
+        city: { type: String, default: "", trim: true },
+        state: { type: String, default: "", trim: true },
+        pincode: { type: String, default: "", trim: true },
+
+        lat: { type: Number },
+        lon: { type: Number },
+
+        /*
+         * Exactly one of these is true, and the account's own address fields
+         * mirror it. Enforced where they are written rather than here: a
+         * schema cannot say "one of these, and keep those in step".
+         */
+        isDefault: { type: Boolean, default: false },
+
+        createdAt: { type: Date, default: Date.now },
+    }],
+
+    /*
      * No default on `type`.
      *
      * It used to default to "Point", and on an upsert with

@@ -37,7 +37,7 @@ const isTechAuthenticated = async (req, res, next) => {
              * missing from the record. `state`, `area` and `pincode` were all
              * here; the town was the one that was not.
              */
-            .select("_id name phone state city area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel location approvalStatus isBlacklisted isDeleted bankDetails commissionRate walletBalancePaise")
+            .select("_id name phone state city area pincode skills profileImage rating isAvailable activeTicket completedJobs performanceLevel location approvalStatus isBlacklisted isDeleted bankDetails commissionRate walletBalancePaise suspendedUntil")
             .lean();
 
         if (!technician) {

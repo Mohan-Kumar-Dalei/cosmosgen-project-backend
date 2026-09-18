@@ -87,6 +87,14 @@ router.get("/me", isAuthenticated, customer.me);
 router.put("/profile", isAuthenticated, customer.updateProfile);
 
 /* ---------- THEIR JOBS ---------- */
+// Saved addresses. The list is the customer's own, so every one of these is
+// scoped to the signed-in account inside the service.
+router.get("/addresses", isAuthenticated, customer.listAddresses);
+router.post("/addresses", isAuthenticated, customer.addAddress);
+router.patch("/addresses/:id", isAuthenticated, customer.updateAddress);
+router.delete("/addresses/:id", isAuthenticated, customer.deleteAddress);
+router.post("/addresses/:id/default", isAuthenticated, customer.makeAddressDefault);
+
 router.post("/book", isAuthenticated, bookLimiter, customer.book);
 router.get("/tickets", isAuthenticated, customer.myTickets);
 router.get("/tickets/:id", isAuthenticated, customer.ticketDetail);

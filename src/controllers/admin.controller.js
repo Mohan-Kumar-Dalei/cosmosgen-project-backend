@@ -489,6 +489,7 @@ const getNearbyTechnicians = async (req, res) => {
             name: 1, phone: 1, profileImage: 1, skills: 1, rating: 1,
             completedJobs: 1, performanceLevel: 1, city: 1, area: 1, state: 1, pincode: 1,
             hasVehicle: 1, lastLocationAt: 1, isAvailable: 1, activeTicket: 1,
+            suspendedUntil: 1, declines: 1,
         };
 
         let technicians;
@@ -581,11 +582,27 @@ const getNearbyTechnicians = async (req, res) => {
             : [];
         const queueMap = new Map(queueCounts.map((q) => [String(q._id), q.count]));
 
-        const withStatus = technicians.map((t) => ({
-            ...t,
-            liveStatus: t.activeTicket ? "on_job" : t.isAvailable ? "available" : "offline",
-            scheduledJobs: queueMap.get(String(t._id)) || 0,
-        }));
+        /*
+         * A paused vendor still appears, and still cannot be assigned.
+         *
+         * Hiding him would leave the office wondering where a name went, and
+         * the server refuses the assignment anyway - so the honest thing is to
+         * show him with the reason on his row. "Paused" outranks the other
+         * statuses: he is offline by definition, and reading "offline" here
+         * would suggest he had merely stepped away.
+         */
+        const withStatus = technicians.map((t) => {
+            const paused = Boolean(t.suspendedUntil) && new Date(t.suspendedUntil) > new Date();
+
+            return {
+                ...t,
+                paused,
+                liveStatus: paused
+                    ? "paused"
+                    : t.activeTicket ? "on_job" : t.isAvailable ? "available" : "offline",
+                scheduledJobs: queueMap.get(String(t._id)) || 0,
+            };
+        });
 
         /*
          * A real road figure for the few the office will actually look at.
