@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { ARRIVAL_RADIUS_METRES } = require("../services/ride.service");
 
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
@@ -105,6 +106,11 @@ const getTracking = async (req, res) => {
                 serviceLabel: ticket.serviceLabel,
                 stage,
                 stages: STAGES,
+
+                // The circle the customer's map draws around their door. Sent
+                // rather than hard-coded in the app so the ring and the rule
+                // that declares arrival can never drift apart.
+                arrivalRadius: ARRIVAL_RADIUS_METRES,
 
                 // The name and the number, because the one thing a waiting
                 // customer wants more than a map is to be able to ring the

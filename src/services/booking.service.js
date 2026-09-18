@@ -4,6 +4,7 @@ const notification = require("./notification.service");
 const voiceController = require("../controllers/voice.controller");
 const { getServiceByKey } = require("../config/services");
 const addressService = require("./address.service");
+const { issueToken } = require("../controllers/track.controller");
 
 /**
  * Registering a job, wherever the customer asked from.
@@ -142,6 +143,18 @@ const bookJob = async ({
         selectedIssues: Array.isArray(selectedIssues) ? selectedIssues : [],
         problemDescription,
         status: "Pending",
+
+        /*
+         * The tracking token exists from the moment the job does.
+         *
+         * It used to be minted when the customer was first messaged about a
+         * technician, which is late - and became later still once that message
+         * waited for the technician to accept. The app's map is built on this
+         * token, so until it existed the customer had a job with no map at all
+         * and nothing to explain why. A job always has a door to draw, even
+         * before anybody is coming to it.
+         */
+        tracking: { token: issueToken(), issuedAt: new Date() },
         statusHistory: [{ to: "Pending", actorRole: channel === "whatsapp" ? "ai" : "customer", at: new Date() }],
     });
 

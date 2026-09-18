@@ -19,12 +19,16 @@ const { emitToRoom, techRoom, trackRoom, adminRoom } = require("../sockets/socke
  * was still a street away - which the customer can see on their own map, and
  * which stops the tracking dead, because an arrived ride is not synced again.
  *
- * Tunable from the environment, because the right number is a thing to find
- * out on real roads rather than argue about: a city fix is good to 10-30 m, a
- * flat is not where its pin is, and too tight simply never fires. Fifty is a
- * starting point that is clearly at the door without being at the wrong one.
+ * A hundred metres, and the customer's map draws a circle of exactly that
+ * around their door - so "arrived" is not a claim they have to take on trust,
+ * it is the bike crossing a line they can see. The number and the circle are
+ * the same number on purpose; change one here and the other follows.
+ *
+ * Tunable from the environment, because the right figure is a thing to find
+ * out on real roads: a city fix is good to 10-30 m, a flat is not where its
+ * pin is, and too tight simply never fires at all.
  */
-const ARRIVAL_RADIUS_METRES = Number(process.env.ARRIVAL_RADIUS_METRES) || 50;
+const ARRIVAL_RADIUS_METRES = Number(process.env.ARRIVAL_RADIUS_METRES) || 100;
 
 /**
  * The stored ETA is refreshed at most this often. Each refresh is a billed
@@ -46,10 +50,10 @@ const OFF_ROUTE_METRES = 150;
  * wants said out loud, and a name is worth an occasional geocode. Asking on
  * every fix would not be - the position changes every few seconds and the
  * answer changes every few minutes, so the same name would be bought over and
- * over. Four hundred metres is about the distance between one locality reading
- * differently from the next.
+ * over. Two hundred metres is close enough that the name keeps up with him -
+ * at four hundred he was still shown in the locality he had left.
  */
-const PLACE_RECHECK_METRES = 400;
+const PLACE_RECHECK_METRES = 200;
 
 /** The floor between drift-triggered refreshes, so this cannot loop. */
 const DRIFT_RECHECK_MS = 60 * 1000;

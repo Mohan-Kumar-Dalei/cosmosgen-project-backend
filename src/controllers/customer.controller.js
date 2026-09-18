@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const userModel = require("../models/user.model");
 const addressService = require("../services/address.service");
 const { stageOf } = require("./track.controller");
+const { ARRIVAL_RADIUS_METRES } = require("../services/ride.service");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const booking = require("../services/booking.service");
@@ -444,6 +445,9 @@ const shape = (t) => ({
      * come. One rule, one answer, wherever it is shown.
      */
     stage: stageOf(t),
+
+    // Same circle as the tracking page draws - see track.controller.
+    arrivalRadius: ARRIVAL_RADIUS_METRES,
 
     /*
      * The door this job is for.
