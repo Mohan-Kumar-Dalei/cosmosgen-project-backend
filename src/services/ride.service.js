@@ -19,6 +19,16 @@ const ARRIVAL_RADIUS_METRES = 120;
  */
 const ETA_RECOMPUTE_MS = 5 * 60 * 1000;
 
+/*
+ * How far off the drawn line he can be before it is treated as the wrong line
+ * rather than an old one. A city GPS fix is good to 20-50 m and a road has
+ * width, so this is generous enough that ordinary noise never triggers it.
+ */
+const OFF_ROUTE_METRES = 150;
+
+/** The floor between drift-triggered refreshes, so this cannot loop. */
+const DRIFT_RECHECK_MS = 60 * 1000;
+
 /** Great-circle metres between two points. */
 const metresBetween = (aLat, aLon, bLat, bLon) => {
     const R = 6371000;
@@ -29,6 +39,81 @@ const metresBetween = (aLat, aLon, bLat, bLon) => {
         Math.sin(dLat / 2) ** 2 +
         Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
     return 2 * R * Math.asin(Math.sqrt(h));
+};
+
+/**
+ * How far a position is from the line the customer is looking at.
+ *
+ * Google hands the route back encoded, so it has to be unpacked to be measured
+ * against. The projection onto each segment is flat maths: over the few
+ * kilometres a job covers the error from treating the earth as flat is
+ * centimetres, and a great-circle formula cannot project a point onto a
+ * segment anyway. Longitude is scaled by cos(latitude) so that "closest" means
+ * closest rather than closest-if-you-are-on-the-equator.
+ *
+ * Returns null when there is no line to measure against, which the caller
+ * treats as "no reason to think anything is wrong".
+ */
+const metresFromRoute = (encoded, lat, lon) => {
+    if (!encoded) return null;
+
+    const points = [];
+    let index = 0;
+    let plat = 0;
+    let plon = 0;
+
+    while (index < encoded.length) {
+        let result = 0;
+        let shift = 0;
+        let byte;
+
+        do {
+            byte = encoded.charCodeAt(index++) - 63;
+            result |= (byte & 0x1f) << shift;
+            shift += 5;
+        } while (byte >= 0x20);
+
+        plat += (result & 1) ? ~(result >> 1) : result >> 1;
+
+        result = 0;
+        shift = 0;
+
+        do {
+            byte = encoded.charCodeAt(index++) - 63;
+            result |= (byte & 0x1f) << shift;
+            shift += 5;
+        } while (byte >= 0x20);
+
+        plon += (result & 1) ? ~(result >> 1) : result >> 1;
+
+        points.push([plat / 1e5, plon / 1e5]);
+    }
+
+    if (points.length < 2) return null;
+
+    const DEG_M = 111320;
+    const k = Math.cos((lat * Math.PI) / 180);
+    const px = lon * k;
+    const py = lat;
+
+    let best = Infinity;
+
+    for (let i = 0; i < points.length - 1; i += 1) {
+        const ax = points[i][1] * k;
+        const ay = points[i][0];
+        const dx = points[i + 1][1] * k - ax;
+        const dy = points[i + 1][0] - ay;
+        const len2 = dx * dx + dy * dy;
+
+        const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+        const fx = ax + t * dx;
+        const fy = ay + t * dy;
+        const gap = (px - fx) * (px - fx) + (py - fy) * (py - fy);
+
+        if (gap < best) best = gap;
+    }
+
+    return Math.sqrt(best) * DEG_M;
 };
 
 /**
@@ -109,11 +194,30 @@ const syncRideProgress = async (technician, lat, lon) => {
                 ? new Date(ticket.ride.computedAt).getTime()
                 : 0;
 
+            /*
+             * A route also goes stale by being wrong, not only by being old.
+             *
+             * The five minute timer assumes he is following the line we drew.
+             * When he is not - a different turning, a road closed, or a route
+             * worked out from a position that was already old when he pressed
+             * Directions - the customer sees a bike sitting on a road it is
+             * not on, pointing the way that road runs, with the part he has
+             * already ridden still drawn ahead of him. It reads as the bike
+             * going back the way it came, because that is what is on screen.
+             *
+             * So drift forces a refresh as well as age, with a shorter floor
+             * so it cannot loop: off the line by more than OFF_ROUTE_METRES
+             * and at least DRIFT_RECHECK_MS since the last one.
+             */
+            const age = now.getTime() - computedAt;
+            const drift = metresFromRoute(ticket.ride?.encodedPolyline, lat, lon);
+            const lost = drift !== null && drift > OFF_ROUTE_METRES;
+
             // Skip the refresh when we are about to declare arrival anyway -
             // paying for a route to a point 100 m away is money for nothing.
             const worthRefreshing =
                 distance > ARRIVAL_RADIUS_METRES &&
-                now.getTime() - computedAt > ETA_RECOMPUTE_MS;
+                (age > ETA_RECOMPUTE_MS || (lost && age > DRIFT_RECHECK_MS));
 
             if (worthRefreshing) {
                 const route = await routeService.computeRoute(
@@ -162,13 +266,16 @@ const syncRideProgress = async (technician, lat, lon) => {
             });
         }
 
-        // Both messages go out only once each: the en-route branch runs on the
-        // first fix and the arrival branch flips arrivedAt, which is the guard
-        // at the top of this function on every later ping.
-        if (isFirstFix && started) {
-            await notification.notifyCustomerTechnicianEnRoute(plain);
-            notification.notifyAdminsRideStarted(plain);
-        }
+        /*
+         * The arrival message goes out once, because arrivedAt is the guard at
+         * the top of this function on every later ping.
+         *
+         * The "he has set off" message used to live here too, behind
+         * `isFirstFix && started`, and it never fired once. markOnTheWay works
+         * the route out itself, which sets computedAt - so by the time the
+         * first GPS fix arrived, isFirstFix was already false. It now goes out
+         * from markOnTheWay, which is the moment it describes anyway.
+         */
 
         if (hasArrived) {
             await notification.notifyCustomerArrived(plain);
@@ -308,6 +415,18 @@ const markOnTheWay = async (technicianId, ticketId, at = null) => {
             encodedPolyline: ticket.ride.encodedPolyline,
         });
     }
+
+    /*
+     * And the customer is told, here, because here is where it happened.
+     *
+     * This used to sit in syncRideProgress behind "first GPS fix and already
+     * started", which could never both be true - this function works the route
+     * out itself, and that is what marks the ride as computed. The message was
+     * dead from the day the Directions button became the start of the ride.
+     */
+    const plain = ticket.toObject();
+    await notification.notifyCustomerTechnicianEnRoute(plain);
+    notification.notifyAdminsRideStarted(plain);
 
     return { ok: true, ticket };
 };
