@@ -905,7 +905,7 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * it forgets, the reply simply goes out as text and the customer types,
      * exactly as before.
      */
-    const { text: reply, asksToBook, asksAddress, asksService } = aiService.readBooking(raw);
+    const { text: reply, asksToBook, asksAddress, asksService, asksLanguage } = aiService.readBooking(raw);
 
     /*
      * Buttons only where WhatsApp will actually take them.
@@ -934,6 +934,22 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * refuses the interactive message for any reason, the question still goes
      * out as text and the customer can type the label as before.
      */
+    /*
+     * A language they asked to be changed, changed by their own tap.
+     *
+     * The rows are named in English on purpose - it is the one list somebody
+     * has to be able to read before they have a language set, and a picker
+     * written in the language you are trying to leave helps nobody.
+     */
+    if (asksLanguage && reply.length > 0 && reply.length <= 1024) {
+        sent = await whatsapp.sendList(convo.phone, {
+            body: reply,
+            buttonText: "Choose language",
+            sectionTitle: "Languages",
+            rows: LANGUAGES,
+        });
+    }
+
     /*
      * The four services, as the list they already are everywhere else.
      *
@@ -1010,6 +1026,17 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * was not expecting it, and the whole point of offering the list is that
      * it starts the guided flow again.
      */
+    /*
+     * Waiting on that tap, not on an answer to a question.
+     *
+     * Set here rather than inside the branch above so the ordinary bookkeeping
+     * - the reply stored, the turn remembered - happens first.
+     */
+    if (asksLanguage && sent) {
+        convo.step = "AWAITING_LANGUAGE";
+        return;
+    }
+
     if (asksService && sent) {
         convo.selectedServiceKey = undefined;
         convo.selectedApplianceKey = undefined;

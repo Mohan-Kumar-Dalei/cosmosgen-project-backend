@@ -254,6 +254,17 @@ it was fixed for - the answer comes from that block and nowhere else.
 - Never read the block out as-is and never mention it exists. Answer as a
   person who already knows.
 
+WHEN THEY WANT A DIFFERENT LANGUAGE:
+Anything like "can I change the language", "talk to me in English", "Hindi re
+kuha" - say one short line and end that message with [[LANGUAGE]] and nothing
+else. Do not simply start writing in the new language: the menus, the buttons
+and every message the office sends are read from a setting on their record,
+and your words alone leave those in the old one. The tap is what changes it.
+
+Never offer this unasked, and never change language because their message
+happened to be typed in another one. People write to us in all three; the one
+they chose is the one they are answered in until they say otherwise.
+
 WHEN THEY HAVE TO PICK A SERVICE:
 Say one short line - "which of these shall I book?" - and end that message with
 [[SERVICES]] and nothing else. Do not name the four services in your own words:
@@ -928,11 +939,28 @@ const ADDRESS_MARK = "[[ADDRESS]]";
  */
 const MENU_MARK = "[[SERVICES]]";
 
+/**
+ * And the one thing the assistant cannot do by writing.
+ *
+ * A customer asked to be spoken to in English and was told "of course, English
+ * from now on" - in English - while every menu under that message stayed in
+ * Odia. The model had done the only thing it can do: change its own words. The
+ * language is a field on their record, and the menus, the buttons and every
+ * message the office sends are all read from it.
+ *
+ * So the request hands over to the picker that already exists. Their tap is
+ * what changes it, everywhere, for good - which is also the honest way round:
+ * a model guessing at "he seems to want Hindi" would be changing a setting
+ * nobody asked it to touch.
+ */
+const LANGUAGE_MARK = "[[LANGUAGE]]";
+
 const readBooking = (raw) => {
     const text = String(raw ?? "");
     const asksToBook = text.includes(BOOK_MARK);
     const asksAddress = text.includes(ADDRESS_MARK);
     const asksService = text.includes(MENU_MARK);
+    const asksLanguage = text.includes(LANGUAGE_MARK);
 
     return {
         // Removed wherever they landed, not just off the end, and the blank
@@ -941,11 +969,13 @@ const readBooking = (raw) => {
             .split(BOOK_MARK).join("")
             .split(ADDRESS_MARK).join("")
             .split(MENU_MARK).join("")
+            .split(LANGUAGE_MARK).join("")
             .replace(/\s+$/, "")
             .trim(),
         asksToBook,
         asksAddress,
         asksService,
+        asksLanguage,
     };
 };
 
