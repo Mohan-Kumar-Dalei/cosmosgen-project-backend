@@ -1,6 +1,6 @@
 const whatsapp = require("./whatsapp.service");
 const ticketModel = require("../models/ticket.model");
-const trackController = require("../controllers/track.controller");
+const { issueToken } = require("./track.service");
 const Conversation = require("../models/conversation.model");
 const { emitToRoom, userRoom, techRoom, adminRoom, roomSize } = require("../sockets/socket.instance");
 const push = require("./push.service");
@@ -86,7 +86,7 @@ const trackInApp = () => {
 const ensureTrackingLink = async (ticket) => {
     if (ticket.tracking?.token) return publicOrigin() + "/track/" + ticket.tracking.token;
 
-    const token = trackController.issueToken();
+    const token = issueToken();
 
     await ticketModel.updateOne(
         { _id: ticket._id, "tracking.token": { $in: [null, ""] } },

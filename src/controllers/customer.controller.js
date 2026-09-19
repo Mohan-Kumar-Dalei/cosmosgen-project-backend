@@ -4,7 +4,7 @@ const jwt = require("jsonwebtoken");
 
 const userModel = require("../models/user.model");
 const addressService = require("../services/address.service");
-const { stageOf, issueToken } = require("./track.controller");
+const { stageOf, issueToken } = require("../services/track.service");
 const { ARRIVAL_RADIUS_METRES } = require("../services/ride.service");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");

@@ -15,3 +15,13 @@ node_modules
 # in a public repo - so they live in the project folder for reference and are
 # never committed.
 *.local.*
+
+# Service account keys.
+#
+# A Firebase admin key is a password to the whole project - anybody holding one
+# can send notifications as us and read what the project can read. These files
+# arrive from the Google console with predictable names and get dropped into a
+# folder to be "used in a minute", which is exactly how they end up in a
+# commit. Never here.
+*firebase-adminsdk*.json
+*service-account*.json

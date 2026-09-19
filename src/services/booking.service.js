@@ -4,7 +4,7 @@ const notification = require("./notification.service");
 const voiceController = require("../controllers/voice.controller");
 const { getServiceByKey } = require("../config/services");
 const addressService = require("./address.service");
-const { issueToken } = require("../controllers/track.controller");
+const { issueToken } = require("./track.service");
 
 /**
  * Registering a job, wherever the customer asked from.
