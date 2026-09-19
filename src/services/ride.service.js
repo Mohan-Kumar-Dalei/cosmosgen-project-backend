@@ -604,8 +604,69 @@ const announceAccepted = async (ticket) => {
 
     const tech = ticket.technicianSnapshot || {};
 
+    /*
+     * The road, worked out here, in the same breath as the yes.
+     *
+     * Nothing is routed before the accept - see syncRideProgress - so at this
+     * moment the customer's screen has a dashed arc on it. If the route waited
+     * for his next position ping the bike would appear over that arc and sit
+     * there for several seconds, which is precisely what Mohan saw: the bike
+     * arrives instantly, the line is still dashed, and only leaving the screen
+     * and coming back produces the real road.
+     *
+     * One Routes call, at the one moment it is certainly worth paying for -
+     * somebody has agreed to come.
+     */
+    let ride = null;
+
+    const destLon = ticket.location?.coordinates?.[0];
+    const destLat = ticket.location?.coordinates?.[1];
+
+    const at = await technicianModel
+        .findById(ticket.technician)
+        .select("location lastLocationAt")
+        .lean()
+        .catch(() => null);
+
+    const coords = at?.location?.coordinates;
+    const from = (Array.isArray(coords) && coords.length === 2)
+        ? { lat: coords[1], lon: coords[0] }
+        : null;
+
+    if (from && Number.isFinite(destLat) && Number.isFinite(destLon)) {
+        const route = await routeService
+            .computeRoute(from, { lat: destLat, lon: destLon })
+            .catch(() => null);
+
+        if (route) {
+            const now = new Date();
+
+            ride = {
+                arrivedAt: null,
+                origin: from,
+                etaSeconds: route.durationSeconds ?? null,
+                distanceMeters: route.distanceMeters ?? null,
+                etaAt: route.durationSeconds
+                    ? new Date(now.getTime() + route.durationSeconds * 1000)
+                    : null,
+                encodedPolyline: route.encodedPolyline ?? null,
+                computedAt: now,
+            };
+
+            // startedAt is deliberately absent: he has agreed to come, he has
+            // not set off. That is still the Directions button's to say.
+            await ticketModel.updateOne({ _id: ticket._id }, { $set: { ride } }).catch(() => {});
+        }
+    }
+
     emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
         stage: "on_the_way",
+
+        technicianAt: from ? { ...from, at: at?.lastLocationAt || new Date() } : null,
+        encodedPolyline: ride?.encodedPolyline || null,
+        etaSeconds: ride?.etaSeconds ?? null,
+        etaAt: ride?.etaAt || null,
+        distanceMeters: ride?.distanceMeters ?? null,
 
         // Who, in the same breath. The page has been showing a nameless arc
         // and this is the answer to it - waiting for the next position ping to
