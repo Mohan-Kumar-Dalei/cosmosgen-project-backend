@@ -258,7 +258,22 @@ function initSocketServer(httpServer) {
 
 function registerTechnicianHandlers(socket, techId) {
     let lastWrite = 0;
-    const MIN_WRITE_GAP_MS = 10000;
+
+    /*
+     * Five seconds, not ten.
+     *
+     * Ten was set to spare the database, and on a bike it was invisible - a
+     * rider covers a hundred metres in that time and the marker glides between
+     * the two. On foot it is the whole problem: a vendor walking to a door
+     * reports every fifteen metres, which is twelve seconds, and this then
+     * threw away every other one. The customer watched a map that moved once
+     * every twenty seconds and a route that took half a minute to notice he
+     * had taken a different lane.
+     *
+     * The write is one small update on an indexed id. Twice as often is still
+     * nothing next to what the same ping already does below.
+     */
+    const MIN_WRITE_GAP_MS = 5000;
 
     socket.on("tech:location", async (payload = {}) => {
         const lat = Number(payload.lat);
