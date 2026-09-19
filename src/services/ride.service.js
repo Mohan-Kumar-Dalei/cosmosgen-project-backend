@@ -98,6 +98,31 @@ const DRIFT_RECHECK_MS = 8 * 1000;
  */
 const DRIFT_RECHECK_METRES = 100;
 
+/**
+ * When the road Google offers is not the journey he is making.
+ *
+ * Some of the lanes a vendor rides are not in the map as roads at all. Asked
+ * for a way through them, Google answers with the only thing it has - a ride
+ * out to a main road, along it, and back in - and it is not a small
+ * difference: ninety metres of lane came back as thirteen hundred, and two
+ * hundred and fifty as twelve hundred. Drawn on the customer's screen that is
+ * a line looping away from a bike that is going straight, beside a distance
+ * that grows while he gets closer.
+ *
+ * An answer like that is worse than no answer, so it is refused. Nothing is
+ * drawn, the screen falls back to the bow it already uses before a route
+ * exists - a dashed curve from the bike to the door - and the distance becomes
+ * the honest straight-line one. He is still tracked, still moving, and nothing
+ * on screen claims to know a road that nobody has.
+ *
+ * Both tests have to fail for it to be refused. Ratio alone would throw away
+ * good routes on short hops, where a one-way system doubles a hundred metres
+ * quite legitimately, and around Mohan's own house the real roads run to more
+ * than twice the straight line - so the excess has to be large in metres too.
+ */
+const UNUSABLE_TIMES = 3.5;
+const UNUSABLE_EXTRA_METRES = 500;
+
 /** Which way one point lies from another, in degrees from north. */
 const bearingBetween = (aLat, aLon, bLat, bLon) => {
     const toRad = (d) => (d * Math.PI) / 180;
@@ -394,10 +419,24 @@ const syncRideProgress = async (technician, lat, lon) => {
              * doing that as he goes, which is what makes the drawn road end up
              * being the road he actually took.
              */
-            const drawnFrom = routeBegins(ticket.ride?.encodedPolyline);
-            const goneSince = drawnFrom
-                ? metresBetween(lat, lon, drawnFrom.lat, drawnFrom.lon)
+            const asked = ticket.ride?.askedFrom?.lat != null
+                ? ticket.ride.askedFrom
+                : routeBegins(ticket.ride?.encodedPolyline);
+
+            const goneSince = asked
+                ? metresBetween(lat, lon, asked.lat, asked.lon)
                 : Infinity;
+
+            /*
+             * No line at all, and he is riding.
+             *
+             * Either the last answer was refused as nonsense - see
+             * UNUSABLE_TIMES - or Google was down when it was asked. Both leave
+             * the customer on the bow, and both are worth another try as he
+             * moves: a hundred metres further on he may be back on roads the
+             * map knows, and the line can come back.
+             */
+            const noLine = !ticket.ride?.encodedPolyline;
 
             // Skip the refresh when we are about to declare arrival anyway -
             // paying for a route to a point 100 m away is money for nothing.
@@ -405,7 +444,7 @@ const syncRideProgress = async (technician, lat, lon) => {
                 !alreadyArrived &&
                 distance > ARRIVAL_RADIUS_METRES &&
                 (age > ETA_RECOMPUTE_MS
-                    || (lost && age > DRIFT_RECHECK_MS && goneSince > DRIFT_RECHECK_METRES));
+                    || ((lost || noLine) && age > DRIFT_RECHECK_MS && goneSince > DRIFT_RECHECK_METRES));
 
             if (worthRefreshing) {
                 /*
@@ -418,8 +457,8 @@ const syncRideProgress = async (technician, lat, lon) => {
                  * degrees on a phone in a pocket. Too short a hop and there is
                  * no direction in it worth sending.
                  */
-                const facing = drawnFrom && goneSince > 30
-                    ? bearingBetween(drawnFrom.lat, drawnFrom.lon, lat, lon)
+                const facing = asked && goneSince > 30 && goneSince < Infinity
+                    ? bearingBetween(asked.lat, asked.lon, lat, lon)
                     : null;
 
                 const route = await routeService.computeRoute(
@@ -428,15 +467,36 @@ const syncRideProgress = async (technician, lat, lon) => {
                     { heading: facing }
                 );
                 if (route) {
-                    ticket.ride.etaSeconds = route.durationSeconds ?? null;
-                    ticket.ride.distanceMeters = route.distanceMeters ?? null;
-                    ticket.ride.etaAt = route.durationSeconds
+                    /*
+                     * Is this a road, or the map's way of saying it has none?
+                     * See UNUSABLE_TIMES above.
+                     */
+                    const byRoad = Number(route.distanceMeters) || 0;
+                    const unusable = byRoad > 0
+                        && byRoad > distance * UNUSABLE_TIMES
+                        && byRoad - distance > UNUSABLE_EXTRA_METRES;
+
+                    if (unusable) {
+                        console.log(
+                            "[RIDE] " + ticket.ticketNumber + ": Google wants " + Math.round(byRoad)
+                            + " m for " + Math.round(distance) + " m - no road here, showing the bow"
+                        );
+                    }
+
+                    ticket.ride.etaSeconds = unusable ? null : (route.durationSeconds ?? null);
+                    ticket.ride.distanceMeters = unusable ? null : (route.distanceMeters ?? null);
+                    ticket.ride.etaAt = (!unusable && route.durationSeconds)
                         ? new Date(now.getTime() + route.durationSeconds * 1000)
                         : null;
-                    ticket.ride.encodedPolyline = route.encodedPolyline ?? null;
+                    ticket.ride.encodedPolyline = unusable ? null : (route.encodedPolyline ?? null);
                     ticket.ride.computedAt = now;
 
+                    // Where it was asked from, drawn or not - it is what says
+                    // how far he has come before it is worth asking again.
+                    ticket.ride.askedFrom = { lat, lon };
+
                     // The new line is drawn from where he is, so he is on it.
+                    // No line and there is nothing for him to be off.
                     ticket.ride.offRouteSince = null;
                 }
             }

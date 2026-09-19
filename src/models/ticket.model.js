@@ -173,6 +173,21 @@ const ticketSchema = new mongoose.Schema({
          * and cleared the moment he is back on the line.
          */
         offRouteSince: { type: Date },
+
+        /*
+         * Where the last route was asked for.
+         *
+         * Nearly the same as the first point of the line, and kept separately
+         * for the times when there is no line: when the roads around him are
+         * not in the map, nothing is drawn at all, and without this there is
+         * no way to tell "he has gone another hundred metres, ask again" from
+         * "he is standing still" - so it would either buy a route every eight
+         * seconds or none until the five minute timer came round.
+         */
+        askedFrom: {
+            lat: { type: Number },
+            lon: { type: Number },
+        },
     },
 
     /**
