@@ -2,6 +2,7 @@ const { asLanguage } = require("../config/languages");
 const Ticket = require("../models/ticket.model");
 const UserModel = require("../models/user.model");
 const { SERVICE_CATALOG, getServiceByKey } = require("../config/services");
+const { estimateBlock } = require("./estimate.service");
 const { copyFor } = require("../config/copy");
 const notification = require("./notification.service");
 const booking = require("./booking.service");
@@ -235,7 +236,9 @@ it was fixed for - the answer comes from that block and nowhere else.
   person who already knows.
 
 NEVER:
-- Quote a price. The worker confirms cost on site.
+- Invent a price. You may give the range printed in WHAT THINGS USUALLY COST
+  and nothing else - never a single figure, never a total, never a discount.
+  The engineer confirms the real cost at the door before starting.
 - Invent a time. The only arrival estimate you may give is one printed in the
   CUSTOMER RECORD block. Never guess "15 minutes" or "within an hour".
 - Offer a service not in the list above - say plainly we don't cover it.
@@ -401,9 +404,16 @@ const whoBlock = (userData) => {
 
         lines.push(
             "They have more than one address saved:\n" + listed
-            + "\nBefore booking, ask which one this job is for and pass its label as addressLabel. "
-            + "Do not read the full addresses out - the labels are enough. "
-            + "If they do not say, use the default and tell them which one you used."
+            + "\nBefore booking, ask which one this job is for and pass its label as addressLabel."
+            + "\nAsk it in one short line - 'which address shall I send them to?' - and end"
+            + " that message with [[ADDRESS]] and nothing else. Do not name the addresses in"
+            + " your own words and do not read them out: the channel shows them as a list to"
+            + " tap, and their tap comes back as the label."
+            + "\n[[ADDRESS]] is only for that question. Never put [[BOOK]] on it - that marker"
+            + " belongs to 'shall I book this?' alone, and a Yes and a No under 'Home or"
+            + " Office?' answers nothing."
+            + "\nIf they answer something that is not one of the labels, use the default and"
+            + " tell them which one you used."
         );
     }
 
@@ -787,6 +797,7 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
             systemInstruction: instruction
                 + languageBlock(chosenLanguage(userData))
                 + companyBlock()
+                + await estimateBlock()
                 + whoBlock(userData)
                 + ticketRecord,
             tools: [{ functionDeclarations: [createTicketTool] }],
@@ -859,15 +870,34 @@ const generateResponse = (contents, userData, userMessage, userLocation, record)
  */
 const BOOK_MARK = "[[BOOK]]";
 
+/**
+ * And the other question worth a tap: which address.
+ *
+ * It was being asked in words - "Home or Office?" - underneath a Yes and a No,
+ * because the booking marker was the only one there was and the model reached
+ * for it. Two wrong answers on one screen: the buttons did not fit the
+ * question, and the customer had to type a label back exactly as we spell it.
+ *
+ * With its own marker the channel can do the obvious thing instead and list
+ * the addresses to choose from, the same way it lists services.
+ */
+const ADDRESS_MARK = "[[ADDRESS]]";
+
 const readBooking = (raw) => {
     const text = String(raw ?? "");
     const asksToBook = text.includes(BOOK_MARK);
+    const asksAddress = text.includes(ADDRESS_MARK);
 
     return {
-        // Removed wherever it landed, not just off the end, and the blank line
-        // it leaves behind goes with it.
-        text: text.split(BOOK_MARK).join("").replace(/\s+$/, "").trim(),
+        // Removed wherever they landed, not just off the end, and the blank
+        // line they leave behind goes with them.
+        text: text
+            .split(BOOK_MARK).join("")
+            .split(ADDRESS_MARK).join("")
+            .replace(/\s+$/, "")
+            .trim(),
         asksToBook,
+        asksAddress,
     };
 };
 

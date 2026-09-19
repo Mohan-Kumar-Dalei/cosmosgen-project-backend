@@ -197,6 +197,23 @@ const handleMessage = async (phone, message, profileName) => {
      * WhatsApp itself would have delivered had they typed it - so the thread
      * reads as a conversation rather than as a machine talking to itself.
      */
+    /*
+     * A tap on one of their saved addresses.
+     *
+     * Fed back as the label, which is the message WhatsApp would have
+     * delivered had they typed it - so the model reads its own question
+     * answered in the thread and passes that label as addressLabel.
+     */
+    if (convo.user && interactiveId?.startsWith("addr_")) {
+        const said = message.interactive?.list_reply?.title;
+
+        if (said) {
+            await runAI(convo, said);
+            await convo.save();
+            return;
+        }
+    }
+
     if (convo.user && (interactiveId === "book_yes" || interactiveId === "book_no")) {
         const t = copyFor(convo.language);
         const said = message.interactive?.button_reply?.title
@@ -888,7 +905,7 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * it forgets, the reply simply goes out as text and the customer types,
      * exactly as before.
      */
-    const { text: reply, asksToBook } = aiService.readBooking(raw);
+    const { text: reply, asksToBook, asksAddress } = aiService.readBooking(raw);
 
     /*
      * Buttons only where WhatsApp will actually take them.
@@ -905,8 +922,45 @@ const runAI = async (convo, userMessage, opts = {}) => {
     // has no reason to wait for.
     let sent = null;
 
-    if (canTap) {
+    /*
+     * Which address, as a list rather than as a spelling test.
+     *
+     * The saved labels are theirs - "Home", "Office", "Maa ghara" - and typing
+     * one back exactly is work nobody should be asked to do on a phone. Each
+     * row carries the label with a line of the address under it, so the choice
+     * is made on what the place actually is rather than on what it was called.
+     *
+     * It sits on the same footing as the Yes/No buttons below: if WhatsApp
+     * refuses the interactive message for any reason, the question still goes
+     * out as text and the customer can type the label as before.
+     */
+    const saved = asksAddress ? (user.addresses || []) : [];
+
+    if (saved.length > 1 && reply.length > 0 && reply.length <= 1024) {
         const t = copyFor(convo.language);
+
+        sent = await whatsapp.sendList(convo.phone, {
+            body: reply,
+            buttonText: t.addressButton,
+            sectionTitle: t.addressSection,
+            rows: saved.slice(0, 10).map((a) => {
+                const line = [a.address, a.area, a.city]
+                    .map((part) => String(part || "").trim())
+                    .filter(Boolean)
+                    .join(", ");
+
+                return {
+                    id: "addr_" + a._id,
+                    title: String(a.label || "Address").trim() || "Address",
+                    description: line,
+                };
+            }),
+        });
+    }
+
+    if (!sent && canTap) {
+        const t = copyFor(convo.language);
+
         sent = await whatsapp.sendButtons(convo.phone, {
             body: reply,
             buttons: [

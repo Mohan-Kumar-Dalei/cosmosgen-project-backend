@@ -56,33 +56,15 @@ const publicOrigin = () =>
 /**
  * Gives a ticket its tracking link, once.
  *
- * Issued here rather than at assignment because this is the moment the
- * customer is told about the job at all - a link that exists before anyone
- * has been sent one is a secret with no owner. Re-assigning does not mint a
- * new one, so a customer who scrolled back to the first message still has a
- * link that works.
- */
-/**
- * Where to watch the technician, now that it is not a link.
+ * Issued the first time the customer is told about the job at all - a link
+ * that exists before anyone has been sent one is a secret with no owner.
+ * Re-assigning does not mint a new one.
  *
- * The public tracking page still exists and the token is still minted - the
- * app's own tracking screen is built on it. What stopped is sending the URL
- * over WhatsApp. Opening it there loads a whole web page inside WhatsApp's own
- * browser, on a phone that already has the app installed, and it was slower
- * and worse than the screen the customer could have been looking at instead.
- *
- * The download link only appears once there is one. Until the Play listing
- * exists, APP_DOWNLOAD_URL is empty and a sentence is better than a broken
- * link.
+ * Nothing sends the URL any more. The app's own tracking screen is built on
+ * this token, and opening a web page inside WhatsApp's browser was slower and
+ * worse than the screen the customer already had. The token is what is wanted;
+ * the link is a leftover of how it used to be delivered.
  */
-const trackInApp = () => {
-    const url = String(process.env.APP_DOWNLOAD_URL || "").trim();
-
-    return url
-        ? "Track them live in the Cosmosgen app:\n" + url
-        : "Track them live in the Cosmosgen app.";
-};
-
 const ensureTrackingLink = async (ticket) => {
     if (ticket.tracking?.token) return publicOrigin() + "/track/" + ticket.tracking.token;
 
@@ -99,29 +81,36 @@ const ensureTrackingLink = async (ticket) => {
     return publicOrigin() + "/track/" + (saved?.tracking?.token || token);
 };
 
+/**
+ * Somebody is coming, and the app is where they are told.
+ *
+ * This was four lines of WhatsApp - name, number, rating, tracking - and every
+ * one of them is now a card on the job screen, live, with a map under it. The
+ * message was the same words a second time, and from October 2026 Meta bills
+ * for each one.
+ *
+ * Sent to nobody without the app, because there is nobody without the app: the
+ * assistant will not talk to an unregistered number at all - it hands out the
+ * download link and waits. So the push is not a shortcut for app users, it is
+ * the channel.
+ */
 const notifyCustomerAssigned = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
+
     /*
-     * Called for the token, not for the URL.
+     * The token first, either way.
      *
-     * This is what mints the tracking token, and the app's own tracking screen
-     * is built on it - dropping the call because the link is no longer sent
-     * would leave the customer with an app screen that has nothing to open.
+     * It is minted here rather than used here: the app's own tracking screen
+     * is built on it, so skipping this would leave a customer with a screen
+     * that has nothing to open.
      */
     await ensureTrackingLink(ticket);
 
-    const text =
-        "Your technician has been assigned.\n\n" +
-        "Ticket: " + ticket.ticketNumber + "\n" +
-        "Service: " + ticket.serviceLabel + "\n\n" +
-        "Technician: " + tech.name + "\n" +
-        "Phone: " + tech.phone + "\n" +
-        "Rating: " + (tech.rating ? Number(tech.rating).toFixed(1) : "5.0") + "\n\n" +
-        trackInApp() + "\n\n" +
-        "They will reach your address soon. Feel free to call them directly " +
-        "if you need anything.";
-
-    await notifyCustomer({ ticket, text });
+    push.sendToCustomer(ticket.customer, {
+        title: "Your technician has been assigned",
+        body: (tech.name || "A technician") + " is coming for " + (ticket.serviceLabel || "your job") + ".",
+        data: { ticketId: String(ticket._id), kind: "accepted" },
+    });
 };
 
 /**
@@ -132,39 +121,13 @@ const notifyCustomerAssigned = async (ticket) => {
  * phone number - and the next one was introduced the same way a few minutes
  * later. Nothing goes out until somebody has agreed to come.
  *
- * Two wordings, because a technician can accept a job he cannot start yet. A
- * queued job is a promise; telling the customer to expect somebody at the door
- * would be a lie, so it says what is actually true and leaves the arrival to
- * the "on the way" message that follows when he sets off.
+ * Queued or not makes no difference to what is sent any more. It used to: a
+ * queued job got different wording on WhatsApp, because "expect him at your
+ * door" would have been a lie. The app says which it is on its own - the job
+ * sits there with his name on it and its own stage - so there is one
+ * announcement and the screen carries the detail.
  */
-const notifyCustomerAccepted = async (ticket) => {
-    const tech = ticket.technicianSnapshot || {};
-
-    /*
-     * The same moment, on the phone as well.
-     *
-     * Until somebody accepts, the customer's app shows a map with an arc on it
-     * and no name - so being told who is coming is real news, and it is the
-     * news they have been waiting on since they booked. WhatsApp carries it
-     * either way; this is what reaches the person who booked in the app and
-     * then put it down.
-     */
-    push.sendToCustomer(ticket.customer, {
-        title: "Your technician has been assigned",
-        body: (tech.name || "A technician") + " is coming for " + (ticket.serviceLabel || "your job") + ".",
-        data: { ticketId: String(ticket._id), kind: "accepted" },
-    });
-
-    if (ticket.status !== "Queued") return notifyCustomerAssigned(ticket);
-
-    await notifyCustomer({
-        ticket,
-        text:
-            "Your request " + ticket.ticketNumber + " has been assigned to " + tech.name + ".\n\n" +
-            "They're finishing another job right now and will reach you soon. " +
-            "We'll message you as soon as they're on the way.",
-    });
-};
+const notifyCustomerAccepted = async (ticket) => notifyCustomerAssigned(ticket);
 
 /**
  * The code the technician has to be told before he can start, or close.
@@ -185,64 +148,55 @@ const sendCustomerOtp = async (ticket, code, purpose) => {
     await notifyCustomer({ ticket, text });
 };
 
+/**
+ * The work has started.
+ *
+ * The customer read a code out to him thirty seconds ago, so they know he is
+ * inside; the job screen says "Work under way" by itself. A notification is
+ * enough to mark the moment - see notifyCustomerAssigned for why it is not a
+ * WhatsApp message any more.
+ */
 const notifyCustomerWorkStarted = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
-    const text =
-        (tech.name || "Your technician") + " has arrived and started work.\n\n" +
-        "Ticket: " + ticket.ticketNumber + "\n" +
-        "Service: " + ticket.serviceLabel + "\n\n" +
-        "You'll get the invoice here once the work is done.";
 
-    await notifyCustomer({ ticket, text });
+    push.sendToCustomer(ticket.customer, {
+        title: "Work has started",
+        body: (tech.name || "Your technician") + " has begun on " + (ticket.serviceLabel || "your job") + ".",
+        data: { ticketId: String(ticket._id), kind: "working" },
+    });
 };
 
 /**
- * Technician has left for the job.
+ * The technician has set off.
  *
- * No estimated arrival time any more. A printed estimate is a promise that
- * goes stale the moment traffic does - the customer holds you to a number that
- * was true when the vendor set off, and the correction never comes. The
- * tracking link replaces it: it shows where the vendor actually is, and keeps
- * being right without anybody having to send anything.
+ * No estimated arrival time, and no message. A printed estimate is a promise
+ * that goes stale the moment traffic does; the tracking screen is right
+ * without anybody sending anything, and it is two taps away from the
+ * notification this fires.
+ *
+ * The tracking token is still minted here - that screen is built on it.
  */
 const notifyCustomerTechnicianEnRoute = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
-    /*
-     * Called for the token, not for the URL.
-     *
-     * This is what mints the tracking token, and the app's own tracking screen
-     * is built on it - dropping the call because the link is no longer sent
-     * would leave the customer with an app screen that has nothing to open.
-     */
+
     await ensureTrackingLink(ticket);
 
-    let text =
-        (tech.name || "Your technician") + " is on the way to you.\n\n" +
-        "Ticket: " + ticket.ticketNumber + "\n" +
-        "Service: " + ticket.serviceLabel + "\n";
-
-    text += "\n" + trackInApp() + "\n";
-
-    text += "\nReply here if you need to reach us.";
-
-    await notifyCustomer({ ticket, text });
+    push.sendToCustomer(ticket.customer, {
+        title: (tech.name || "Your technician") + " is on the way",
+        body: "They have set off for " + (ticket.serviceLabel || "your job") + ".",
+        data: { ticketId: String(ticket._id), kind: "on_the_way" },
+    });
 };
 
 /**
  * They are at the door.
  *
- * Two ways, because they answer different situations. WhatsApp always goes -
- * it is the one channel every customer has and the one that survives the app
- * being uninstalled. The push is what reaches somebody who has the app and is
- * not looking at it, which is precisely the person waiting for this.
+ * The one moment on the whole job where a second matters, and a notification
+ * is better at it than a chat message: it lands on the lock screen of a phone
+ * somebody is not looking at, which is exactly where this customer is.
  */
 const notifyCustomerArrived = async (ticket) => {
     const who = ticket.technicianSnapshot?.name || "Your technician";
-
-    await notifyCustomer({
-        ticket,
-        text: who + " has arrived at your location.\n\nReply here if you need to reach us.",
-    });
 
     push.sendToCustomer(ticket.customer, {
         title: who + " has arrived",

@@ -58,6 +58,11 @@ const COPY = {
         // button at 20 characters, which assertCopyLengths below enforces.
         bookYes: "Yes, book it",
         bookNo: "Not now",
+
+        // The list of their own saved addresses, offered when a job could go
+        // to more than one of them. A list button is capped at 20 characters.
+        addressButton: "Choose address",
+        addressSection: "Your addresses",
         ownWords: "No problem - tell me what's happening in your own words.",
         aiUnavailable: "Sorry, I could not process that just now. Please try again in a moment.",
     },
@@ -85,6 +90,8 @@ const COPY = {
         issueSection: "Common issues",
         somethingElse: "Something else",
 
+        addressButton: "Address chunein",
+        addressSection: "Aapke addresses",
         bookYes: "Haan, book karein",
         bookNo: "Abhi nahi",
         ownWords: "Koi baat nahi - apne shabdon mein bataiye kya ho raha hai.",
@@ -150,6 +157,8 @@ const COPY = {
         issueSection: "Common issues",
         somethingElse: "Something else",
 
+        addressButton: "Address ବାଛନ୍ତୁ",
+        addressSection: "ଆପଣଙ୍କ address",
         bookYes: "ହଁ, book କରନ୍ତୁ",
         bookNo: "ଏବେ ନୁହେଁ",
 
@@ -178,6 +187,7 @@ const assertCopyLengths = () => {
     const limits = {
         serviceButton: 20, applianceButton: 20, issueButton: 20,
         serviceSection: 24, issueSection: 24,
+        addressButton: 20, addressSection: 24,
 
         // Reply buttons are capped tighter than list buttons by WhatsApp.
         bookYes: 20, bookNo: 20,
