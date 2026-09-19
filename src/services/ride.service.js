@@ -98,6 +98,15 @@ const DRIFT_RECHECK_MS = 8 * 1000;
  */
 const DRIFT_RECHECK_METRES = 100;
 
+/** Which way one point lies from another, in degrees from north. */
+const bearingBetween = (aLat, aLon, bLat, bLon) => {
+    const toRad = (d) => (d * Math.PI) / 180;
+    const y = Math.sin(toRad(bLon - aLon)) * Math.cos(toRad(bLat));
+    const x = Math.cos(toRad(aLat)) * Math.sin(toRad(bLat))
+        - Math.sin(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.cos(toRad(bLon - aLon));
+    return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
+};
+
 /** Great-circle metres between two points. */
 const metresBetween = (aLat, aLon, bLat, bLon) => {
     const R = 6371000;
@@ -399,9 +408,24 @@ const syncRideProgress = async (technician, lat, lon) => {
                     || (lost && age > DRIFT_RECHECK_MS && goneSince > DRIFT_RECHECK_METRES));
 
             if (worthRefreshing) {
+                /*
+                 * The way he has been going, so the new route starts the way
+                 * he is already pointing rather than with a U-turn.
+                 *
+                 * From where the last line was drawn to where he is now, which
+                 * is a hundred metres or so of actual travel - a steadier
+                 * answer than the last two fixes, which can disagree by ninety
+                 * degrees on a phone in a pocket. Too short a hop and there is
+                 * no direction in it worth sending.
+                 */
+                const facing = drawnFrom && goneSince > 30
+                    ? bearingBetween(drawnFrom.lat, drawnFrom.lon, lat, lon)
+                    : null;
+
                 const route = await routeService.computeRoute(
                     { lat, lon },
-                    { lat: destLat, lon: destLon }
+                    { lat: destLat, lon: destLon },
+                    { heading: facing }
                 );
                 if (route) {
                     ticket.ride.etaSeconds = route.durationSeconds ?? null;

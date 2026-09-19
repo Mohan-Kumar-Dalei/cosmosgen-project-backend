@@ -21,7 +21,27 @@ const MATRIX_MAX = 5;
  * Returns null on any failure instead of throwing - a missing ETA should
  * never be the reason a technician can't start a ride.
  */
-const computeRoute = async (origin, destination) => {
+/**
+ * He is on a motorcycle, and the road network he can use is not a car's.
+ *
+ * This asked for DRIVE from the first day, which is the wrong question. Mohan
+ * rode a test down the lanes he actually takes and the line never followed
+ * him: the answer kept coming back as a kilometre and a quarter of main road
+ * for three hundred metres of lanes, with a U-turn at the start, because a car
+ * cannot use the cut-throughs and Google was being asked about a car. The
+ * customer watched the distance grow while the bike got closer.
+ *
+ * TWO_WHEELER is the mode Google built for exactly this - it is offered in
+ * India and it routes through the narrow roads a bike can take. It is the same
+ * billing as DRIVE and it is a truer answer besides: a motorcycle's ETA
+ * through city traffic is not a car's.
+ *
+ * Not every country has it, so a refusal falls back to DRIVE rather than
+ * leaving the ride with no route at all.
+ */
+const RIDE_MODE = "TWO_WHEELER";
+
+const computeRoute = async (origin, destination, { heading } = {}) => {
     if (!API_KEY) {
         console.warn("[ROUTE] GOOGLE_MAPS_API_KEY missing - route skipped");
         return null;
@@ -37,34 +57,60 @@ const computeRoute = async (origin, destination) => {
         return null;
     }
 
+    /*
+     * Which way he is already pointing.
+     *
+     * Without it Google answers from a standing start and is free to send him
+     * back the way he came - so a route redrawn mid-ride began with a U-turn,
+     * and the customer's line doubled back on itself before setting off. A
+     * heading says "he is moving, this way", and the route it returns is one a
+     * rider can actually take from where he is.
+     */
+    const facing = Number.isFinite(Number(heading))
+        ? Math.round((((Number(heading) % 360) + 360) % 360))
+        : null;
+
+    const ask = (travelMode) => axios.post(
+        ROUTES_URL,
+        {
+            origin: {
+                location: { latLng: { latitude: oLat, longitude: oLon } },
+                ...(facing === null ? {} : { heading: facing }),
+            },
+            destination: { location: { latLng: { latitude: dLat, longitude: dLon } } },
+            travelMode,
+            // TRAFFIC_AWARE puts this on the Pro SKU. Worth it: an ETA that
+            // ignores traffic is worse than no ETA, because we send it to
+            // the customer as a promise.
+            routingPreference: "TRAFFIC_AWARE",
+            languageCode: "en-IN",
+            units: "METRIC",
+        },
+        {
+            headers: {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": API_KEY,
+                // Anything beyond these three fields would push the request
+                // into a higher SKU for data we don't draw or display.
+                "X-Goog-FieldMask":
+                    "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
+            },
+            timeout: 8000,
+        }
+    );
+
     try {
         keyring.count("google");
         mapUsage.record("routes");
-        const response = await axios.post(
-            ROUTES_URL,
-            {
-                origin: { location: { latLng: { latitude: oLat, longitude: oLon } } },
-                destination: { location: { latLng: { latitude: dLat, longitude: dLon } } },
-                travelMode: "DRIVE",
-                // TRAFFIC_AWARE puts this on the Pro SKU. Worth it: an ETA that
-                // ignores traffic is worse than no ETA, because we send it to
-                // the customer as a promise.
-                routingPreference: "TRAFFIC_AWARE",
-                languageCode: "en-IN",
-                units: "METRIC",
-            },
-            {
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-Goog-Api-Key": API_KEY,
-                    // Anything beyond these three fields would push the request
-                    // into a higher SKU for data we don't draw or display.
-                    "X-Goog-FieldMask":
-                        "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
-                },
-                timeout: 8000,
-            }
-        );
+
+        let response = await ask(RIDE_MODE).catch(() => {
+            console.warn("[ROUTE] " + RIDE_MODE + " refused, asking for DRIVE instead");
+            return ask("DRIVE");
+        });
+
+        if (!response?.data?.routes?.[0] && RIDE_MODE !== "DRIVE") {
+            response = await ask("DRIVE");
+        }
 
         const route = response.data?.routes?.[0];
         if (!route) {
