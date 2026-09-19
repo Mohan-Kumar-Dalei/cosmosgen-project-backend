@@ -111,6 +111,10 @@ router.post("/wallets/:technicianId/collect", isAdminAuthenticated, isSuperAdmin
 router.post("/technicians/:id/block", isAdminAuthenticated, isSuperAdmin, adminController.blockTechnician);
 router.post("/technicians/:id/unblock", isAdminAuthenticated, isSuperAdmin, adminController.unblockTechnician);
 
+// Ending a pause is an ordinary day-to-day call, unlike blocking - the
+// office makes it while a job is waiting, so it is not kept for the owner.
+router.post("/technicians/:id/unpause", isAdminAuthenticated, adminController.unpauseTechnician);
+
 router.post("/tickets/:id/force-close", isAdminAuthenticated, isSuperAdmin, adminController.forceCloseTicket);
 
 router.get("/staff", isAdminAuthenticated, isSuperAdmin, adminController.getAllStaff);

@@ -14,6 +14,7 @@ const { buildSkillRegex, escapeRegex } = require("../config/services");
 // connect-time check cannot, having already run
 const { techRoom, dropRoom } = require("../sockets/socket.instance");
 const rideService = require("../services/ride.service");
+const { liftSuspension } = require("../services/discipline.service");
 const { metresBetween } = rideService;
 const { lookupPlace } = require("./map.controller");
 const routeService = require("../services/route.service");
@@ -1636,6 +1637,65 @@ const blockTechnician = async (req, res) => {
     }
 };
 
+/**
+ * POST /api/admin/technicians/:id/unpause
+ *
+ * Ends a vendor's pause early.
+ *
+ * Five refusals in a day close his app until the next morning. That is the
+ * rule and it stays - but a rule with no way out is a support call: the office
+ * knows when the refusals were the dispatcher's fault, or when a paused vendor
+ * is the only person who can cover a job this afternoon.
+ *
+ * The office's decision, never the vendor's. He cannot lift his own
+ * punishment from the app, or the count means nothing. The plan beyond this is
+ * a Razorpay fine that calls the same function; until that exists, this is the
+ * button.
+ *
+ * Today's count goes back to zero with it. A vendor let back in on four
+ * refusals is one refusal from being shut out again, which is not what
+ * unpausing him means.
+ */
+const unpauseTechnician = async (req, res) => {
+    try {
+        const tech = await technicianModel
+            .findById(req.params.id)
+            .select("name suspendedUntil declines")
+            .lean();
+
+        if (!tech) {
+            return res.status(404).json({ success: false, message: "Vendor not found" });
+        }
+
+        const paused = tech.suspendedUntil && new Date(tech.suspendedUntil) > new Date();
+
+        if (!paused) {
+            return res.status(400).json({ success: false, message: tech.name + " is not paused." });
+        }
+
+        await liftSuspension(tech._id, "Lifted by " + (req.admin?.name || "the office"));
+
+        await technicianModel.updateOne(
+            { _id: tech._id },
+            { $set: { "declines.today": 0, "declines.dayKey": "" } }
+        );
+
+        const updated = await technicianModel
+            .findById(tech._id)
+            .select("name suspendedUntil declines isAvailable")
+            .lean();
+
+        return res.status(200).json({
+            success: true,
+            message: tech.name + " can work again. They turn their own duty back on.",
+            data: updated,
+        });
+    } catch (error) {
+        console.error("Unpause technician error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 const unblockTechnician = async (req, res) => {
     try {
         const updated = await technicianModel.findOneAndUpdate(
@@ -1676,7 +1736,7 @@ const getTechnicianById = async (req, res) => {
 
         const [technician, activeTicket, scheduled, recentJobs, cashHeld, totalEarnings] = await Promise.all([
             technicianModel.findById(id)
-                .select("name phone email profileImage skills rating completedJobs performanceLevel city area state pincode isAvailable activeTicket hasVehicle lastLocationAt location isDeleted createdAt approvalStatus isBlacklisted blacklistReason rejectionReason approvedAt walletBalancePaise commissionRate bankDetails.accountHolderName bankDetails.accountNumber bankDetails.accountLast4 bankDetails.ifsc bankDetails.bankName bankDetails.branch")
+                .select("name phone email profileImage skills rating completedJobs performanceLevel city area state pincode isAvailable activeTicket hasVehicle lastLocationAt location isDeleted createdAt approvalStatus isBlacklisted blacklistReason rejectionReason approvedAt suspendedUntil declines.today declines.total walletBalancePaise commissionRate bankDetails.accountHolderName bankDetails.accountNumber bankDetails.accountLast4 bankDetails.ifsc bankDetails.bankName bankDetails.branch")
                 .lean(),
 
             ticketModel.findOne({ technician: id, status: { $in: ["Assigned", "In-Progress", "Payment-Pending"] } })
@@ -4156,6 +4216,7 @@ module.exports = {
     getNearbyTechnicians,
     assignTicket,
     unassignTicket,
+    unpauseTechnician,
     reassignTicket,
     rescheduleTicket,
     callCustomer,
