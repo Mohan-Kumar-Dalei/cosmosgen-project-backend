@@ -162,6 +162,17 @@ const ticketSchema = new mongoose.Schema({
             lat: { type: Number },
             lon: { type: Number },
         },
+
+        /*
+         * When he was first seen off the drawn route, and still is.
+         *
+         * A single position well away from the line is usually the phone
+         * rather than the rider - a city fix jumps thirty metres between two
+         * buildings - so one is not enough to act on. Holding the moment it
+         * started lets the ride wait for a second one before it believes him,
+         * and cleared the moment he is back on the line.
+         */
+        offRouteSince: { type: Date },
     },
 
     /**

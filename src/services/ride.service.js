@@ -38,10 +38,21 @@ const ETA_RECOMPUTE_MS = 5 * 60 * 1000;
 
 /*
  * How far off the drawn line he can be before it is treated as the wrong line
- * rather than an old one. A city GPS fix is good to 20-50 m and a road has
- * width, so this is generous enough that ordinary noise never triggers it.
+ * rather than an old one.
+ *
+ * It was 150 m, which is a long way to ride beside a line that says you are
+ * somewhere else: a vendor who knows a shortcut takes it, and the customer
+ * watches the bike leave the road we drew and keep going. Seventy is past
+ * anything GPS noise produces - a city fix is good to 20-50 m and a road has
+ * width - and it is about one turning, which is what a shortcut starts with.
+ *
+ * On its own it would still be twitchy, so nothing acts on a single fix: see
+ * offRouteSince on the ticket.
  */
-const OFF_ROUTE_METRES = 150;
+const OFF_ROUTE_METRES = 70;
+
+/** How long he has to stay off the line before it counts as a decision. */
+const OFF_ROUTE_SETTLE_MS = 6 * 1000;
 
 /*
  * How far the technician has to travel before we ask where he is.
@@ -55,8 +66,15 @@ const OFF_ROUTE_METRES = 150;
  */
 const PLACE_RECHECK_METRES = 200;
 
-/** The floor between drift-triggered refreshes, so this cannot loop. */
-const DRIFT_RECHECK_MS = 60 * 1000;
+/**
+ * The floor between drift-triggered refreshes, so this cannot loop.
+ *
+ * Twenty seconds rather than a minute. A route costs a call and a minute was
+ * the cautious figure; the cost of being slow is the customer watching a bike
+ * ride away from its own line, which is worse than the call. The settle above
+ * is what stops noise spending it.
+ */
+const DRIFT_RECHECK_MS = 20 * 1000;
 
 /** Great-circle metres between two points. */
 const metresBetween = (aLat, aLon, bLat, bLon) => {
@@ -292,7 +310,27 @@ const syncRideProgress = async (technician, lat, lon) => {
              */
             const age = now.getTime() - computedAt;
             const drift = metresFromRoute(ticket.ride?.encodedPolyline, lat, lon);
-            const lost = drift !== null && drift > OFF_ROUTE_METRES;
+            const wandered = drift !== null && drift > OFF_ROUTE_METRES;
+
+            /*
+             * Off the line, and not for the first time.
+             *
+             * The moment it started is kept on the ticket, so a fix that lands
+             * in the next street on its own is forgotten as soon as the next
+             * one lands back on the road. Two in a row, six seconds apart, is
+             * a man who has taken a different turning.
+             */
+            if (!wandered) {
+                ticket.ride.offRouteSince = null;
+            } else if (!ticket.ride.offRouteSince) {
+                ticket.ride.offRouteSince = now;
+            }
+
+            const strayed = wandered
+                && ticket.ride.offRouteSince
+                && now.getTime() - new Date(ticket.ride.offRouteSince).getTime() >= OFF_ROUTE_SETTLE_MS;
+
+            const lost = strayed;
 
             // Skip the refresh when we are about to declare arrival anyway -
             // paying for a route to a point 100 m away is money for nothing.
@@ -314,6 +352,9 @@ const syncRideProgress = async (technician, lat, lon) => {
                         : null;
                     ticket.ride.encodedPolyline = route.encodedPolyline ?? null;
                     ticket.ride.computedAt = now;
+
+                    // The new line is drawn from where he is, so he is on it.
+                    ticket.ride.offRouteSince = null;
                 }
             }
         }
@@ -379,6 +420,19 @@ const syncRideProgress = async (technician, lat, lon) => {
                 distanceMeters: ticket.ride?.distanceMeters ?? null,
                 encodedPolyline: ticket.ride?.encodedPolyline || null,
                 nearPlace: ticket.ride?.nearPlace || null,
+
+                /*
+                 * Whether the line on their screen still describes him.
+                 *
+                 * Sent rather than worked out on each phone, because the
+                 * server is the one holding both the line and the fix - and
+                 * because it has already waited for a second fix before
+                 * believing it. A screen that knows he is off the road can
+                 * stop drawing that road at once, which is the whole of "the
+                 * line should move with the bike"; the real new route follows
+                 * a few seconds later.
+                 */
+                offRoute: Boolean(ticket.ride?.offRouteSince),
             });
         }
 

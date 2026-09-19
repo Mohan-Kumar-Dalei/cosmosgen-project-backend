@@ -142,6 +142,9 @@ const getTracking = async (req, res) => {
                     // Roughly where he is, in words. Worked out on the server
                     // so one lookup serves every screen watching this job.
                     nearPlace: ticket.ride?.nearPlace || null,
+
+                    // Whether the line still describes him - see ride.service.
+                    offRoute: Boolean(ticket.ride?.offRouteSince),
                 },
             },
         });
