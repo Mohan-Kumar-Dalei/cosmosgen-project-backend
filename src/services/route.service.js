@@ -70,12 +70,18 @@ const computeRoute = async (origin, destination, { heading } = {}) => {
         ? Math.round((((Number(heading) % 360) + 360) % 360))
         : null;
 
-    const ask = (travelMode) => axios.post(
+    const ask = (travelMode, pointing) => axios.post(
         ROUTES_URL,
         {
             origin: {
-                location: { latLng: { latitude: oLat, longitude: oLon } },
-                ...(facing === null ? {} : { heading: facing }),
+                // The heading belongs to the location, not to the waypoint
+                // around it. Sent a level up it is not an unknown field that
+                // Google ignores - it refuses the whole request, and a refused
+                // request means no route at all.
+                location: {
+                    latLng: { latitude: oLat, longitude: oLon },
+                    ...(pointing === null ? {} : { heading: pointing }),
+                },
             },
             destination: { location: { latLng: { latitude: dLat, longitude: dLon } } },
             travelMode,
@@ -103,16 +109,41 @@ const computeRoute = async (origin, destination, { heading } = {}) => {
         keyring.count("google");
         mapUsage.record("routes");
 
-        let response = await ask(RIDE_MODE).catch(() => {
-            console.warn("[ROUTE] " + RIDE_MODE + " refused, asking for DRIVE instead");
-            return ask("DRIVE");
-        });
+        /*
+         * Ask the best question first, and keep asking simpler ones.
+         *
+         * A route that comes back null is not a missing ETA - it leaves the
+         * ticket carrying the line it already had, so the customer's map holds
+         * a road the rider has left and stops moving until something else
+         * rescues it. That is precisely what one rejected field did: the
+         * heading was sent a level too high, Google refused every request, and
+         * the bike sat still for a whole journey.
+         *
+         * So the fall back goes all the way down to the plainest request there
+         * is. Anything that still fails after that is Google being down, and
+         * there is nothing to ask for.
+         */
+        const attempts = [
+            [RIDE_MODE, facing],
+            ["DRIVE", facing],
+            [RIDE_MODE, null],
+            ["DRIVE", null],
+        ];
 
-        if (!response?.data?.routes?.[0] && RIDE_MODE !== "DRIVE") {
-            response = await ask("DRIVE");
+        let route = null;
+
+        for (const [mode, pointing] of attempts) {
+            const response = await ask(mode, pointing).catch((error) => {
+                console.warn(
+                    "[ROUTE] " + mode + (pointing === null ? "" : " with a heading")
+                    + " refused: " + (error.response?.data?.error?.message || error.message)
+                );
+                return null;
+            });
+
+            route = response?.data?.routes?.[0] || null;
+            if (route) break;
         }
-
-        const route = response.data?.routes?.[0];
         if (!route) {
             console.warn("[ROUTE] No route found between the two points");
             return null;
