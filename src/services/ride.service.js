@@ -99,6 +99,18 @@ const DRIFT_RECHECK_MS = 8 * 1000;
 const DRIFT_RECHECK_METRES = 100;
 
 /**
+ * And how far, when there is no line on the screen at all.
+ *
+ * Half as far, because the two situations are not equally bad. Off the drawn
+ * line the customer is still watching a road, and it is only a hundred metres
+ * out of date. On the bow there is no road at all - he can see the direction
+ * and the distance and nothing else - so every extra second of it costs more
+ * than the call that ends it. Fifty metres is about twelve seconds on a bike,
+ * which is how quickly the line comes back once he is on a road the map has.
+ */
+const NO_LINE_RECHECK_METRES = 50;
+
+/**
  * When the road Google offers is not the journey he is making.
  *
  * Some of the lanes a vendor rides are not in the map as roads at all. Asked
@@ -444,7 +456,9 @@ const syncRideProgress = async (technician, lat, lon) => {
                 !alreadyArrived &&
                 distance > ARRIVAL_RADIUS_METRES &&
                 (age > ETA_RECOMPUTE_MS
-                    || ((lost || noLine) && age > DRIFT_RECHECK_MS && goneSince > DRIFT_RECHECK_METRES));
+                    || ((lost || noLine)
+                        && age > DRIFT_RECHECK_MS
+                        && goneSince > (noLine ? NO_LINE_RECHECK_METRES : DRIFT_RECHECK_METRES)));
 
             if (worthRefreshing) {
                 /*
