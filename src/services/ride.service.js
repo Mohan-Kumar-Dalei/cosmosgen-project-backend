@@ -70,13 +70,33 @@ const PLACE_RECHECK_METRES = 200;
 /**
  * The floor between drift-triggered refreshes, so this cannot loop.
  *
- * Fifteen seconds rather than a minute. A route costs a call and a minute was
- * the cautious figure; the cost of being slow is the customer watching a
- * marker stand still on a bow while the road is redrawn, which is worse than
- * the call. The settle above is what stops noise spending it - six seconds of
- * that is inside this, so a shortcut is answered in about fifteen.
+ * Eight seconds rather than a minute, and once fifteen. A route costs a call
+ * and a minute was the cautious figure; the cost of being slow is the customer
+ * watching a marker ride away from the road it is supposed to be on, which is
+ * worse than the call. The settle above is what stops noise spending it - six
+ * seconds of that is inside this, so a shortcut is answered in about eight.
  */
-const DRIFT_RECHECK_MS = 15 * 1000;
+const DRIFT_RECHECK_MS = 8 * 1000;
+
+/**
+ * And how far he has to have gone since the last one.
+ *
+ * Time on its own was the wrong measure for a vendor who rides his own way.
+ * The customer's line is redrawn from where he is, he carries on down the lane
+ * he knows, and eight seconds later the line describes him no better than it
+ * did before - so the clock alone would buy a route every eight seconds for
+ * the whole journey, which is real money for a line that is always a little
+ * behind him anyway.
+ *
+ * Distance is the honest trigger: a line drawn from a point a hundred metres
+ * back is a line worth replacing, and one drawn from thirty metres back is
+ * not. A rider who stops off the route buys nothing at all, and a mile of his
+ * own lanes costs about sixteen calls rather than two hundred.
+ *
+ * It is measured from where the route was drawn from - the first point of the
+ * line itself - because that is the place it describes.
+ */
+const DRIFT_RECHECK_METRES = 100;
 
 /** Great-circle metres between two points. */
 const metresBetween = (aLat, aLon, bLat, bLon) => {
@@ -106,9 +126,7 @@ const metresBetween = (aLat, aLon, bLat, bLon) => {
 /** Already at the door - no point naming where he is. */
 const hasArrivedAlready = (ticket) => Boolean(ticket.ride?.arrivedAt);
 
-const metresFromRoute = (encoded, lat, lon) => {
-    if (!encoded) return null;
-
+const decodeLine = (encoded) => {
     const points = [];
     let index = 0;
     let plat = 0;
@@ -140,6 +158,29 @@ const metresFromRoute = (encoded, lat, lon) => {
 
         points.push([plat / 1e5, plon / 1e5]);
     }
+
+    return points;
+};
+
+/**
+ * Where the line the customer is looking at was drawn from.
+ *
+ * Google snaps the origin it is given to the nearest road, so this is within a
+ * few metres of where the technician was when the route was bought - which is
+ * what makes "how far has he gone since then" answerable without keeping a
+ * second copy of it on the ticket.
+ */
+const routeBegins = (encoded) => {
+    if (!encoded) return null;
+
+    const points = decodeLine(encoded);
+    return points.length ? { lat: points[0][0], lon: points[0][1] } : null;
+};
+
+const metresFromRoute = (encoded, lat, lon) => {
+    if (!encoded) return null;
+
+    const points = decodeLine(encoded);
 
     if (points.length < 2) return null;
 
@@ -334,12 +375,28 @@ const syncRideProgress = async (technician, lat, lon) => {
 
             const lost = strayed;
 
+            /*
+             * How far he has come since this line was drawn.
+             *
+             * A vendor who knows the area does not follow the road we drew: he
+             * rides the lanes he knows, and the customer is left watching a
+             * bike beside a line that belongs to a journey nobody is making.
+             * The answer is to draw it again from where he is - and to keep
+             * doing that as he goes, which is what makes the drawn road end up
+             * being the road he actually took.
+             */
+            const drawnFrom = routeBegins(ticket.ride?.encodedPolyline);
+            const goneSince = drawnFrom
+                ? metresBetween(lat, lon, drawnFrom.lat, drawnFrom.lon)
+                : Infinity;
+
             // Skip the refresh when we are about to declare arrival anyway -
             // paying for a route to a point 100 m away is money for nothing.
             const worthRefreshing =
                 !alreadyArrived &&
                 distance > ARRIVAL_RADIUS_METRES &&
-                (age > ETA_RECOMPUTE_MS || (lost && age > DRIFT_RECHECK_MS));
+                (age > ETA_RECOMPUTE_MS
+                    || (lost && age > DRIFT_RECHECK_MS && goneSince > DRIFT_RECHECK_METRES));
 
             if (worthRefreshing) {
                 const route = await routeService.computeRoute(
