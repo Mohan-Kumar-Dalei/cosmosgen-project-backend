@@ -216,7 +216,19 @@ const LANG_FIELD = { english: "en", hinglish: "hinglish", odia: "odia" };
 
 const getServices = async (req, res) => {
     try {
-        const lang = LANG_FIELD[asLanguage(req.query.language)] || LANG_FIELD[asLanguage(req.user?.language)] || "en";
+        /*
+         * Only what was asked for, never what is on the account.
+         *
+         * It used to fall back to the customer's saved language, which is how
+         * an English app ended up with Odia service names on one screen: the
+         * app was not asking for a translation at all, the account was
+         * answering for it.
+         *
+         * That choice belongs to the two channels that talk in sentences - the
+         * WhatsApp assistant and the call before a job. A screen with its own
+         * headings, buttons and labels in English is not one of them.
+         */
+        const lang = LANG_FIELD[asLanguage(req.query.language)] || "en";
 
         /*
          * Two shapes, one rule.
