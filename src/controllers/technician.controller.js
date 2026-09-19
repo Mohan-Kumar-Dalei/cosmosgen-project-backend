@@ -1447,15 +1447,15 @@ const billVisitCharge = async (req, res) => {
             { upsert: true }
         );
 
+        const say = await notification.speaks(ticket);
+
         await notification.notifyCustomer({
             ticket,
-            text:
-                "*VISIT CHARGE " + invoiceNumber + "*\n" +
-                "Ticket: " + ticket.ticketNumber + "\n\n" +
-                "Our technician visited and checked the problem. As you have decided not to " +
-                "go ahead, only the visit charge applies.\n\n" +
-                "*Total: Rs " + paymentService.paiseToRupees(bill.totalPaise) + "*\n\n" +
-                "Please pay this in cash to the technician.",
+            text: say.visitChargeBill(
+                invoiceNumber,
+                ticket.ticketNumber,
+                paymentService.paiseToRupees(bill.totalPaise)
+            ),
         });
 
         return res.status(200).json({
@@ -2069,20 +2069,25 @@ const collectCash = async (req, res) => {
 
         await promoteQueuedTicket(req.technician._id);
 
+        const said = await notification.speaks(updated);
+        const total = paymentService.paiseToRupees(updated.billing?.totalPaise);
+
+        /*
+         * The split is left in figures on purpose.
+         *
+         * "Rs 400 cash + Rs 600 online" is the same sentence in every language
+         * and the two words in it are the two everybody here uses anyway.
+         */
+        const split = isSplit
+            ? "(Rs " + paymentService.paiseToRupees(cashTakenPaise) + " cash + Rs "
+                + paymentService.paiseToRupees(updated.payment?.split?.companyOnlinePaise) + " online)"
+            : "";
+
         await notification.notifyCustomer({
             ticket: updated,
             text: wasRefused
-                ? "Visit charge received. Rs " + paymentService.paiseToRupees(updated.billing?.totalPaise) + "\n" +
-                  "Invoice: " + updated.billing?.invoiceNumber + "\n\n" +
-                  "Thank you for your time. Ticket " + updated.ticketNumber + " is now closed. " +
-                  "message us any time if you change your mind."
-                : "Payment received. Rs " + paymentService.paiseToRupees(updated.billing?.totalPaise) + "\n" +
-                (isSplit
-                    ? "(Rs " + paymentService.paiseToRupees(cashTakenPaise) + " cash + Rs " +
-                      paymentService.paiseToRupees(updated.payment?.split?.companyOnlinePaise) + " online)\n"
-                    : "") +
-                "Invoice: " + updated.billing?.invoiceNumber + "\n\n" +
-                "Thank you for choosing Cosmosgen. Ticket " + updated.ticketNumber + " is now closed.",
+                ? said.visitChargePaid(total, updated.billing?.invoiceNumber, updated.ticketNumber)
+                : said.paymentDone(total, updated.billing?.invoiceNumber, updated.ticketNumber, split),
         });
 
         /*

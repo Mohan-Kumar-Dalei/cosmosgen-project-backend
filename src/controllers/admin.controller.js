@@ -1214,14 +1214,17 @@ const rescheduleTicket = async (req, res) => {
 
         const dateStr = newDate.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 
+        // Their own language, like everything else they are sent - see speaks().
+        const say = await notification.speaks(updated);
+
         await notification.notifyCustomer({
             ticket: updated,
-            text:
-                "Your service visit has been moved.\n\n" +
-                "Ticket: " + updated.ticketNumber + "\n" +
-                "New date: " + dateStr + (slotWindow ? " (" + slotWindow + ")" : "") + "\n" +
-                "Technician: " + tech.name + " (" + tech.phone + ")\n\n" +
-                "Reply to this message if the new time doesn't work for you.",
+            text: say.rescheduled(
+                updated.ticketNumber,
+                dateStr + (slotWindow ? " (" + slotWindow + ")" : ""),
+                tech.name,
+                tech.phone
+            ),
         });
 
         notification.notifyTechnicianQueued(updated);

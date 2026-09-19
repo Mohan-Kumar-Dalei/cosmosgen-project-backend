@@ -905,7 +905,7 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * it forgets, the reply simply goes out as text and the customer types,
      * exactly as before.
      */
-    const { text: reply, asksToBook, asksAddress } = aiService.readBooking(raw);
+    const { text: reply, asksToBook, asksAddress, asksService } = aiService.readBooking(raw);
 
     /*
      * Buttons only where WhatsApp will actually take them.
@@ -934,6 +934,28 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * refuses the interactive message for any reason, the question still goes
      * out as text and the customer can type the label as before.
      */
+    /*
+     * The four services, as the list they already are everywhere else.
+     *
+     * Same reasoning as the addresses below: the assistant's own line is the
+     * body, and the choice is a tap. A tap also puts the customer back on the
+     * guided flow - machine, then fault - which is where the good booking
+     * details come from.
+     */
+    if (asksService && reply.length > 0 && reply.length <= 1024) {
+        const t = copyFor(convo.language);
+
+        sent = await whatsapp.sendList(convo.phone, {
+            body: reply,
+            buttonText: t.serviceButton,
+            sectionTitle: t.serviceSection,
+            rows: SERVICE_CATALOG.map((service) => ({
+                id: "svc_" + service.key,
+                title: displayLabel(service, convo.language),
+            })),
+        });
+    }
+
     const saved = asksAddress ? (user.addresses || []) : [];
 
     if (saved.length > 1 && reply.length > 0 && reply.length <= 1024) {
@@ -980,6 +1002,21 @@ const runAI = async (convo, userMessage, opts = {}) => {
     // Store the customer's own words, not the wrapped version - system notes
     // and memory blocks would otherwise stack up in history every turn
     saveTurnInBackground({ chatId, user, userId, userMessage, reply });
+
+    /*
+     * A menu was just sent, so the next message is a choice, not an answer.
+     *
+     * Leaving the step in diagnosis would have the tap arrive somewhere that
+     * was not expecting it, and the whole point of offering the list is that
+     * it starts the guided flow again.
+     */
+    if (asksService && sent) {
+        convo.selectedServiceKey = undefined;
+        convo.selectedApplianceKey = undefined;
+        convo.selectedIssues = [];
+        convo.step = "AWAITING_SERVICE";
+        return;
+    }
 
     // Look for an open ticket in THIS service. A customer with a cleaning job
     // running should still be able to talk through a separate AC problem.

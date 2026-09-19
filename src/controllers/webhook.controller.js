@@ -320,12 +320,17 @@ const handleRazorpayEvent = async (event) => {
         await promoteQueuedTicket(ticket.technician);
     }
 
+    // Their own language, as with every other message - see speaks().
+    const said = await notification.speaks(ticket);
+
     await notification.notifyCustomer({
         ticket,
-        text:
-            "Payment received. Rs " + paiseToRupees(ticket.billing?.totalPaise || 0) + "\n" +
-            "Invoice: " + ticket.billing?.invoiceNumber + "\n\n" +
-            "Thank you for choosing Cosmosgen. Ticket " + ticket.ticketNumber + " is now closed.",
+        text: said.paymentDone(
+            paiseToRupees(ticket.billing?.totalPaise || 0),
+            ticket.billing?.invoiceNumber,
+            ticket.ticketNumber,
+            ""
+        ),
     });
 
     notification.notifyTechnicianPaymentReceived(ticket);

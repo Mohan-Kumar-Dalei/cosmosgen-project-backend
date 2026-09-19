@@ -88,6 +88,36 @@ const COPY = {
             "*" + code + "* is your code to confirm the work is finished.\n\n" +
             "Ticket: " + number + "\n\n" +
             "Share it only once you are happy the job is done.",
+
+        rescheduled: (number, date, who, phone) =>
+            "Your service visit has been moved.\n\n" +
+            "Ticket: " + number + "\n" +
+            "New date: " + date + "\n" +
+            "Technician: " + who + " (" + phone + ")\n\n" +
+            "Reply to this message if the new time doesn't work for you.",
+
+        visitChargeBill: (invoice, number, total) =>
+            "*VISIT CHARGE " + invoice + "*\n" +
+            "Ticket: " + number + "\n\n" +
+            "Our technician came out and checked the problem. As you have decided not " +
+            "to go ahead, only the visit charge applies.\n\n" +
+            "*Total: Rs " + total + "*\n\n" +
+            "Please pay this in cash to the technician.",
+
+        visitChargePaid: (total, invoice, number) =>
+            "Visit charge received. Rs " + total + "\n" +
+            "Invoice: " + invoice + "\n\n" +
+            "Thank you for your time. Ticket " + number + " is now closed. " +
+            "Message us any time if you change your mind.",
+
+        paymentDone: (total, invoice, number, split) =>
+            "Payment received. Rs " + total + "\n" +
+            (split ? split + "\n" : "") +
+            "Invoice: " + invoice + "\n\n" +
+            "Thank you for choosing Cosmosgen. Ticket " + number + " is now closed.",
+
+        invoiceCaption: (invoice, service) =>
+            "Invoice " + invoice + " for " + service + ".",
         ownWords: "No problem - tell me what's happening in your own words.",
         aiUnavailable: "Sorry, I could not process that just now. Please try again in a moment.",
     },
@@ -133,6 +163,36 @@ const COPY = {
             "*" + code + "* aapka code hai, kaam pura hone ki confirmation ke liye.\n\n" +
             "Ticket: " + number + "\n\n" +
             "Ye tabhi batayein jab aap kaam se santusht hon.",
+
+        rescheduled: (number, date, who, phone) =>
+            "Aapki service visit aage badha di gayi hai.\n\n" +
+            "Ticket: " + number + "\n" +
+            "Nayi date: " + date + "\n" +
+            "Technician: " + who + " (" + phone + ")\n\n" +
+            "Naya time theek na ho to is message ka reply kar dijiye.",
+
+        visitChargeBill: (invoice, number, total) =>
+            "*VISIT CHARGE " + invoice + "*\n" +
+            "Ticket: " + number + "\n\n" +
+            "Hamara technician aakar problem dekh chuka hai. Aapne kaam aage na " +
+            "karwane ka faisla kiya hai, isliye sirf visit charge lagega.\n\n" +
+            "*Total: Rs " + total + "*\n\n" +
+            "Ye technician ko cash mein de dijiye.",
+
+        visitChargePaid: (total, invoice, number) =>
+            "Visit charge mil gaya. Rs " + total + "\n" +
+            "Invoice: " + invoice + "\n\n" +
+            "Aapke waqt ke liye shukriya. Ticket " + number + " ab band ho gaya hai. " +
+            "Mann badle to kabhi bhi message kar dijiye.",
+
+        paymentDone: (total, invoice, number, split) =>
+            "Payment mil gaya. Rs " + total + "\n" +
+            (split ? split + "\n" : "") +
+            "Invoice: " + invoice + "\n\n" +
+            "Cosmosgen chunne ke liye shukriya. Ticket " + number + " ab band ho gaya hai.",
+
+        invoiceCaption: (invoice, service) =>
+            service + " ka invoice " + invoice + ".",
         bookYes: "Haan, book karein",
         bookNo: "Abhi nahi",
         ownWords: "Koi baat nahi - apne shabdon mein bataiye kya ho raha hai.",
@@ -216,6 +276,36 @@ const COPY = {
             "*" + code + "* ହେଉଛି କାମ ସରିଛି ବୋଲି ନିଶ୍ଚିତ କରିବାର code।\n\n" +
             "Ticket: " + number + "\n\n" +
             "କାମରେ ସନ୍ତୁଷ୍ଟ ହେଲା ପରେ ହିଁ ଏହା ଦିଅନ୍ତୁ।",
+
+        rescheduled: (number, date, who, phone) =>
+            "ଆପଣଙ୍କ service visit ଟି ଆଗକୁ ବଢ଼ାଯାଇଛି।\n\n" +
+            "Ticket: " + number + "\n" +
+            "ନୂଆ ତାରିଖ: " + date + "\n" +
+            "Technician: " + who + " (" + phone + ")\n\n" +
+            "ନୂଆ ସମୟ ଠିକ୍ ନ ହେଲେ ଏହି message ର reply କରନ୍ତୁ।",
+
+        visitChargeBill: (invoice, number, total) =>
+            "*VISIT CHARGE " + invoice + "*\n" +
+            "Ticket: " + number + "\n\n" +
+            "ଆମର technician ଆସି ସମସ୍ୟା ଦେଖିସାରିଛନ୍ତି। ଆପଣ କାମ ଆଗକୁ ନ କରାଇବାକୁ ସ୍ଥିର " +
+            "କରିଥିବାରୁ କେବଳ visit charge ଲାଗିବ।\n\n" +
+            "*Total: Rs " + total + "*\n\n" +
+            "ଏହା technician ଙ୍କୁ cash ରେ ଦେଇଦିଅନ୍ତୁ।",
+
+        visitChargePaid: (total, invoice, number) =>
+            "Visit charge ମିଳିଗଲା। Rs " + total + "\n" +
+            "Invoice: " + invoice + "\n\n" +
+            "ଆପଣଙ୍କ ସମୟ ପାଇଁ ଧନ୍ୟବାଦ। Ticket " + number + " ବନ୍ଦ ହୋଇଗଲା। " +
+            "ମନ ବଦଳିଲେ ଯେକୌଣସି ସମୟରେ message କରନ୍ତୁ।",
+
+        paymentDone: (total, invoice, number, split) =>
+            "Payment ମିଳିଗଲା। Rs " + total + "\n" +
+            (split ? split + "\n" : "") +
+            "Invoice: " + invoice + "\n\n" +
+            "Cosmosgen ବାଛିଥିବାରୁ ଧନ୍ୟବାଦ। Ticket " + number + " ବନ୍ଦ ହୋଇଗଲା।",
+
+        invoiceCaption: (invoice, service) =>
+            service + " ପାଇଁ invoice " + invoice + "।",
         bookYes: "ହଁ, book କରନ୍ତୁ",
         bookNo: "ଏବେ ନୁହେଁ",
 

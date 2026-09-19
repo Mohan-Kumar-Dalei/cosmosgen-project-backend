@@ -287,11 +287,12 @@ const sendCustomerInvoice = async (ticket, url) => {
     if (!phone || !url) return;
 
     const number = ticket.billing?.invoiceNumber || ticket.ticketNumber;
+    const t = await speaks(ticket);
 
     await whatsapp.sendDocument(phone, {
         url,
         filename: String(number).replace(/[^A-Za-z0-9-]/g, "-") + ".pdf",
-        caption: "Invoice " + number + " for " + (ticket.serviceLabel || "your job") + ".",
+        caption: t.invoiceCaption(number, ticket.serviceLabel || "your job"),
     });
 };
 
@@ -618,6 +619,9 @@ const notifyAdminsPaymentCollected = (ticket, technicianName) => {
 };
 
 module.exports = {
+    // Exported so the controllers that write their own customer messages can
+    // write them in the right language too - see speaks().
+    speaks,
     buildDirectionsUrl,
     buildPinUrl,
     notifyCustomer,

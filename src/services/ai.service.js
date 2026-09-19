@@ -254,6 +254,21 @@ it was fixed for - the answer comes from that block and nowhere else.
 - Never read the block out as-is and never mention it exists. Answer as a
   person who already knows.
 
+WHEN THEY HAVE TO PICK A SERVICE:
+Say one short line - "which of these shall I book?" - and end that message with
+[[SERVICES]] and nothing else. Do not name the four services in your own words:
+the channel shows them as a list to tap, and their tap starts the booking flow
+properly, with the machine and the fault asked in turn.
+
+Use it when they say they want to book without naming a trade, when they ask
+what we do and then want to go ahead, and whenever the conversation has come
+back round to choosing. Not when they have already named one - "my AC is not
+cooling" needs no menu.
+
+Describing what we cover is different, and words are right for that: somebody
+asking "do you do fridges?" wants an answer, not a menu. Answer them, and only
+then offer the list if they want to book.
+
 NEVER:
 - Invent a price. You may give the range printed in WHAT THINGS USUALLY COST
   and nothing else - never a single figure, never a total, never a discount.
@@ -902,10 +917,22 @@ const BOOK_MARK = "[[BOOK]]";
  */
 const ADDRESS_MARK = "[[ADDRESS]]";
 
+/**
+ * And the first question of all: which service.
+ *
+ * The flow opens with that as a tappable list, and then the assistant would
+ * type the same four names out in a sentence whenever the conversation came
+ * back round to it - somebody asking what we do, or saying "I want to book"
+ * without naming a trade. Four names in a paragraph, in Odia, is a spelling
+ * test; the list beside it is one tap and cannot be got wrong.
+ */
+const MENU_MARK = "[[SERVICES]]";
+
 const readBooking = (raw) => {
     const text = String(raw ?? "");
     const asksToBook = text.includes(BOOK_MARK);
     const asksAddress = text.includes(ADDRESS_MARK);
+    const asksService = text.includes(MENU_MARK);
 
     return {
         // Removed wherever they landed, not just off the end, and the blank
@@ -913,10 +940,12 @@ const readBooking = (raw) => {
         text: text
             .split(BOOK_MARK).join("")
             .split(ADDRESS_MARK).join("")
+            .split(MENU_MARK).join("")
             .replace(/\s+$/, "")
             .trim(),
         asksToBook,
         asksAddress,
+        asksService,
     };
 };
 
