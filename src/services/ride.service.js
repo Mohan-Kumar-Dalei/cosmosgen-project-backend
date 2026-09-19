@@ -222,6 +222,34 @@ const syncRideProgress = async (technician, lat, lon) => {
          * would quietly put the screen back to "Finding somebody".
          */
         const started = Boolean(ticket.ride?.startedAt || ticket.acceptedAt);
+
+        /*
+         * No route until somebody has agreed to come.
+         *
+         * The route used to be worked out from the very first position that
+         * arrived, on the reasoning that a line is information and only the
+         * announcement should wait. In front of a customer that reads as a
+         * promise: they see the full blue road route drawn from a vendor who
+         * has not accepted the job and may hand it straight back.
+         *
+         * Mohan's rule is the one every delivery app follows. Before the
+         * accept: a dashed arc from him to the door and a man standing still.
+         * After it: the road route and the bike. So nothing is computed here
+         * until he has said yes - which also means an offer that is refused
+         * costs no Routes call at all.
+         *
+         * His position still goes out, because the arc is drawn from it.
+         */
+        if (!started) {
+            if (ticket.tracking?.token) {
+                emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
+                    stage: "assigned",
+                    technicianAt: { lat, lon, at: now },
+                });
+            }
+            return;
+        }
+
         const isFirstFix = !ticket.ride?.computedAt;
 
         if (isFirstFix) {

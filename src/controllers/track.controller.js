@@ -148,7 +148,24 @@ const getTracking = async (req, res) => {
                     landmark: customer.landmark || null,
                 },
 
-                ride: {
+                /*
+                 * Nothing of the ride until somebody has accepted.
+                 *
+                 * A route left over from a vendor who handed the job back is
+                 * still on the ticket until the next one sets off, and drawing
+                 * it would show the customer a road line from a man who is not
+                 * coming. Before the accept the page has the arc and that is
+                 * the whole truth - see the note in ride.service.
+                 */
+                ride: !accepted ? {
+                    startedAt: null,
+                    arrivedAt: null,
+                    etaSeconds: null,
+                    etaAt: null,
+                    distanceMeters: null,
+                    encodedPolyline: null,
+                    nearPlace: null,
+                } : {
                     startedAt: ticket.ride?.startedAt || null,
                     arrivedAt: ticket.ride?.arrivedAt || null,
                     etaSeconds: ticket.ride?.etaSeconds ?? null,
