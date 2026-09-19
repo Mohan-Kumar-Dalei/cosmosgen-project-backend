@@ -63,6 +63,31 @@ const COPY = {
         // to more than one of them. A list button is capped at 20 characters.
         addressButton: "Choose address",
         addressSection: "Your addresses",
+
+        /*
+         * The handful of messages the office sends rather than the assistant.
+         *
+         * They were written in English and sent in English to everybody, which
+         * on an Odia thread reads as a different company talking. The
+         * assistant has spoken their language since the first message; these
+         * are the only lines that did not, and they are the ones that matter
+         * most - a code at the door and a bill.
+         */
+        ticketCancelled: (number, reason) =>
+            "Your service request has been cancelled.\n\n" +
+            "Ticket: " + number + "\n" +
+            "Reason: " + reason + "\n\n" +
+            "Send us a message anytime if you'd like to book again.",
+
+        otpStart: (code, number) =>
+            "*" + code + "* is your code to let the technician start.\n\n" +
+            "Ticket: " + number + "\n\n" +
+            "Share it with them when they are at your door.",
+
+        otpClose: (code, number) =>
+            "*" + code + "* is your code to confirm the work is finished.\n\n" +
+            "Ticket: " + number + "\n\n" +
+            "Share it only once you are happy the job is done.",
         ownWords: "No problem - tell me what's happening in your own words.",
         aiUnavailable: "Sorry, I could not process that just now. Please try again in a moment.",
     },
@@ -92,6 +117,22 @@ const COPY = {
 
         addressButton: "Address chunein",
         addressSection: "Aapke addresses",
+
+        ticketCancelled: (number, reason) =>
+            "Aapki service request cancel kar di gayi hai.\n\n" +
+            "Ticket: " + number + "\n" +
+            "Wajah: " + reason + "\n\n" +
+            "Dobara book karna ho to bas message kar dijiye.",
+
+        otpStart: (code, number) =>
+            "*" + code + "* aapka code hai, jisse technician kaam shuru karega.\n\n" +
+            "Ticket: " + number + "\n\n" +
+            "Jab wo darwaze par ho, tabhi ye code batayein.",
+
+        otpClose: (code, number) =>
+            "*" + code + "* aapka code hai, kaam pura hone ki confirmation ke liye.\n\n" +
+            "Ticket: " + number + "\n\n" +
+            "Ye tabhi batayein jab aap kaam se santusht hon.",
         bookYes: "Haan, book karein",
         bookNo: "Abhi nahi",
         ownWords: "Koi baat nahi - apne shabdon mein bataiye kya ho raha hai.",
@@ -159,6 +200,22 @@ const COPY = {
 
         addressButton: "Address ବାଛନ୍ତୁ",
         addressSection: "ଆପଣଙ୍କ address",
+
+        ticketCancelled: (number, reason) =>
+            "ଆପଣଙ୍କ service request ଟି cancel ହୋଇଯାଇଛି।\n\n" +
+            "Ticket: " + number + "\n" +
+            "କାରଣ: " + reason + "\n\n" +
+            "ପୁଣି book କରିବାକୁ ଚାହିଁଲେ ଆମକୁ message କରନ୍ତୁ।",
+
+        otpStart: (code, number) =>
+            "*" + code + "* ହେଉଛି ଆପଣଙ୍କ code, ଯାହା ଦେଲେ technician କାମ ଆରମ୍ଭ କରିବେ।\n\n" +
+            "Ticket: " + number + "\n\n" +
+            "ସେ ଆପଣଙ୍କ ଦ୍ୱାରରେ ପହଞ୍ଚିଲା ପରେ ହିଁ ଏହା ଦିଅନ୍ତୁ।",
+
+        otpClose: (code, number) =>
+            "*" + code + "* ହେଉଛି କାମ ସରିଛି ବୋଲି ନିଶ୍ଚିତ କରିବାର code।\n\n" +
+            "Ticket: " + number + "\n\n" +
+            "କାମରେ ସନ୍ତୁଷ୍ଟ ହେଲା ପରେ ହିଁ ଏହା ଦିଅନ୍ତୁ।",
         bookYes: "ହଁ, book କରନ୍ତୁ",
         bookNo: "ଏବେ ନୁହେଁ",
 

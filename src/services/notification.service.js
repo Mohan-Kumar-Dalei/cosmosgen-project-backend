@@ -4,6 +4,33 @@ const { issueToken } = require("./track.service");
 const Conversation = require("../models/conversation.model");
 const { emitToRoom, userRoom, techRoom, adminRoom, roomSize } = require("../sockets/socket.instance");
 const push = require("./push.service");
+const userModel = require("../models/user.model");
+const { copyFor } = require("../config/copy");
+
+/**
+ * The language this customer chose, for the few messages we write ourselves.
+ *
+ * The assistant has answered in it since the first turn - it is handed the
+ * choice on every call - but these lines are the office speaking, not the
+ * assistant, and they were written once in English and sent to everybody. On
+ * an Odia thread that reads as a second, colder company; and the two that
+ * matter most are a code somebody reads out at their own door and a bill.
+ *
+ * English is the fallback, as it is everywhere else here: a customer who never
+ * picked is a customer who was never asked.
+ */
+const speaks = async (ticket) => {
+    try {
+        const user = await userModel
+            .findById(ticket.customer)
+            .select("language languageConfirmedAt")
+            .lean();
+
+        return copyFor(user?.languageConfirmedAt ? user.language : null);
+    } catch {
+        return copyFor(null);
+    }
+};
 
 // Google Maps deep link - no API key, no cost. Opens the Maps app with
 // navigation ready to go.
@@ -136,14 +163,11 @@ const notifyCustomerAccepted = async (ticket) => notifyCustomerAssigned(ticket);
  * has to be standing in front of them to learn it.
  */
 const sendCustomerOtp = async (ticket, code, purpose) => {
-    const text =
-        purpose === "close"
-            ? "*" + code + "* is your code to confirm the work is finished.\n\n" +
-              "Ticket: " + ticket.ticketNumber + "\n\n" +
-              "Share it with the technician only once you are happy the job is done."
-            : "*" + code + "* is your code to let the technician start.\n\n" +
-              "Ticket: " + ticket.ticketNumber + "\n\n" +
-              "Share it with them when they are at your door.";
+    const t = await speaks(ticket);
+
+    const text = purpose === "close"
+        ? t.otpClose(code, ticket.ticketNumber)
+        : t.otpStart(code, ticket.ticketNumber);
 
     await notifyCustomer({ ticket, text });
 };
@@ -206,11 +230,12 @@ const notifyCustomerArrived = async (ticket) => {
 };
 
 const notifyCustomerCancelled = async (ticket) => {
-    const text =
-        "Your service request has been cancelled.\n\n" +
-        "Ticket: " + ticket.ticketNumber + "\n" +
-        "Reason: " + (ticket.cancelReason || "Not specified") + "\n\n" +
-        "Send us a message anytime if you'd like to book again.";
+    const t = await speaks(ticket);
+
+    const text = t.ticketCancelled(
+        ticket.ticketNumber,
+        ticket.cancelReason || "Not specified"
+    );
 
     await notifyCustomer({ ticket, text });
 };
