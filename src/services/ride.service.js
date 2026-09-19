@@ -53,7 +53,7 @@ const ETA_RECOMPUTE_MS = 5 * 60 * 1000;
 const OFF_ROUTE_METRES = 70;
 
 /** How long he has to stay off the line before it counts as a decision. */
-const OFF_ROUTE_SETTLE_MS = 6 * 1000;
+const OFF_ROUTE_SETTLE_MS = 4 * 1000;
 
 /*
  * How far the technician has to travel before we ask where he is.
@@ -70,45 +70,46 @@ const PLACE_RECHECK_METRES = 200;
 /**
  * The floor between drift-triggered refreshes, so this cannot loop.
  *
- * Eight seconds rather than a minute, and once fifteen. A route costs a call
- * and a minute was the cautious figure; the cost of being slow is the customer
+ * Six seconds rather than a minute, and once fifteen. A route costs a call and
+ * a minute was the cautious figure; the cost of being slow is the customer
  * watching a marker ride away from the road it is supposed to be on, which is
- * worse than the call. The settle above is what stops noise spending it - six
- * seconds of that is inside this, so a shortcut is answered in about eight.
+ * worse than the call. The settle above is what stops noise spending it - four
+ * seconds of that is inside this.
  */
-const DRIFT_RECHECK_MS = 8 * 1000;
+const DRIFT_RECHECK_MS = 6 * 1000;
 
 /**
  * And how far he has to have gone since the last one.
  *
  * Time on its own was the wrong measure for a vendor who rides his own way.
  * The customer's line is redrawn from where he is, he carries on down the lane
- * he knows, and eight seconds later the line describes him no better than it
- * did before - so the clock alone would buy a route every eight seconds for
- * the whole journey, which is real money for a line that is always a little
- * behind him anyway.
+ * he knows, and six seconds later the line describes him no better than it did
+ * before - so the clock alone would buy a route every six seconds for the whole
+ * journey, for a line that is always a little behind him anyway.
  *
- * Distance is the honest trigger: a line drawn from a point a hundred metres
- * back is a line worth replacing, and one drawn from thirty metres back is
- * not. A rider who stops off the route buys nothing at all, and a mile of his
- * own lanes costs about sixteen calls rather than two hundred.
+ * Distance is the honest trigger: a line drawn from a point fifty metres back
+ * is a line worth replacing, and one drawn from twenty metres back is not. A
+ * rider who stops off the route buys nothing at all.
  *
- * It is measured from where the route was drawn from - the first point of the
- * line itself - because that is the place it describes.
+ * This was a hundred, and a hundred metres is twenty-four seconds on a cycle -
+ * which is exactly the wait Mohan was asking about, a bike riding beside a road
+ * that is not its own for that long. Fifty halves it, and the calls it costs
+ * are inside the monthly allowance for any traffic this will see.
+ *
+ * It is measured from where the route was asked for, because that is the place
+ * it describes.
  */
-const DRIFT_RECHECK_METRES = 100;
+const DRIFT_RECHECK_METRES = 50;
 
 /**
  * And how far, when there is no line on the screen at all.
  *
- * Half as far, because the two situations are not equally bad. Off the drawn
- * line the customer is still watching a road, and it is only a hundred metres
- * out of date. On the bow there is no road at all - he can see the direction
- * and the distance and nothing else - so every extra second of it costs more
- * than the call that ends it. Fifty metres is about twelve seconds on a bike,
- * which is how quickly the line comes back once he is on a road the map has.
+ * Shorter still, because the two situations are not equally bad. Off the drawn
+ * line the customer is at least watching a road. On the bow there is no road at
+ * all - direction and distance and nothing else - so every extra second of it
+ * costs more than the call that ends it.
  */
-const NO_LINE_RECHECK_METRES = 50;
+const NO_LINE_RECHECK_METRES = 40;
 
 /**
  * When the road Google offers is not the journey he is making.
