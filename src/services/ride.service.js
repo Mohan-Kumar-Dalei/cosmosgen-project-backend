@@ -69,12 +69,13 @@ const PLACE_RECHECK_METRES = 200;
 /**
  * The floor between drift-triggered refreshes, so this cannot loop.
  *
- * Twenty seconds rather than a minute. A route costs a call and a minute was
- * the cautious figure; the cost of being slow is the customer watching a bike
- * ride away from its own line, which is worse than the call. The settle above
- * is what stops noise spending it.
+ * Fifteen seconds rather than a minute. A route costs a call and a minute was
+ * the cautious figure; the cost of being slow is the customer watching a
+ * marker stand still on a bow while the road is redrawn, which is worse than
+ * the call. The settle above is what stops noise spending it - six seconds of
+ * that is inside this, so a shortcut is answered in about fifteen.
  */
-const DRIFT_RECHECK_MS = 20 * 1000;
+const DRIFT_RECHECK_MS = 15 * 1000;
 
 /** Great-circle metres between two points. */
 const metresBetween = (aLat, aLon, bLat, bLon) => {
