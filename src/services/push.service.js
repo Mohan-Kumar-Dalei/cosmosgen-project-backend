@@ -1,3 +1,4 @@
+const errors = require("../config/sentry");
 const technicianModel = require("../models/technician.model");
 const userModel = require("../models/user.model");
 
@@ -207,6 +208,7 @@ const sendToCustomer = async (customerId, { title, body, data = {} }) => {
         console.log("[PUSH] sent to customer " + (user.name || customerId) + ": " + title);
     } catch (err) {
         console.error("[PUSH] customer send failed:", err.message);
+        errors.report(err, "push.customer", { customer: String(customerId || "") });
     }
 };
 

@@ -3,6 +3,7 @@ const Ticket = require("../models/ticket.model");
 const UserModel = require("../models/user.model");
 const { SERVICE_CATALOG, getServiceByKey } = require("../config/services");
 const { estimateBlock } = require("./estimate.service");
+const errors = require("../config/sentry");
 const { copyFor } = require("../config/copy");
 const notification = require("./notification.service");
 const booking = require("./booking.service");
@@ -886,6 +887,18 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
         return finalResponse.text;
     } catch (error) {
         console.error("AI error:", error.name, "-", error.message);
+
+        /*
+         * The customer is apologised to and the fault is reported.
+         *
+         * Every key busy, a model that has stopped answering, a prompt that
+         * has grown past the limit - the customer sees one polite line either
+         * way, which is right for them and is why this needs saying out loud
+         * somewhere else. A day of these is a day of lost bookings that looks,
+         * from the outside, like nothing happening at all.
+         */
+        errors.report(error, "ai.reply", { customer: String(userData?._id || userData?.id || "") });
+
         // The apology has to arrive in the language they chose - a Hindi
         // sentence to a customer chatting in English or Odia is the drift
         // they complained about, and it came from here, not the model.

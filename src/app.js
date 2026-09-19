@@ -1,3 +1,4 @@
+const errors = require("./config/sentry");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
@@ -111,6 +112,19 @@ app.use((req, res) => {
  * by throwing, and every one of those was reaching the phone as a bare 500.
  */
 app.use((err, req, res, _next) => {
+    /*
+     * Reported before it is answered.
+     *
+     * Everything that reaches here is a fault nobody wrote a catch for, which
+     * makes it exactly the kind worth being told about - and until now it was
+     * turned into a tidy JSON message and forgotten.
+     */
+    errors.report(err, "http", {
+        method: req.method,
+        path: req.originalUrl,
+        status: err?.status || 500,
+    });
+
     console.error("Unhandled error on " + req.method + " " + req.originalUrl + ":", err);
 
     if (res.headersSent) return;

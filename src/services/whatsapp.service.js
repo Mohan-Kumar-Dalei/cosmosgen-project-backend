@@ -1,3 +1,4 @@
+const errors = require("../config/sentry");
 const axios = require("axios");
 const keyring = require("./keyring.service");
 
@@ -121,6 +122,7 @@ const sendList = async (to, { body, buttonText, sectionTitle, rows }) => {
         return data;
     } catch (error) {
         console.error("WhatsApp list failed:", error.response?.data || error.message);
+        errors.report(error, "whatsapp.list");
         return null;
     }
 };

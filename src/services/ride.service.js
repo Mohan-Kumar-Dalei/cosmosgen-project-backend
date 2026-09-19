@@ -1,3 +1,4 @@
+const errors = require("../config/sentry");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const routeService = require("./route.service");
@@ -464,6 +465,14 @@ const syncRideProgress = async (technician, lat, lon) => {
         }
     } catch (error) {
         console.error("[RIDE] progress sync failed:", error.message);
+
+        /*
+         * Reported, because this is the catch that hid the worst bug of the
+         * week: a require cycle left the notifier undefined, every fix threw
+         * here, and the line above was the only trace - in a log file nobody
+         * had open. A customer's arrival message simply stopped existing.
+         */
+        errors.report(error, "ride.sync", { technician: String(technician?._id || "") });
     }
 };
 
