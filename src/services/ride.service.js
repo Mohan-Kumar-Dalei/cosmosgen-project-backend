@@ -140,15 +140,6 @@ const UNUSABLE_TIMES = 3.5;
 const UNUSABLE_EXTRA_METRES = 500;
 
 /**
- * How far ahead of him to ask, when where he is standing has no road.
- *
- * Far enough to clear the lane he is in and reach whatever the map does know,
- * near enough that it is still the same journey. Sixty metres is a few seconds
- * of riding.
- */
-const AHEAD_METRES = 60;
-
-/**
  * How far the road it gives back may differ from the way he is going.
  *
  * A route computed from a man in a lane the map does not have is often a route
@@ -167,17 +158,6 @@ const ROUTE_AGREES_DEGREES = 80;
 
 /** How much of the new line to look at when deciding that. */
 const ROUTE_START_METRES = 60;
-
-/** The point that far away on that bearing. */
-const stepFrom = (lat, lon, degrees, metres) => {
-    const r = (degrees * Math.PI) / 180;
-    const k = Math.cos((lat * Math.PI) / 180) || 1;
-
-    return {
-        lat: lat + (metres * Math.cos(r)) / 111320,
-        lon: lon + (metres * Math.sin(r)) / (111320 * k),
-    };
-};
 
 /** Which way one point lies from another, in degrees from north. */
 const bearingBetween = (aLat, aLon, bLat, bLon) => {
@@ -571,45 +551,11 @@ const syncRideProgress = async (technician, lat, lon, heading = null) => {
                     return apart > ROUTE_AGREES_DEGREES;
                 };
 
-                let route = await routeService.computeRoute(
+                const route = await routeService.computeRoute(
                     { lat, lon },
                     { lat: destLat, lon: destLon },
                     { heading: facing }
                 );
-
-                /*
-                 * Asked again from a little way along the road he is taking.
-                 *
-                 * Where he is standing has no road on it, Google answers from
-                 * the nearest one it does have - which is usually the road he
-                 * has just left, so it sends him back out to it and round. Sixty
-                 * metres further on, in the direction he is actually moving, is
-                 * often a junction the map does know, and from there the answer
-                 * describes his journey instead of undoing it.
-                 *
-                 * It costs a second call and only on the runs where the first
-                 * answer was useless. The line it gives begins a little ahead of
-                 * the bike, which is not a fault here: he is being carried at
-                 * that moment, and the start of the line is exactly where he is
-                 * about to be set down.
-                 */
-                if (nonsense(route) && facing !== null) {
-                    const ahead = stepFrom(lat, lon, facing, AHEAD_METRES);
-
-                    const better = await routeService.computeRoute(
-                        ahead,
-                        { lat: destLat, lon: destLon },
-                        { heading: facing }
-                    );
-
-                    if (better && !nonsense(better)) {
-                        console.log(
-                            "[RIDE] " + ticket.ticketNumber + ": no road where he is,"
-                            + " but there is one " + AHEAD_METRES + " m ahead"
-                        );
-                        route = better;
-                    }
-                }
 
                 if (route) {
                     const byRoad = Number(route.distanceMeters) || 0;
