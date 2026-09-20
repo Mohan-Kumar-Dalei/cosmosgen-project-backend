@@ -231,6 +231,24 @@ function initSocketServer(httpServer) {
 
         if (socket.role === "track") {
             socket.join(trackRoom(socket.trackToken));
+
+            /*
+             * Somebody has opened a screen, so the road on it is worth money
+             * again.
+             *
+             * While nothing was watching, the route was left alone however far
+             * he wandered - see the note on `watched` in ride.service. What
+             * they are looking at now may therefore be minutes old, so it is
+             * marked stale and the next position he sends redraws it, which is
+             * five seconds at most.
+             *
+             * Nothing is bought here. This only removes the reason not to buy.
+             */
+            ticketModel.updateOne(
+                { "tracking.token": socket.trackToken, status: "Assigned" },
+                { $set: { "ride.computedAt": new Date(0) } }
+            ).catch((err) => console.warn("[SOCKET] could not freshen the route: " + err.message));
+
             return;
         }
 

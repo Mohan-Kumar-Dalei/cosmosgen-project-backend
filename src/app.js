@@ -11,6 +11,7 @@ const technicianRoutes = require("./routes/technician.routes");
 const trackRoutes = require("./routes/track.routes");
 const voiceRoutes = require("./routes/voice.routes");
 const mapRoutes = require("./routes/map.routes");
+const appRoutes = require("./routes/app.routes");
 const customerRoutes = require("./routes/customer.routes");
 const adminRoutes = require("./routes/admin.routes");
 const webhookRoutes = require("./routes/webhook.routes");
@@ -76,6 +77,7 @@ app.use("/api/customer", customerRoutes);
 app.use("/api/track", trackRoutes);
 app.use("/api/technician", technicianRoutes);
 app.use("/api/map", mapRoutes);
+app.use("/api/app", appRoutes);
 app.use("/api/admin", adminRoutes);
 
 app.use((req, res) => {

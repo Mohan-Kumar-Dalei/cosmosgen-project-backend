@@ -4,7 +4,7 @@ const technicianModel = require("../models/technician.model");
 const routeService = require("./route.service");
 const { lookupPlace } = require("../controllers/map.controller");
 const notification = require("./notification.service");
-const { emitToRoom, techRoom, trackRoom, adminRoom } = require("../sockets/socket.instance");
+const { emitToRoom, techRoom, trackRoom, adminRoom, roomSize } = require("../sockets/socket.instance");
 
 /**
  * How close the technician has to get before we tell the customer they have
@@ -506,13 +506,49 @@ const syncRideProgress = async (technician, lat, lon, heading = null) => {
              */
             const noLine = !ticket.ride?.encodedPolyline;
 
-            // Skip the refresh when we are about to declare arrival anyway -
-            // paying for a route to a point 100 m away is money for nothing.
+            /*
+             * And whether anybody is actually looking at it.
+             *
+             * A route is bought so that a line can be drawn on somebody's
+             * screen. Most customers never open one: they book, they get the
+             * push when he sets off, and they meet him at the door. Redrawing
+             * the road for them every hundred metres is money spent on a
+             * picture nobody sees - and at five hundred jobs a day it is the
+             * largest bill this system has.
+             *
+             * Both the map and the job card hold a socket on this token while
+             * they are open, so one question answers both: is any screen
+             * watching this job right now? The first route is not asked this -
+             * see the note where the ride starts - because its ETA is what the
+             * card, the push and the assistant all quote, watched or not.
+             *
+             * When somebody opens a screen, whatever was last drawn is what
+             * they get, and it is made stale at once so the next position
+             * refreshes it. See the track room in socketManager.
+             */
+            const watched = roomSize(trackRoom(ticket.tracking?.token || "")) > 0;
+
+            /*
+             * Skip the refresh when we are about to declare arrival anyway -
+             * paying for a route to a point 100 m away is money for nothing.
+             *
+             * The five minute one is not asked whether anybody is watching. It
+             * is the ETA, and the ETA is quoted to people who are not looking
+             * at a screen at all: the assistant answers "kitni der" with it on
+             * WhatsApp, and the card and the push carry it. Letting that go
+             * stale for a whole ride to save a handful of calls would be saving
+             * money on the one number the customer actually asks for.
+             *
+             * The frequent ones are the opposite. Redrawing every fifty metres
+             * exists to keep a line under a bike on a map, and a map nobody has
+             * open needs no line. Those are the many, so those are gated.
+             */
             const worthRefreshing =
                 !alreadyArrived &&
                 distance > ARRIVAL_RADIUS_METRES &&
                 (age > ETA_RECOMPUTE_MS
-                    || ((lost || noLine)
+                    || (watched
+                        && (lost || noLine)
                         && age > DRIFT_RECHECK_MS
                         && goneSince > (noLine ? NO_LINE_RECHECK_METRES : DRIFT_RECHECK_METRES)));
 
