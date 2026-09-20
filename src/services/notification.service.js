@@ -644,6 +644,7 @@ const notifyAdminsPaymentCollected = (ticket, technicianName) => {
 };
 
 module.exports = {
+    jobMoved,
     // Exported so the controllers that write their own customer messages can
     // write them in the right language too - see speaks().
     speaks,

@@ -898,6 +898,9 @@ const unassignTicket = async (req, res) => {
 
         notification.notifyAdminsNewTicket(updated);
 
+        // The customer's screens still have the old technician's name on them.
+        notification.jobMoved(updated);
+
         return res.status(200).json({ success: true, message: "Ticket unassigned and back in queue", data: updated });
     } catch (error) {
         console.error("Unassign error:", error);

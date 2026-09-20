@@ -1259,6 +1259,16 @@ const releaseTicket = async (req, res) => {
             (customerRefused ? "Customer refused: " : "") + String(reason).trim()
         );
 
+        /*
+         * And the customer's own screens, which were the last to know.
+         *
+         * Handing a job back is not something the customer is told in words -
+         * the office picks somebody else and they hear about that - but their
+         * card still said "At your door" with a name on it until they pulled
+         * to refresh. The job has moved; the screens re-read it. See jobMoved.
+         */
+        notification.jobMoved(updated);
+
         return res.status(200).json({
             success: true,
             suspended: Boolean(discipline.suspended),
