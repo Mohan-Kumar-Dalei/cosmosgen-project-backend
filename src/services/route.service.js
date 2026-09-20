@@ -271,7 +271,10 @@ const computeRouteMatrix = async (origin, destinations = []) => {
 
     try {
         keyring.count("google");
-        mapUsage.record("matrix");
+
+        // Per pair, and only the pairs actually being bought - whatever Redis
+        // answered was not asked for and was not charged for.
+        mapUsage.record("matrix", missing.length);
 
         const response = await axios.post(
             MATRIX_URL,

@@ -4,19 +4,26 @@ const MapUsage = require("../models/mapUsage.model");
 const today = () => new Date().toISOString().slice(0, 10);
 
 /**
- * One more call of this kind, today.
+ * More of this kind, today.
  *
  * Never awaited and never able to throw. A counter exists to inform somebody
  * later; failing a vendor's search because the counter could not be written
  * would be the tail wagging the dog. `upsert` plus the unique day+kind index
  * means two calls landing together cannot lose one another's increment.
+ *
+ * `howMany` is there because one request is not always one charge. Route
+ * Matrix bills per pair, so a single request asking about four vendors is four
+ * charges - and counted as one, this page priced it at a quarter of what it
+ * cost. The rate card beside it has always said "priced per element"; this is
+ * the half that makes that true.
  */
-const record = (kind) => {
-    if (!kind) return;
+const record = (kind, howMany = 1) => {
+    const n = Math.floor(Number(howMany));
+    if (!kind || !Number.isFinite(n) || n < 1) return;
 
     MapUsage.updateOne(
         { day: today(), kind },
-        { $inc: { count: 1 } },
+        { $inc: { count: n } },
         { upsert: true }
     ).catch((err) => {
         console.error("[MAP USAGE] not counted:", err.message);
