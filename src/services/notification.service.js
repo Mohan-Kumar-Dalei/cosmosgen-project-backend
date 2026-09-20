@@ -71,6 +71,30 @@ const notifyCustomer = async ({ ticket, text }) => {
 };
 
 /**
+ * The customer's own screens, told that one of their jobs has moved.
+ *
+ * Their job list used to reload whenever a message arrived, which worked
+ * because every step of a job sent one. Cutting those messages - the right
+ * call, they said nothing the app was not already showing and Meta bills for
+ * each - quietly took the reloads with them, so a card could sit reading "On
+ * the way" while the map behind it showed him at the door. Mohan found it at
+ * once: the card only caught up when he pulled to refresh.
+ *
+ * So the moment itself is sent instead of a message about it. It carries no
+ * detail on purpose: the screens re-read the job, which is one request and
+ * always the whole truth, rather than trying to patch themselves from an event.
+ */
+const jobMoved = (ticket) => {
+    if (!ticket?.customer) return;
+
+    emitToRoom(userRoom(ticket.customer), "job:changed", {
+        id: String(ticket._id),
+        ticketNumber: ticket.ticketNumber,
+        status: ticket.status,
+    });
+};
+
+/**
  * Gives a ticket its tracking token, once.
  *
  * Issued the first time the customer is told about the job at all, and
@@ -113,6 +137,8 @@ const ensureTrackingToken = async (ticket) => {
  * the channel.
  */
 const notifyCustomerAssigned = async (ticket) => {
+    jobMoved(ticket);
+
     const tech = ticket.technicianSnapshot || {};
 
     /*
@@ -172,6 +198,8 @@ const sendCustomerOtp = async (ticket, code, purpose) => {
  * WhatsApp message any more.
  */
 const notifyCustomerWorkStarted = async (ticket) => {
+    jobMoved(ticket);
+
     const tech = ticket.technicianSnapshot || {};
 
     push.sendToCustomer(ticket.customer, {
@@ -192,6 +220,8 @@ const notifyCustomerWorkStarted = async (ticket) => {
  * The tracking token is still minted here - that screen is built on it.
  */
 const notifyCustomerTechnicianEnRoute = async (ticket) => {
+    jobMoved(ticket);
+
     const tech = ticket.technicianSnapshot || {};
 
     await ensureTrackingToken(ticket);
@@ -211,6 +241,8 @@ const notifyCustomerTechnicianEnRoute = async (ticket) => {
  * somebody is not looking at, which is exactly where this customer is.
  */
 const notifyCustomerArrived = async (ticket) => {
+    jobMoved(ticket);
+
     const who = ticket.technicianSnapshot?.name || "Your technician";
 
     push.sendToCustomer(ticket.customer, {
@@ -221,6 +253,8 @@ const notifyCustomerArrived = async (ticket) => {
 };
 
 const notifyCustomerCancelled = async (ticket) => {
+    jobMoved(ticket);
+
     const t = await speaks(ticket);
 
     const text = t.ticketCancelled(
