@@ -298,7 +298,7 @@ function registerTechnicianHandlers(socket, techId) {
         // arrival message all come from it, which is why the panel has no ride
         // buttons any more. It swallows its own errors, so a failed sync never
         // costs the technician the location write above.
-        await rideService.syncRideProgress({ _id: techId }, lat, lon);
+        await rideService.syncRideProgress({ _id: techId }, lat, lon, payload.heading);
     });
 }
 

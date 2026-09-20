@@ -1,6 +1,11 @@
 const axios = require("axios");
 
+const redis = require("../config/redis");
+
 const cache = new Map();
+
+/** How long a street name is worth keeping in Redis - see lookupPlace. */
+const GEOCODE_KEEP_SECONDS = 7 * 24 * 60 * 60;
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_CACHE = 4000;
 
@@ -125,6 +130,24 @@ const lookupPlace = async (lat, lon) => {
     const cached = getCache(key);
     if (cached) return cached;
 
+    /*
+     * Then Redis, which remembers across restarts.
+     *
+     * This is the one lookup that happens while somebody is watching a live
+     * map - the locality under the bike is bought every two hundred metres of
+     * a ride - so it is the one where a cold cache is felt rather than merely
+     * counted. A street does not move, so a week is a short life for the
+     * answer, not a long one.
+     *
+     * It is put back into the Map above as well, so the next few hundred
+     * lookups of the same street cost nothing at all.
+     */
+    const kept = await redis.remembered(key);
+    if (kept) {
+        setCache(key, kept);
+        return kept;
+    }
+
     keyring.count("google");
     mapUsage.record("geocode");
     const response = await axios.get("https://maps.googleapis.com/maps/api/geocode/json", {
@@ -165,6 +188,11 @@ const lookupPlace = async (lat, lon) => {
     };
 
     setCache(key, data);
+
+    // Not awaited: the caller has its answer, and nobody should be kept
+    // waiting on a cache write.
+    redis.remember(key, data, GEOCODE_KEEP_SECONDS);
+
     return data;
 };
 

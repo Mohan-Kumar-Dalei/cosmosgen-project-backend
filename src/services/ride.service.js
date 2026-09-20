@@ -104,12 +104,15 @@ const DRIFT_RECHECK_METRES = 50;
 /**
  * And how far, when there is no line on the screen at all.
  *
- * Shorter still, because the two situations are not equally bad. Off the drawn
- * line the customer is at least watching a road. On the bow there is no road at
- * all - direction and distance and nothing else - so every extra second of it
- * costs more than the call that ends it.
+ * Short enough that it is asked again on practically every position he sends,
+ * because the two situations are not equally bad: off the drawn line the
+ * customer is at least watching a road, and with no line at all the bike is in
+ * somebody's arms waiting for one. Mohan asked for it in those words - keep
+ * asking as he moves, a little further along each time, until the answer is
+ * the road he is really on. Twenty-five metres is about six seconds on a bike,
+ * which the floor above makes the real limit anyway.
  */
-const NO_LINE_RECHECK_METRES = 40;
+const NO_LINE_RECHECK_METRES = 25;
 
 /**
  * When the road Google offers is not the journey he is making.
@@ -135,6 +138,46 @@ const NO_LINE_RECHECK_METRES = 40;
  */
 const UNUSABLE_TIMES = 3.5;
 const UNUSABLE_EXTRA_METRES = 500;
+
+/**
+ * How far ahead of him to ask, when where he is standing has no road.
+ *
+ * Far enough to clear the lane he is in and reach whatever the map does know,
+ * near enough that it is still the same journey. Sixty metres is a few seconds
+ * of riding.
+ */
+const AHEAD_METRES = 60;
+
+/**
+ * How far the road it gives back may differ from the way he is going.
+ *
+ * A route computed from a man in a lane the map does not have is often a route
+ * back out of that lane - it begins by sending him the way he came, because
+ * the nearest road Google knows is the one he left. That answer is not wrong
+ * about the roads; it is wrong about him, and drawing it would show a bike
+ * riding one way down a line pointing the other.
+ *
+ * So the first stretch of every fresh route is checked against the way he is
+ * actually travelling, and one that disagrees by more than a right angle is
+ * refused. He stays carried, and it is asked again a few seconds later from
+ * further along - which is exactly what Mohan described: keep asking as he
+ * moves until the answer is the road he is really on.
+ */
+const ROUTE_AGREES_DEGREES = 80;
+
+/** How much of the new line to look at when deciding that. */
+const ROUTE_START_METRES = 60;
+
+/** The point that far away on that bearing. */
+const stepFrom = (lat, lon, degrees, metres) => {
+    const r = (degrees * Math.PI) / 180;
+    const k = Math.cos((lat * Math.PI) / 180) || 1;
+
+    return {
+        lat: lat + (metres * Math.cos(r)) / 111320,
+        lon: lon + (metres * Math.sin(r)) / (111320 * k),
+    };
+};
 
 /** Which way one point lies from another, in degrees from north. */
 const bearingBetween = (aLat, aLon, bLat, bLon) => {
@@ -217,6 +260,28 @@ const decodeLine = (encoded) => {
  * what makes "how far has he gone since then" answerable without keeping a
  * second copy of it on the ticket.
  */
+/**
+ * Which way a route sets off, over its first stretch of road.
+ *
+ * Its first two points can be a metre apart on a curve, which says nothing, so
+ * it is measured over a length rather than a point - see ROUTE_START_METRES.
+ */
+const routeSetsOff = (encoded) => {
+    const points = decodeLine(encoded || "");
+    if (points.length < 2) return null;
+
+    const from = { lat: points[0][0], lon: points[0][1] };
+
+    for (const [lat, lon] of points.slice(1)) {
+        if (metresBetween(from.lat, from.lon, lat, lon) >= ROUTE_START_METRES) {
+            return bearingBetween(from.lat, from.lon, lat, lon);
+        }
+    }
+
+    const last = points[points.length - 1];
+    return bearingBetween(from.lat, from.lon, last[0], last[1]);
+};
+
 const routeBegins = (encoded) => {
     if (!encoded) return null;
 
@@ -276,7 +341,17 @@ const metresFromRoute = (encoded, lat, lon) => {
  * Returns nothing and never throws. A failure here must not cost the
  * technician their location ping.
  */
-const syncRideProgress = async (technician, lat, lon) => {
+const syncRideProgress = async (technician, lat, lon, heading = null) => {
+    /*
+     * Which way his phone says he is pointing, when it says anything.
+     *
+     * Worked out on the handset rather than here - see facingFrom in the
+     * vendor app - because only the handset has the compass, and only it knows
+     * whether he is moving fast enough for the direction of travel to be the
+     * better answer.
+     */
+    const facingDeg = Number.isFinite(Number(heading)) ? Number(heading) : null;
+
     try {
         const ticket = await ticketModel.findOne({
             technician: technician._id,
@@ -352,7 +427,7 @@ const syncRideProgress = async (technician, lat, lon) => {
             if (ticket.tracking?.token) {
                 emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
                     stage: "assigned",
-                    technicianAt: { lat, lon, at: now },
+                    technicianAt: { lat, lon, at: now, heading: facingDeg },
                 });
             }
             return;
@@ -476,25 +551,74 @@ const syncRideProgress = async (technician, lat, lon) => {
                     ? bearingBetween(asked.lat, asked.lon, lat, lon)
                     : null;
 
-                const route = await routeService.computeRoute(
+                /** Is this a road, or the map's way of saying it has none? */
+                const nonsense = (answer) => {
+                    const byRoad = Number(answer?.distanceMeters) || 0;
+
+                    if (byRoad > 0
+                        && byRoad > distance * UNUSABLE_TIMES
+                        && byRoad - distance > UNUSABLE_EXTRA_METRES) return true;
+
+                    /*
+                     * And does it go the way he is going? See
+                     * ROUTE_AGREES_DEGREES. Only asked when we know which way
+                     * that is - at the start of a ride we do not.
+                     */
+                    const sets = facing === null ? null : routeSetsOff(answer?.encodedPolyline);
+                    if (sets === null) return false;
+
+                    const apart = Math.abs((((sets - facing) % 360) + 540) % 360 - 180);
+                    return apart > ROUTE_AGREES_DEGREES;
+                };
+
+                let route = await routeService.computeRoute(
                     { lat, lon },
                     { lat: destLat, lon: destLon },
                     { heading: facing }
                 );
+
+                /*
+                 * Asked again from a little way along the road he is taking.
+                 *
+                 * Where he is standing has no road on it, Google answers from
+                 * the nearest one it does have - which is usually the road he
+                 * has just left, so it sends him back out to it and round. Sixty
+                 * metres further on, in the direction he is actually moving, is
+                 * often a junction the map does know, and from there the answer
+                 * describes his journey instead of undoing it.
+                 *
+                 * It costs a second call and only on the runs where the first
+                 * answer was useless. The line it gives begins a little ahead of
+                 * the bike, which is not a fault here: he is being carried at
+                 * that moment, and the start of the line is exactly where he is
+                 * about to be set down.
+                 */
+                if (nonsense(route) && facing !== null) {
+                    const ahead = stepFrom(lat, lon, facing, AHEAD_METRES);
+
+                    const better = await routeService.computeRoute(
+                        ahead,
+                        { lat: destLat, lon: destLon },
+                        { heading: facing }
+                    );
+
+                    if (better && !nonsense(better)) {
+                        console.log(
+                            "[RIDE] " + ticket.ticketNumber + ": no road where he is,"
+                            + " but there is one " + AHEAD_METRES + " m ahead"
+                        );
+                        route = better;
+                    }
+                }
+
                 if (route) {
-                    /*
-                     * Is this a road, or the map's way of saying it has none?
-                     * See UNUSABLE_TIMES above.
-                     */
                     const byRoad = Number(route.distanceMeters) || 0;
-                    const unusable = byRoad > 0
-                        && byRoad > distance * UNUSABLE_TIMES
-                        && byRoad - distance > UNUSABLE_EXTRA_METRES;
+                    const unusable = nonsense(route);
 
                     if (unusable) {
                         console.log(
                             "[RIDE] " + ticket.ticketNumber + ": Google wants " + Math.round(byRoad)
-                            + " m for " + Math.round(distance) + " m - no road here, showing the bow"
+                            + " m for " + Math.round(distance) + " m - no road here, he is carried"
                         );
                     }
 
@@ -560,7 +684,7 @@ const syncRideProgress = async (technician, lat, lon) => {
         // crawl rather than jump.
         if (ticket.tracking?.token) {
             emitToRoom(trackRoom(ticket.tracking.token), "track:update", {
-                technicianAt: { lat, lon, at: now },
+                technicianAt: { lat, lon, at: now, heading: facingDeg },
 
                 /*
                  * "assigned" until he has actually set off.

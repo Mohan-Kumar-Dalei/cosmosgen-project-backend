@@ -847,7 +847,7 @@ const updateLocation = async (req, res) => {
 
         // Same ride handling as the socket ping, so a client that falls back
         // to REST still gets its route, ETA and arrival message.
-        await rideService.syncRideProgress(req.technician, lat, lon);
+        await rideService.syncRideProgress(req.technician, lat, lon, req.body?.heading);
 
         return res.status(200).json({ success: true });
     } catch (error) {
