@@ -71,29 +71,20 @@ const notifyCustomer = async ({ ticket, text }) => {
 };
 
 /**
- * Where a customer can watch their job.
+ * Gives a ticket its tracking token, once.
  *
- * The first origin in CLIENT_ORIGINS is the real site; the rest of that list
- * exists for CORS during development, so taking [0] rather than joining them
- * is deliberate.
+ * Issued the first time the customer is told about the job at all, and
+ * re-assigning does not mint a new one.
+ *
+ * It used to build a URL and hand that back, from when the customer was sent a
+ * web page to watch. Nobody is sent one now: every customer who can reach the
+ * assistant has the app - registration happens there and nowhere else - and
+ * the app's own tracking screen is built on this token. So the token is the
+ * whole of the answer, and dressing it up as a link was a leftover of a
+ * delivery nobody uses.
  */
-const publicOrigin = () =>
-    (process.env.CLIENT_ORIGINS || "http://localhost:5173").split(",")[0].trim();
-
-/**
- * Gives a ticket its tracking link, once.
- *
- * Issued the first time the customer is told about the job at all - a link
- * that exists before anyone has been sent one is a secret with no owner.
- * Re-assigning does not mint a new one.
- *
- * Nothing sends the URL any more. The app's own tracking screen is built on
- * this token, and opening a web page inside WhatsApp's browser was slower and
- * worse than the screen the customer already had. The token is what is wanted;
- * the link is a leftover of how it used to be delivered.
- */
-const ensureTrackingLink = async (ticket) => {
-    if (ticket.tracking?.token) return publicOrigin() + "/track/" + ticket.tracking.token;
+const ensureTrackingToken = async (ticket) => {
+    if (ticket.tracking?.token) return ticket.tracking.token;
 
     const token = issueToken();
 
@@ -105,7 +96,7 @@ const ensureTrackingLink = async (ticket) => {
     // Another assignment in the same instant may have won the write, so read
     // back rather than trusting the token we generated
     const saved = await ticketModel.findById(ticket._id).select("tracking.token").lean();
-    return publicOrigin() + "/track/" + (saved?.tracking?.token || token);
+    return saved?.tracking?.token || token;
 };
 
 /**
@@ -131,7 +122,7 @@ const notifyCustomerAssigned = async (ticket) => {
      * is built on it, so skipping this would leave a customer with a screen
      * that has nothing to open.
      */
-    await ensureTrackingLink(ticket);
+    await ensureTrackingToken(ticket);
 
     push.sendToCustomer(ticket.customer, {
         title: "Your technician has been assigned",
@@ -203,7 +194,7 @@ const notifyCustomerWorkStarted = async (ticket) => {
 const notifyCustomerTechnicianEnRoute = async (ticket) => {
     const tech = ticket.technicianSnapshot || {};
 
-    await ensureTrackingLink(ticket);
+    await ensureTrackingToken(ticket);
 
     push.sendToCustomer(ticket.customer, {
         title: (tech.name || "Your technician") + " is on the way",
@@ -628,7 +619,7 @@ module.exports = {
     notifyCustomerAssigned,
     notifyCustomerAccepted,
     sendCustomerOtp,
-    ensureTrackingLink,
+    ensureTrackingToken,
     notifyCustomerWorkStarted,
     notifyCustomerTechnicianEnRoute,
     notifyCustomerArrived,
