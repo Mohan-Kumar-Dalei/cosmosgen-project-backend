@@ -7,6 +7,7 @@ const errors = require("../config/sentry");
 const { copyFor } = require("../config/copy");
 const notification = require("./notification.service");
 const booking = require("./booking.service");
+const { metresBetween } = require("./ride.service");
 const voiceController = require("../controllers/voice.controller");
 
 /*
@@ -235,6 +236,16 @@ recent tickets and exactly where each one stands. When they ask about a job -
 when someone is coming, what happened to it, why it was cancelled, which day
 it was fixed for - the answer comes from that block and nowhere else.
 
+- A job that is over is still theirs to ask about. The record carries the
+  amount, the invoice number, what was repaired and a link to the invoice
+  itself. Answer with the ticket number and the figure - "CG-2609-0035 is
+  finished, the bill was Rs 1,450 on invoice INV-0112" - and send the link when
+  they want a copy. Never tell somebody to fetch their own bill from somewhere
+  else; this is the only place they can get it.
+- When they ask where the engineer has reached rather than how long he will
+  be, the record may carry the locality he is near. Say it. When it does not,
+  give the arrival estimate instead - do not name a place that is not written
+  down.
 - Cancelled tickets are in there with the reason the office recorded. If they
   ask why something was cancelled, answer in your FIRST reply with the ticket
   number and that exact reason - "CG-2609-0032 was cancelled because the
@@ -282,9 +293,12 @@ asking "do you do fridges?" wants an answer, not a menu. Answer them, and only
 then offer the list if they want to book.
 
 NEVER:
-- Invent a price. You may give the range printed in WHAT THINGS USUALLY COST
-  and nothing else - never a single figure, never a total, never a discount.
-  The engineer confirms the real cost at the door before starting.
+- Invent a price. For a job not yet done you may give the range printed in WHAT
+  THINGS USUALLY COST and nothing else - never a single figure, never a total,
+  never a discount. The engineer confirms the real cost at the door before
+  starting. A bill already charged is the one exception: when the CUSTOMER
+  RECORD carries an amount for a finished job, that is a fact the company has
+  written down and you quote it exactly, with its invoice number.
 - Invent a time. The only arrival estimate you may give is one printed in the
   CUSTOMER RECORD block. Never guess "15 minutes" or "within an hour".
 - Offer a service not in the list above - say plainly we don't cover it.
@@ -589,7 +603,9 @@ const buildCustomerRecord = async (userId) => {
     let tickets;
     try {
         tickets = await Ticket.find({ customer: userId })
-            .select("ticketNumber serviceLabel status technicianSnapshot scheduling ride cancelReason billing.totalPaise payment.status createdAt updatedAt")
+            .select("ticketNumber serviceLabel status technicianSnapshot scheduling ride cancelReason "
+                + "billing.totalPaise billing.invoiceNumber billing.invoicePdfUrl billing.workDone "
+                + "payment.status createdAt updatedAt")
             .sort({ createdAt: -1 })
 
             /*
@@ -653,9 +669,61 @@ const buildCustomerRecord = async (userId) => {
         }
 
         const ride = t.ride || {};
+
+        /*
+         * Where he is, in words, but only while that is still true.
+         *
+         * "Kaha tak pahucha hai" is asked as often as "kitni der", and a
+         * minute count is a poor answer to it - the customer wants to hear a
+         * place they know. The locality is already worked out for the tracking
+         * map, so there is nothing to buy here.
+         *
+         * The guard matters, though. That name is refreshed only while
+         * somebody has the tracking screen open - see the watched gate in
+         * ride.service - so on a ride nobody is watching it stops moving and
+         * stays wherever it last was. Quoted blind, the assistant would tell
+         * somebody he was in Rasulgarh twenty minutes after he left it, which
+         * is worse than not naming a place at all.
+         *
+         * `askedFrom` is where the route was last worked out from, and that
+         * one is refreshed every five minutes whether or not anybody is
+         * looking. So if the name was taken near there, it still holds. A
+         * locality is wider than this figure, which is the point of it.
+         */
+        /*
+         * Nobody is on their way to a job that is over.
+         *
+         * The ride record stays on the ticket after it is cancelled or closed,
+         * because it is history worth keeping - but it reads as the present
+         * tense, and it was being written out that way. A cancelled ticket
+         * carried "due to arrive any moment" for as long as the customer could
+         * see it, which is the assistant cheerfully promising somebody who is
+         * never coming.
+         *
+         * So the two forward-looking lines are held to a live job. What
+         * genuinely happened - that he did reach the door - stays on every
+         * ticket, because that is a fact about the past and the customer may
+         * well be asking about it.
+         */
+        const onTheWay = !["Cancelled", "Closed", "Payment-Pending"].includes(t.status);
+
+        const PLACE_STILL_TRUE_METRES = 700;
+        const placeAt = ride.placeAt;
+        const askedFrom = ride.askedFrom;
+
+        const placeHolds = ride.nearPlace
+            && Number.isFinite(placeAt?.lat)
+            && (!Number.isFinite(askedFrom?.lat)
+                || metresBetween(placeAt.lat, placeAt.lon, askedFrom.lat, askedFrom.lon)
+                    <= PLACE_STILL_TRUE_METRES);
+
+        if (onTheWay && !ride.arrivedAt && placeHolds) {
+            bits.push("currently near " + ride.nearPlace);
+        }
+
         if (ride.arrivedAt) {
             bits.push("worker reached at " + onDate(ride.arrivedAt));
-        } else if (ride.etaAt) {
+        } else if (onTheWay && ride.etaAt) {
             // etaAt is an absolute moment, so the useful figure changes every
             // turn. Compute it now rather than storing a stale "25 minutes".
             const minsLeft = Math.round((new Date(ride.etaAt).getTime() - Date.now()) / 60000);
@@ -666,9 +734,28 @@ const buildCustomerRecord = async (userId) => {
             bits.push("no arrival estimate yet");
         }
 
+        /*
+         * And what the job came to, once there is a bill to speak of.
+         *
+         * A closed job is still asked about - days later, when the customer
+         * wants the amount, the invoice number or a copy to send on to
+         * somebody. All of it is already on the ticket; it simply was not
+         * being handed over, so the assistant could say what a job cost but
+         * not which invoice said so, nor what had actually been repaired.
+         *
+         * The link is ImageKit's public URL for that invoice. It is given so
+         * that the assistant can send it when it is asked for - a customer who
+         * wants their bill should not be told to go and look somewhere else,
+         * because there is nowhere else to look and nobody here to ask.
+         */
         if (t.status === "Payment-Pending" || t.status === "Closed") {
-            const rupees = Math.round(Number(t.billing?.totalPaise || 0) / 100);
+            const bill = t.billing || {};
+            const rupees = Math.round(Number(bill.totalPaise || 0) / 100);
+
             if (rupees > 0) bits.push("bill Rs " + rupees + ", payment " + (t.payment?.status || "pending"));
+            if (bill.invoiceNumber) bits.push("invoice " + bill.invoiceNumber);
+            if (bill.workDone) bits.push("work done: " + bill.workDone);
+            if (bill.invoicePdfUrl) bits.push("invoice PDF: " + bill.invoicePdfUrl);
         }
 
         return "- " + bits.join(" | ");

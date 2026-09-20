@@ -413,6 +413,33 @@ const syncRideProgress = async (technician, lat, lon, heading = null) => {
             return;
         }
 
+        /*
+         * Whether anybody is actually looking at this job right now.
+         *
+         * Two things below are bought purely so that something can appear on a
+         * screen: the road under the bike, and the name of the street it is
+         * on. Most customers never open a screen at all - they book, they get
+         * the push when he sets off, and they meet him at the door. Buying
+         * either of those for them is money spent on a picture nobody sees,
+         * and between them they are the largest bill this system has.
+         *
+         * Both the map and the job card hold a socket on this token while they
+         * are open, so one question answers for both. Asked once here, up
+         * front, because it is the same answer for the route further down and
+         * for the locality name after it - and the two disagreeing would be a
+         * map showing a street name from a road it had stopped drawing.
+         *
+         * What is NOT gated on this: the first route, and the five-minute ETA
+         * refresh. Their figure is quoted to people who are not looking at any
+         * screen - the assistant answers "kitni der" with it on WhatsApp, and
+         * the card and the push carry it.
+         *
+         * When somebody does open a screen, whatever was last worked out is
+         * what they get, and the route is made stale at once so the next
+         * position refreshes it. See the track room in socketManager.
+         */
+        const watched = roomSize(trackRoom(ticket.tracking?.token || "")) > 0;
+
         const isFirstFix = !ticket.ride?.computedAt;
 
         if (isFirstFix) {
@@ -505,28 +532,6 @@ const syncRideProgress = async (technician, lat, lon, heading = null) => {
              * map knows, and the line can come back.
              */
             const noLine = !ticket.ride?.encodedPolyline;
-
-            /*
-             * And whether anybody is actually looking at it.
-             *
-             * A route is bought so that a line can be drawn on somebody's
-             * screen. Most customers never open one: they book, they get the
-             * push when he sets off, and they meet him at the door. Redrawing
-             * the road for them every hundred metres is money spent on a
-             * picture nobody sees - and at five hundred jobs a day it is the
-             * largest bill this system has.
-             *
-             * Both the map and the job card hold a socket on this token while
-             * they are open, so one question answers both: is any screen
-             * watching this job right now? The first route is not asked this -
-             * see the note where the ride starts - because its ETA is what the
-             * card, the push and the assistant all quote, watched or not.
-             *
-             * When somebody opens a screen, whatever was last drawn is what
-             * they get, and it is made stale at once so the next position
-             * refreshes it. See the track room in socketManager.
-             */
-            const watched = roomSize(trackRoom(ticket.tracking?.token || "")) > 0;
 
             /*
              * Skip the refresh when we are about to declare arrival anyway -
@@ -625,18 +630,31 @@ const syncRideProgress = async (technician, lat, lon, heading = null) => {
 
         /*
          * And where that is, in words, when he has moved far enough to be
-         * somewhere else.
+         * somewhere else - and when there is somebody there to read it.
          *
          * Looked up here rather than on each customer's phone, so one geocode
          * serves the app, the web page and anybody else watching. It never
          * fails the ride: a name is a nicety and the map is the substance.
+         *
+         * `watched` is the whole point of the line below. This name goes to
+         * exactly one place - the tracking screen. Nothing else in the system
+         * reads it: not the WhatsApp reply, not the assistant, not the push,
+         * not the ticket card. So on a ride nobody is watching, a locality was
+         * being bought every two hundred metres to be written into a field and
+         * never shown to anyone - twenty-five of them on a five kilometre run.
+         * The route beside it had this gate from the start; this simply had it
+         * missing.
+         *
+         * Opening the screen mid-ride does not leave a blank: the page is
+         * served whatever name was last stored, and the next two hundred
+         * metres - now watched - fetch a current one.
          */
         const namedAt = ticket.ride?.placeAt;
         const movedSincePlace = Number.isFinite(namedAt?.lat)
             ? metresBetween(lat, lon, namedAt.lat, namedAt.lon)
             : Infinity;
 
-        if (!hasArrivedAlready(ticket) && movedSincePlace > PLACE_RECHECK_METRES) {
+        if (watched && !hasArrivedAlready(ticket) && movedSincePlace > PLACE_RECHECK_METRES) {
             try {
                 const place = (await lookupPlace(lat, lon))?.results?.[0];
                 const name = String(place?.locality || place?.city || "").trim();
