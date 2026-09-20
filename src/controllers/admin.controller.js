@@ -607,26 +607,104 @@ const getNearbyTechnicians = async (req, res) => {
         });
 
         /*
+         * Being free is worth a couple of kilometres, and no more than that.
+         *
+         * The list arrives nearest-first, which is the wrong first question.
+         * Mohan put it plainly: if Ramesh is on a job six hundred metres away
+         * and Suresh is free at two kilometres, the company does not wait for
+         * Ramesh - it sends Suresh, who will be at the door sooner. Ordering by
+         * distance alone hid that, and five bookings from one neighbourhood
+         * stacked onto the same busy man while free vendors sat idle.
+         *
+         * But free cannot simply win, either. Sorted by availability first, a
+         * man five kilometres away outranked one six hundred metres away with
+         * twenty minutes left on his job - and as Mohan said when he saw it,
+         * that is no logic at all. He would be at the door sooner even after
+         * finishing.
+         *
+         * So it is a trade, priced in the only currency both sides share.
+         * Being on a job costs two kilometres; having work already booked for
+         * the day costs one; being offline costs enough to sink to the bottom
+         * without disturbing the order down there. Everything is then sorted by
+         * that one number, and the office reads a list where the top name is
+         * genuinely the best bet rather than merely the closest pin.
+         *
+         * Nobody is removed. Queueing a job onto a busy vendor is a real choice
+         * the office makes on purpose and is still one tap away; it simply is
+         * not the default any more.
+         */
+        const BUSY_COSTS_METRES = 2000;
+        const BOOKED_COSTS_METRES = 1000;
+        const OFFLINE_COSTS_METRES = 500000;
+
+        const reachCost = (t) => {
+            const away = Number(t.distanceInMeters);
+            const from = Number.isFinite(away) ? away : 1e9;
+
+            if (t.paused || t.liveStatus === "offline") return from + OFFLINE_COSTS_METRES;
+            if (t.liveStatus === "on_job") return from + BUSY_COSTS_METRES;
+            if (t.scheduledJobs > 0) return from + BOOKED_COSTS_METRES;
+
+            return from;
+        };
+
+        withStatus.sort((a, b) => reachCost(a) - reachCost(b));
+
+        /*
          * A real road figure for the few the office will actually look at.
          *
          * The ranking above is straight line, which is free and almost always
          * the same order. It is a poor thing to dispatch on, though - eight
-         * hundred metres away across a river is not near - so the nearest
-         * handful get an actual driving distance and time, in one request.
+         * hundred metres away across a river is not near - so the nearest get
+         * an actual driving distance and time, in one request.
          *
-         * Capped on purpose. Route Matrix bills per pair, so asking for all
-         * twenty rows would bill twenty every time this screen opened, for
-         * names nobody was going to click. Five is what fits on the screen
-         * without scrolling, which is the same five somebody chooses from.
+         * How many of them is the question, and it used to be answered "five,
+         * always". Route Matrix bills per pair, so that was five pairs every
+         * time this screen opened, whatever the list looked like - and most of
+         * the time the list settles it on its own. Four hundred metres against
+         * a kilometre and a half is not a contest a road can overturn; the
+         * office was always going to pick the first name, and the other four
+         * measurements were bought so that nobody could look at them.
+         *
+         * So the road is asked about where it can still change the answer:
+         * the nearest, always - his figure is what the customer is told - and
+         * then anybody within a third of his distance, because that is close
+         * enough for a one-way, a flyover or a level crossing to reorder them.
+         * A clear winner costs one pair instead of five.
          */
-        const measurable = withStatus
+        const CLOSE_ENOUGH = 1.3;
+
+        const placed = withStatus
             .map((t, at) => ({ at, t }))
             .filter(({ t }) =>
                 Number.isFinite(t.location?.coordinates?.[1])
-                && Number.isFinite(t.location?.coordinates?.[0]))
-            .sort((a, b) =>
-                (a.t.distanceInMeters ?? Infinity) - (b.t.distanceInMeters ?? Infinity))
-            .slice(0, routeService.MATRIX_MAX);
+                && Number.isFinite(t.location?.coordinates?.[0]));
+
+        /*
+         * And measured in the same order the office is reading.
+         *
+         * Whoever is at the top of that list is who the job is going to, so it
+         * is their driving time that is worth buying - not the nearest pin's,
+         * if the nearest pin is halfway through somebody's air conditioner.
+         */
+        const ranked = placed.sort((a, b) => reachCost(a.t) - reachCost(b.t));
+
+        /*
+         * Measured in the same currency the list is sorted in.
+         *
+         * This compared plain distances for a while after the sort had stopped
+         * being about plain distance, and the two disagreeing produced the
+         * worst of both: the road was bought for an offline man standing six
+         * hundred metres away and not for the free one the job was going to.
+         * One number decides the order and the same number decides who is close
+         * enough to be worth measuring.
+         */
+        const best = ranked.length ? reachCost(ranked[0].t) : null;
+
+        const measurable = (Number.isFinite(best) && best > 0
+            ? ranked.filter(({ t }, i) => i === 0 || reachCost(t) <= best * CLOSE_ENOUGH)
+            : ranked
+        ).slice(0, routeService.MATRIX_MAX);
 
         if (hasCoords && measurable.length) {
             const roads = await routeService.computeRouteMatrix(

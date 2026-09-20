@@ -3,6 +3,7 @@ const axios = require("axios");
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const keyring = require("./keyring.service");
 const mapUsage = require("./mapUsage.service");
+const redis = require("../config/redis");
 
 const ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
 const MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix";
@@ -203,6 +204,30 @@ const formatEta = (seconds) => {
  * either a figure or null. Never throws: a screen without road distances is
  * the screen we had yesterday, and that is a fine thing to fall back to.
  */
+/**
+ * One pair, as Redis files it.
+ *
+ * Four decimals is about eleven metres, which is the same grain the reverse
+ * geocode cache uses and for the same reason: a vendor waiting at his shop
+ * between jobs reports the same square over and over, and the customer's door
+ * does not move at all. So the second booking into that neighbourhood, and the
+ * third, and the office opening the assign screen twice, all find the answer
+ * already here.
+ */
+const pairKey = (o, d) =>
+    "mx:" + o.lat.toFixed(4) + "," + o.lon.toFixed(4)
+    + ">" + d.lat.toFixed(4) + "," + d.lon.toFixed(4);
+
+/**
+ * How long a measured pair is worth keeping.
+ *
+ * The distance between two points does not change; the time does, because it
+ * is traffic-aware. Ten minutes is short enough that the office is never shown
+ * a stale ETA and long enough to cover a run of bookings in one area and the
+ * same screen being opened again.
+ */
+const PAIR_KEEP_SECONDS = 10 * 60;
+
 const computeRouteMatrix = async (origin, destinations = []) => {
     if (!API_KEY || !destinations.length) return [];
 
@@ -222,6 +247,28 @@ const computeRouteMatrix = async (origin, destinations = []) => {
         return out;
     }
 
+    /*
+     * Whatever is already known, and then only the rest.
+     *
+     * This is billed per pair rather than per request, so a half-remembered
+     * screen is a half-price screen - there is no reason to ask for five when
+     * three of them are already in hand. The misses keep their places, so what
+     * comes back is in the order the caller asked for.
+     */
+    const from = { lat: oLat, lon: oLon };
+
+    const known = await Promise.all(
+        points.map((p) => redis.remembered(pairKey(from, p)).catch(() => null))
+    );
+
+    const missing = [];
+    points.forEach((p, i) => {
+        if (known[i]) out[i] = known[i];
+        else missing.push({ at: i, p });
+    });
+
+    if (!missing.length) return out;
+
     try {
         keyring.count("google");
         mapUsage.record("matrix");
@@ -232,7 +279,7 @@ const computeRouteMatrix = async (origin, destinations = []) => {
                 origins: [{
                     waypoint: { location: { latLng: { latitude: oLat, longitude: oLon } } },
                 }],
-                destinations: points.map((p) => ({
+                destinations: missing.map(({ p }) => ({
                     waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lon } } },
                 })),
                 travelMode: "DRIVE",
@@ -257,8 +304,10 @@ const computeRouteMatrix = async (origin, destinations = []) => {
         for (const cell of response.data || []) {
             if (cell?.condition !== "ROUTE_EXISTS") continue;
 
-            const at = cell.destinationIndex;
-            if (!Number.isInteger(at) || at >= out.length) continue;
+            const slot = cell.destinationIndex;
+            if (!Number.isInteger(slot) || slot >= missing.length) continue;
+
+            const at = missing[slot].at;
 
             /*
              * Zero is a real answer here, and it arrives as nothing.
@@ -276,6 +325,9 @@ const computeRouteMatrix = async (origin, destinations = []) => {
                 durationSeconds: Number.isFinite(seconds) ? seconds : null,
                 distanceMeters: cell.distanceMeters ?? 0,
             };
+
+            // Not awaited: the office has its answer already.
+            redis.remember(pairKey(from, missing[slot].p), out[at], PAIR_KEEP_SECONDS);
         }
     } catch (error) {
         console.error("[ROUTE] matrix failed:", error.response?.data || error.message);
