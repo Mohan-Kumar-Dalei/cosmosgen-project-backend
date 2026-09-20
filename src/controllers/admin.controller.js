@@ -892,7 +892,6 @@ const assignTicket = async (req, res) => {
          */
         if (!isBusy) {
             notification.notifyTechnicianAssigned(ticket);
-            await notification.notifyTechnicianAssignedOnWhatsApp(ticket);
         } else {
             notification.notifyTechnicianQueued(ticket);
         }
@@ -1298,8 +1297,10 @@ const rescheduleTicket = async (req, res) => {
         // Their own language, like everything else they are sent - see speaks().
         const say = await notification.speaks(updated);
 
+        // In the chat and on the phone, not on WhatsApp - see notifyCustomer.
         await notification.notifyCustomer({
             ticket: updated,
+            alsoWhatsApp: false,
             text: say.rescheduled(
                 updated.ticketNumber,
                 dateStr + (slotWindow ? " (" + slotWindow + ")" : ""),
@@ -1307,6 +1308,8 @@ const rescheduleTicket = async (req, res) => {
                 tech.phone
             ),
         });
+
+        notification.notifyCustomerRescheduled(updated, dateStr);
 
         notification.notifyTechnicianQueued(updated);
 

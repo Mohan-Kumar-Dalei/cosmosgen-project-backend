@@ -129,11 +129,11 @@ const promoteDueScheduledTickets = async () => {
             { returnDocument: "after" }
         ).lean();
 
+    // The technician is on the road when this fires, with the app behind the
+    // lock screen - so the push inside notifyTechnicianAssigned is what
+    // reaches him, not the socket beside it.
     notification.notifyTechnicianAssigned(promoted);
     rideService.announceAssignment(promoted, tech._id);
-    // The technician is on the road when this fires - their panel is closed,
-    // so WhatsApp is the only channel that reaches them
-    await notification.notifyTechnicianAssignedOnWhatsApp(promoted);
         promotedCount += 1;
     }
 

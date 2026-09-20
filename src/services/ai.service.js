@@ -236,6 +236,15 @@ recent tickets and exactly where each one stands. When they ask about a job -
 when someone is coming, what happened to it, why it was cancelled, which day
 it was fixed for - the answer comes from that block and nowhere else.
 
+- A job that has been waiting is the hardest thing you are asked and the thing
+  most likely to be asked twice. The record says how many days it has waited
+  and what stage it has reached - say both, in plain words, without excuses and
+  without an apology that goes on for a line. Do not invent a cause: nothing in
+  front of you says why it has taken this long, and a guess is worse than the
+  wait. Never promise a day, a time or "soon". Close by telling them the
+  office's next update on it comes through in the app - that is true, it is the
+  one place it will appear, and it is the whole of what they need to do. Never
+  offer to chase it, to pass it on, or to put them through to anybody.
 - A job that is over is still theirs to ask about. The record carries the
   amount, the invoice number, what was repaired and a link to the invoice
   itself. Answer with the ticket number and the figure - "CG-2609-0035 is
@@ -706,6 +715,30 @@ const buildCustomerRecord = async (userId) => {
          * well be asking about it.
          */
         const onTheWay = !["Cancelled", "Closed", "Payment-Pending"].includes(t.status);
+
+        /*
+         * How long an open job has been waiting, counted here rather than left
+         * to the model.
+         *
+         * "Itne din se pending kyun hai" is asked with a number in it, and the
+         * answer has to have the same number in it or it reads as a brush-off.
+         * The booking date is already on the line above, but a model asked to
+         * subtract two dates gets it wrong often enough to matter - and being
+         * told "it has been two days" about a job booked last week is worse
+         * than saying nothing.
+         *
+         * Only while the job is open, and only past a day. A job booked this
+         * morning has not been waiting; saying it has waited nought days
+         * invites the model to treat it as a complaint.
+         */
+        const openStill = !["Cancelled", "Closed"].includes(t.status);
+        const daysWaiting = t.createdAt
+            ? Math.floor((Date.now() - new Date(t.createdAt).getTime()) / 86400000)
+            : 0;
+
+        if (openStill && daysWaiting >= 1) {
+            bits.push("waiting " + daysWaiting + (daysWaiting === 1 ? " day" : " days") + " so far");
+        }
 
         const PLACE_STILL_TRUE_METRES = 700;
         const placeAt = ride.placeAt;

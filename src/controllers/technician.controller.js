@@ -2093,12 +2093,25 @@ const collectCash = async (req, res) => {
                 + paymentService.paiseToRupees(updated.payment?.split?.companyOnlinePaise) + " online)"
             : "";
 
+        /*
+         * The bill, in the chat and on the lock screen - not on WhatsApp.
+         *
+         * WhatsApp now carries the door codes and nothing else. The figure
+         * still reaches the customer twice over: it appears in the chat they
+         * already have open, and a notification tells the phone that is in a
+         * pocket. Asked about later - days later, when they want the amount or
+         * the invoice number or a copy to forward - the assistant has all of
+         * it on the ticket and answers from there.
+         */
         await notification.notifyCustomer({
             ticket: updated,
+            alsoWhatsApp: false,
             text: wasRefused
                 ? said.visitChargePaid(total, updated.billing?.invoiceNumber, updated.ticketNumber)
                 : said.paymentDone(total, updated.billing?.invoiceNumber, updated.ticketNumber, split),
         });
+
+        notification.notifyCustomerPaid(updated, total);
 
         /*
          * The invoice, as a document they keep.

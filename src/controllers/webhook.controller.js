@@ -323,8 +323,12 @@ const handleRazorpayEvent = async (event) => {
     // Their own language, as with every other message - see speaks().
     const said = await notification.speaks(ticket);
 
+    // The receipt goes to the chat and to the phone, not to WhatsApp - see
+    // notifyCustomer. The bill that asked for this money did go to WhatsApp,
+    // because the link in it is the only way anybody can pay online.
     await notification.notifyCustomer({
         ticket,
+        alsoWhatsApp: false,
         text: said.paymentDone(
             paiseToRupees(ticket.billing?.totalPaise || 0),
             ticket.billing?.invoiceNumber,
@@ -332,6 +336,8 @@ const handleRazorpayEvent = async (event) => {
             ""
         ),
     });
+
+    notification.notifyCustomerPaid(ticket, paiseToRupees(ticket.billing?.totalPaise || 0));
 
     notification.notifyTechnicianPaymentReceived(ticket);
     notification.notifyAdminsPaymentCollected(ticket, ticket.technicianSnapshot?.name || "Technician");

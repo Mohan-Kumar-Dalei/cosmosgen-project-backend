@@ -116,8 +116,6 @@ const COPY = {
             "Invoice: " + invoice + "\n\n" +
             "Thank you for choosing Cosmosgen. Ticket " + number + " is now closed.",
 
-        invoiceCaption: (invoice, service) =>
-            "Invoice " + invoice + " for " + service + ".",
         ownWords: "No problem - tell me what's happening in your own words.",
         aiUnavailable: "Sorry, I could not process that just now. Please try again in a moment.",
     },
@@ -191,8 +189,6 @@ const COPY = {
             "Invoice: " + invoice + "\n\n" +
             "Cosmosgen chunne ke liye shukriya. Ticket " + number + " ab band ho gaya hai.",
 
-        invoiceCaption: (invoice, service) =>
-            service + " ka invoice " + invoice + ".",
         bookYes: "Haan, book karein",
         bookNo: "Abhi nahi",
         ownWords: "Koi baat nahi - apne shabdon mein bataiye kya ho raha hai.",
@@ -304,8 +300,6 @@ const COPY = {
             "Invoice: " + invoice + "\n\n" +
             "Cosmosgen ବାଛିଥିବାରୁ ଧନ୍ୟବାଦ। Ticket " + number + " ବନ୍ଦ ହୋଇଗଲା।",
 
-        invoiceCaption: (invoice, service) =>
-            service + " ପାଇଁ invoice " + invoice + "।",
         bookYes: "ହଁ, book କରନ୍ତୁ",
         bookNo: "ଏବେ ନୁହେଁ",
 

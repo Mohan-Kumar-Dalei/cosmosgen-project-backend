@@ -153,37 +153,4 @@ const sendButtons = async (to, { body, buttons }) => {
     }
 };
 
-/**
- * A file, sent as a file.
- *
- * WhatsApp fetches the link itself rather than taking bytes from us, so the
- * URL has to be public and reachable from Meta's servers - which is exactly
- * what an ImageKit address is. The customer gets a document they can open,
- * forward and keep, not a link they have to tap through a browser.
- *
- * The filename is what they see in the chat and what lands in their Downloads
- * folder, so it carries the invoice number rather than whatever the CDN made
- * of it.
- */
-const sendDocument = async (to, { url, filename, caption }) => {
-    if (!isConfigured() || !url) return null;
-
-    try {
-        const { data } = await client().post("/messages", {
-            messaging_product: "whatsapp",
-            to: formatPhone(to),
-            type: "document",
-            document: {
-                link: url,
-                filename: filename || "document.pdf",
-                ...(caption ? { caption: String(caption).slice(0, 1024) } : {}),
-            },
-        });
-        return data;
-    } catch (error) {
-        console.error("WhatsApp document failed:", error.response?.data || error.message);
-        return null;
-    }
-};
-
-module.exports = { sendText, sendList, sendButtons, sendDocument, markAsRead, formatPhone, isConfigured };
+module.exports = { sendText, sendList, sendButtons, markAsRead, formatPhone, isConfigured };

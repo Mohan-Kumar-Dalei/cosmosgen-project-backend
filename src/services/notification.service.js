@@ -48,13 +48,29 @@ const buildPinUrl = (lat, lon) => {
  * Every customer-facing message goes through here. Web chat gets a socket
  * event, WhatsApp gets a real message - and the same call handles both so
  * no caller has to remember which channel the customer came in on.
+ *
+ * `alsoWhatsApp` is how a message opts out of the second half of that.
+ *
+ * Mohan's rule is that WhatsApp carries one thing and one thing only: the code
+ * the customer has to read out to the technician. Everything else the customer
+ * used to be told there - the job was cancelled, the payment went through,
+ * here is your invoice - is a notification on their phone now, and the
+ * assistant answers for it when they ask. It knows all of it: the amount, the
+ * invoice number, what was repaired and where the copy lives.
+ *
+ * The reason is money. From October 2026 Meta bills for these, and every one
+ * of them said something the app was already showing. The socket event stays
+ * either way, because that is the message appearing in the chat the customer
+ * is looking at, and it costs nothing.
  */
-const notifyCustomer = async ({ ticket, text }) => {
+const notifyCustomer = async ({ ticket, text, alsoWhatsApp = true }) => {
     emitToRoom(userRoom(ticket.customer), "ai-response", {
         content: text,
         sender: "system",
         chat: ticket.ticketNumber,
     });
+
+    if (!alsoWhatsApp) return;
 
     const phone = ticket.customerSnapshot?.phone;
     if (!phone) {
@@ -252,6 +268,16 @@ const notifyCustomerArrived = async (ticket) => {
     });
 };
 
+/**
+ * The job is off.
+ *
+ * A notification rather than a WhatsApp message, like the rest of the job's
+ * steps - but this one carries the reason in its body rather than only a
+ * heading, because "cancelled" without a why is the message that makes
+ * somebody ring up angry. The office always records a reason; it is on the
+ * ticket, it is in the chat, and the assistant will repeat it with the ticket
+ * number if they ask.
+ */
 const notifyCustomerCancelled = async (ticket) => {
     jobMoved(ticket);
 
@@ -262,7 +288,15 @@ const notifyCustomerCancelled = async (ticket) => {
         ticket.cancelReason || "Not specified"
     );
 
-    await notifyCustomer({ ticket, text });
+    await notifyCustomer({ ticket, text, alsoWhatsApp: false });
+
+    push.sendToCustomer(ticket.customer, {
+        title: (ticket.serviceLabel || "Your job") + " has been cancelled",
+        body: ticket.cancelReason
+            ? ticket.ticketNumber + " - " + ticket.cancelReason
+            : ticket.ticketNumber + " has been cancelled. Open it to see why.",
+        data: { ticketId: String(ticket._id), kind: "cancelled" },
+    });
 };
 
 /**
@@ -296,28 +330,64 @@ const resetConversation = async (ticket) => {
 };
 
 /**
- * The invoice itself, once it has somewhere to live.
+ * The job has been moved to another day.
  *
- * Sent after the closing message rather than with it: the figures are what
- * the customer wants to read in the chat, and a document arriving on top of
- * them would bury the one line - the amount - that they actually check. This
- * is the copy they keep.
+ * The chat carries the full sentence - the new date, the slot, who is coming
+ * and their number - because that is what somebody re-reads later. The
+ * notification carries the date alone, which is the thing they need to know
+ * from a lock screen.
+ */
+const notifyCustomerRescheduled = (ticket, whenText) => {
+    push.sendToCustomer(ticket.customer, {
+        title: (ticket.serviceLabel || "Your job") + " moved to " + whenText,
+        body: ticket.ticketNumber + " - open it to see who is coming.",
+        data: { ticketId: String(ticket._id), kind: "rescheduled" },
+    });
+};
+
+/**
+ * The money is in and the job is finished.
  *
- * Nothing is said when it fails. The bill has already reached them in words,
- * the URL is on the ticket for both apps to offer, and an apology for a PDF
- * that did not arrive is a message about our plumbing, not about their job.
+ * The amount goes in the title rather than the body, because that is the one
+ * thing somebody checks from the lock screen without opening anything. What it
+ * was for goes underneath.
+ */
+const notifyCustomerPaid = (ticket, totalRupees) => {
+    jobMoved(ticket);
+
+    push.sendToCustomer(ticket.customer, {
+        title: "Payment received - Rs " + totalRupees,
+        body: (ticket.serviceLabel || "Your job") + " is complete. "
+            + (ticket.billing?.invoiceNumber
+                ? "Invoice " + ticket.billing.invoiceNumber + "."
+                : "Your invoice is on its way."),
+        data: { ticketId: String(ticket._id), kind: "paid" },
+    });
+};
+
+/**
+ * The invoice is ready, once it has somewhere to live.
+ *
+ * The PDF itself used to be pushed at them on WhatsApp the moment it existed,
+ * which is a document nobody asked for landing in a chat - and a billed
+ * message, from October 2026, for a file most people open once a year when a
+ * landlord wants it. So the file is not sent any more; they are told it exists
+ * and where to find it.
+ *
+ * Nothing is lost by that. `publishInvoice` has already written the URL onto
+ * the ticket, which is what both apps offer as "Download invoice", and the
+ * assistant carries the same link - so "bhej do bill" is answered in the chat,
+ * by somebody who was asked.
  */
 const sendCustomerInvoice = async (ticket, url) => {
-    const phone = ticket?.customerSnapshot?.phone;
-    if (!phone || !url) return;
+    if (!url) return;
 
     const number = ticket.billing?.invoiceNumber || ticket.ticketNumber;
-    const t = await speaks(ticket);
 
-    await whatsapp.sendDocument(phone, {
-        url,
-        filename: String(number).replace(/[^A-Za-z0-9-]/g, "-") + ".pdf",
-        caption: t.invoiceCaption(number, ticket.serviceLabel || "your job"),
+    push.sendToCustomer(ticket.customer, {
+        title: "Your invoice is ready",
+        body: number + " for " + (ticket.serviceLabel || "your job") + ".",
+        data: { ticketId: String(ticket._id), kind: "invoice" },
     });
 };
 
@@ -345,7 +415,7 @@ const notifyTechnicianAssigned = (ticket) => {
         + (ticket.technicianSnapshot?.name || ticket.technician)
         + (listening
             ? " - " + listening + " device(s) listening, the app will ring"
-            : " - NO device listening (app closed or vendor off duty), so only the push and WhatsApp can reach them")
+            : " - NO device listening (app closed or vendor off duty), so the push is the only thing that can reach them")
     );
 
     emitToRoom(techRoom(ticket.technician), "ticket:assigned", {
@@ -376,41 +446,28 @@ const notifyTechnicianAssigned = (ticket) => {
      * This is the one thing that still lands, because Android delivers it
      * rather than us.
      *
+     * It is now the only thing. The same job used to go to the vendor's
+     * WhatsApp as well, with the customer's name, number and a directions
+     * link in it - three channels carrying one job, and the WhatsApp copy was
+     * the least likely of them to arrive: it was a message we started, so
+     * outside the vendor's twenty-four hour window Meta accepted it and
+     * delivered nothing. Everything it held is on the job screen this push
+     * opens.
+     *
+     * So the body carries the ticket number now. It used to be a hint before
+     * a fuller message; standing alone it should say which job, for the
+     * vendor glancing at a lock screen with two of them already in hand.
+     *
      * Deliberately not awaited. Assigning a job must not get slower, or
      * fail, because a push server is having a bad minute.
      */
     push.sendToTechnician(ticket.technician, {
         title: "New job assigned",
-        body: [ticket.serviceLabel, ticket.customerSnapshot?.area].filter(Boolean).join(" - ")
+        body: [ticket.ticketNumber, ticket.serviceLabel, ticket.customerSnapshot?.area]
+            .filter(Boolean).join(" - ")
             || "A job has been given to you. Open it to see where.",
         data: { kind: "ticket:assigned", ticketId: String(ticket._id) },
     });
-};
-
-/**
- * The socket event only lands if their panel happens to be open. A
- * technician on the road has it closed, so the job also goes to their
- * WhatsApp - that's the one they'll actually see.
- */
-const notifyTechnicianAssignedOnWhatsApp = async (ticket) => {
-    const tech = ticket.technicianSnapshot || {};
-    if (!tech.phone) return;
-
-    const customer = ticket.customerSnapshot || {};
-    const directionsUrl = buildDirectionsUrl(customer.lat, customer.lon);
-
-    const text =
-        "*New job assigned*\n\n" +
-        "Ticket: " + ticket.ticketNumber + "\n" +
-        "Service: " + ticket.serviceLabel + "\n" +
-        (ticket.problemDescription ? "Issue: " + ticket.problemDescription + "\n" : "") +
-        "\nCustomer: " + (customer.name || "-") + "\n" +
-        "Phone: " + (customer.phone || "-") + "\n" +
-        "Area: " + (customer.area || "-") + "\n" +
-        (customer.address ? "Address: " + customer.address + "\n" : "") +
-        (directionsUrl ? "\nDirections:\n" + directionsUrl : "");
-
-    await whatsapp.sendText(tech.phone, text);
 };
 
 const notifyTechnicianQueued = (ticket) => {
@@ -659,10 +716,11 @@ module.exports = {
     notifyCustomerTechnicianEnRoute,
     notifyCustomerArrived,
     notifyCustomerCancelled,
+    notifyCustomerRescheduled,
+    notifyCustomerPaid,
     sendCustomerInvoice,
     resetConversation,
     notifyTechnicianAssigned,
-    notifyTechnicianAssignedOnWhatsApp,
     notifyTechnicianQueued,
     notifyTechnicianUnassigned,
     notifyTechnicianPaymentReceived,
