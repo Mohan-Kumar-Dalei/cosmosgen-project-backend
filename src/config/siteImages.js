@@ -33,9 +33,21 @@ const SITE_IMAGES = [
         label: "An engineer at a customer's door",
         group: "Home",
         note: "Stands in for the team picture until that one exists, and opens the About page.",
-        // The double extension is the name the file was actually uploaded
-        // under, and a URL has to match what exists
-        url: IK + "cg-hero-visit.png.png",
+        /*
+         * `cg-hero-visit.png`, not the `.png.png` that was here.
+         *
+         * Both names exist on ImageKit - the doubled one was uploaded by
+         * accident and never removed - and both answer a plain request, which
+         * is why this looked fine for so long. They part company the moment a
+         * size is asked for: `cg-hero-visit.png.png?tr=w-420` is a 404, so
+         * every resized copy of this picture was missing while the full-size
+         * one loaded, and the page quietly fetched half a megabyte for a
+         * thumbnail or showed nothing at all.
+         *
+         * The single-extension file is the right drawing besides - an engineer
+         * at a door with the customer pointing, which is what the label says.
+         */
+        url: IK + "cg-hero-visit.png",
     },
     {
         slot: "HERO_AC",
