@@ -75,7 +75,23 @@ const SITE_IMAGES = [
         label: "On the road",
         group: "Work with us",
         note: "Opens the page for engineers who want to join.",
-        url: IK + "cg-on-the-way.png",
+
+        /*
+         * The `?updatedAt=` is not decoration - it is the only way the new
+         * drawing gets seen.
+         *
+         * ImageKit serves these with a year of cache, so a file replaced under
+         * a name that is already out there keeps answering with the old
+         * picture: same address, same answer, for a year. The stamp changes
+         * the address, so the CDN treats it as something it has never been
+         * asked for and goes and fetches it.
+         *
+         * Which means this number has to change every time this drawing is
+         * replaced. The office page exists so that nobody has to come back
+         * here to do it - paste the new address there, press Save, and the
+         * database carries it from then on.
+         */
+        url: IK + "cg-on-the-way.png?updatedAt=1789301575114",
     },
     {
         slot: "APP_SHOT",
