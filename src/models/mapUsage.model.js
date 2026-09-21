@@ -30,4 +30,14 @@ const mapUsageSchema = new mongoose.Schema({
 // One row per day and kind, and the upsert below depends on it being unique
 mapUsageSchema.index({ day: 1, kind: 1 }, { unique: true });
 
+/*
+ * A year of counters is plenty.
+ *
+ * These rows exist to answer "which call is eating the budget, and roughly how
+ * much" - a question about this month against last, not about last winter. The
+ * page asks for a fortnight by default and ninety days at most, so anything
+ * past a year has no way of being read even deliberately.
+ */
+mapUsageSchema.index({ createdAt: 1 }, { expireAfterSeconds: 365 * 24 * 60 * 60 });
+
 module.exports = mongoose.model("MapUsage", mapUsageSchema);

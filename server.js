@@ -16,6 +16,7 @@ const connectDB = require("./src/config/db");
 const initSocketServer = require("./src/sockets/socketManager");
 const initVoicebotServer = require("./src/sockets/voicebot.socket");
 const { promoteDueScheduledTickets } = require("./src/services/dispatch.service");
+const housekeeping = require("./src/services/housekeeping.service");
 const catalog = require("./src/services/catalog.service");
 const keyring = require("./src/services/keyring.service");
 
@@ -55,6 +56,21 @@ const startServer = async () => {
 
     cron.schedule("30 9 * * *", async () => {
         await promoteDueScheduledTickets();
+    }, {
+        scheduled: true,
+        timezone: "Asia/Kolkata",
+    });
+
+    /*
+     * Sunday, before anybody is up: throw away the weight of finished jobs.
+     *
+     * Weekly rather than monthly because it is cheap and a week's worth is a
+     * small pass, where a month's worth is a long one - and this shares a
+     * database with live traffic. Nothing it touches is read any more; see
+     * housekeeping.service for what is deliberately left alone.
+     */
+    cron.schedule("15 3 * * 0", () => {
+        housekeeping.sweep();
     }, {
         scheduled: true,
         timezone: "Asia/Kolkata",
