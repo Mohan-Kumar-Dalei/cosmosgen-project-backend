@@ -1,7 +1,7 @@
 const { asLanguage } = require("../config/languages");
 const Ticket = require("../models/ticket.model");
 const UserModel = require("../models/user.model");
-const { SERVICE_CATALOG, getServiceByKey } = require("../config/services");
+const { SERVICE_CATALOG, getServiceByKey, issuePhrases } = require("../config/services");
 const { estimateBlock } = require("./estimate.service");
 const errors = require("../config/sentry");
 const { copyFor } = require("../config/copy");
@@ -823,7 +823,17 @@ const handleCreateTicket = async (args, userData, userLocation) => {
     const result = await booking.bookJob({
         customerId: userData?._id || userData?.id,
         serviceKey: args.serviceKey,
-        selectedIssues: args.selectedIssues,
+        /*
+         * Mapped back to English before it is stored.
+         *
+         * The model is talking to the customer in their own language, so what
+         * it hands over can be in it. issuePhrases turns a known fault back
+         * into the catalogue's English wording and leaves anything it does not
+         * recognise exactly as the customer said it - which is right, because
+         * an unrecognised fault is their own words and nobody should be
+         * translating those.
+         */
+        selectedIssues: issuePhrases(args.serviceKey, args.selectedIssues, "english"),
         problemDescription: args.problemDescription,
         channel: userData.channel || "whatsapp",
         location: userLocation,

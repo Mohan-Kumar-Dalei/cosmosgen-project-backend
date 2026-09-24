@@ -367,7 +367,19 @@ const book = async (req, res) => {
         const chosenLanguage = (!running.length && LANGUAGES.includes(language))
             ? language
             : req.user.language;
-        const issues = issuePhrases(serviceKey, selectedIssues, chosenLanguage);
+        /*
+         * The faults go on the ticket in English, always.
+         *
+         * They used to be written in whichever language the booking was made
+         * in, so an Odia booking put "\u0b25\u0b23\u0b4d\u0b21\u0b3e \u0b39\u0b47\u0b09\u0b28\u0b3e\u0b39\u0b3f\u0b01" on the
+         * ticket - and Mohan drew the line where it belongs: the language a
+         * customer books in governs what the assistant says back to them, and
+         * nothing else. A ticket is read by the office and by the vendor, and
+         * it has to say the same words to both of them however the job came
+         * in. `chosenLanguage` still rides on the ticket and still steers
+         * every message and the call.
+         */
+        const issues = issuePhrases(serviceKey, selectedIssues, "english");
 
         /*
          * Describing it in your own words is optional once faults are picked.
