@@ -211,15 +211,35 @@ const ticketSchema = new mongoose.Schema({
     },
 
     /**
-     * The call placed after the job closed.
+     * How the job was judged once it closed, however that answer arrived.
      *
      * Two separate questions on purpose: whether the work was actually done,
      * and how the vendor behaved. A vendor can fix an air conditioner
      * perfectly and still be somebody the company should not send back.
+     *
+     * There are two ways in and one record. The customer can rate the job in
+     * the app the moment it closes, and later - once the client's Exotel
+     * subscription is in place and Redis is holding the channel queue - the
+     * assistant will ring and ask the same two questions in whichever
+     * language that job was booked in. `source` says which of the two
+     * answered, so the call can skip a question the customer has already
+     * answered rather than asking it twice and keeping two numbers.
      */
     feedback: {
+        source: { type: String, enum: ["app", "call", ""], default: "" },
+        ratedAt: { type: Date },
         calledAt: { type: Date },
         rating: { type: Number, min: 0, max: 5, default: 0 },
+
+        /*
+         * The handful of things people actually say, as chips.
+         *
+         * A star on its own says a job was a four and never says why, which
+         * is no use to the office deciding whether to send that vendor back.
+         * Free text is better and almost nobody writes any, so the chips are
+         * the compromise: one tap, and they carry the reason.
+         */
+        tags: [{ type: String }],
         workOk: { type: Boolean },
         behaviourOk: { type: Boolean },
         complaint: { type: String, default: "" },

@@ -513,6 +513,16 @@ const shape = (t) => ({
         : null,
 
     scheduledFor: t.scheduling?.scheduledFor || null,
+
+    /*
+     * And which part of that day, when they picked one.
+     *
+     * The date on its own is half the answer: "Thursday" is not something a
+     * customer can plan around, and the app's own booking screen made them
+     * choose a window precisely so the office could hold the job for it. Sent
+     * so the job card can say the whole thing back to them.
+     */
+    slotWindow: t.scheduling?.slotWindow || "",
     trackingToken: t.tracking?.token || null,
 
     /*
@@ -555,6 +565,17 @@ const shape = (t) => ({
      * settled inside the office, and the customer is never shown it.
      */
     cancelReason: t.status === "Cancelled" ? (t.cancelReason || null) : null,
+
+    /*
+     * What the customer said about it, once they have said anything.
+     *
+     * Sent back so the card can show the stars they gave rather than asking
+     * again - a screen that keeps offering to take a rating it already has is
+     * a screen that looks like it lost the first one.
+     */
+    rating: t.feedback?.ratedAt
+        ? { stars: t.feedback.rating || 0, tags: t.feedback.tags || [] }
+        : null,
 
     /*
      * The two codes read out at the door.
@@ -1003,6 +1024,110 @@ const ask = async (req, res) => {
  * rules have to hold whichever door they are changed through.
  */
 
+
+/**
+ * What a customer can say about a finished job, in their own words and taps.
+ *
+ * Only their own ticket, only once it is closed, and only once. The office
+ * needs to be able to read a rating as a fact about a visit rather than as
+ * something that moved - a vendor who talks a customer into changing a two
+ * into a four has changed the record the office judges him by.
+ *
+ * This is the app's half of the answer. The other half - the assistant
+ * ringing afterwards in the job's own language - is waiting on the client's
+ * Exotel subscription, and when it arrives it reads `feedback.source` so it
+ * does not ask again for something already answered here.
+ */
+const RATING_TAGS = [
+    "On time",
+    "Clean work",
+    "Explained the price",
+    "Polite",
+    "Came prepared",
+    "Left it tidy",
+];
+
+const rateTicket = async (req, res) => {
+    try {
+        const stars = Number(req.body.stars);
+
+        if (!Number.isFinite(stars) || stars < 1 || stars > 5) {
+            return res.status(400).json({ success: false, message: "Pick between one and five stars." });
+        }
+
+        const ticket = await ticketModel.findOne({ _id: req.params.id, user: req.user._id });
+        if (!ticket) return res.status(404).json({ success: false, message: "We could not find that job." });
+
+        if (ticket.status !== "Closed") {
+            return res.status(400).json({
+                success: false,
+                message: "This job is not finished yet.",
+            });
+        }
+
+        if (ticket.feedback?.ratedAt) {
+            return res.status(409).json({
+                success: false,
+                message: "You have already rated this job.",
+            });
+        }
+
+        // Only the chips this server offers. Anything else is somebody
+        // posting at the endpoint rather than tapping in the app.
+        const tags = (Array.isArray(req.body.tags) ? req.body.tags : [])
+            .filter((t) => RATING_TAGS.includes(t))
+            .slice(0, RATING_TAGS.length);
+
+        ticket.feedback = {
+            ...(ticket.feedback?.toObject?.() || ticket.feedback || {}),
+            source: "app",
+            ratedAt: new Date(),
+            rating: stars,
+            tags,
+            note: String(req.body.comment || "").trim().slice(0, 500),
+        };
+
+        await ticket.save();
+
+        /*
+         * And the vendor's own average moves with it.
+         *
+         * Worked out from the count rather than from the stored average
+         * alone, because the stored average starts at five for somebody
+         * nobody has rated - averaging a genuine three into that placeholder
+         * would report a four that nobody gave.
+         */
+        const technicianId = ticket.technician || ticket.technicianSnapshot?.technician;
+
+        if (technicianId) {
+            const tech = await technicianModel.findById(technicianId).select("rating ratingCount");
+
+            if (tech) {
+                const count = tech.ratingCount || 0;
+                const next = count > 0
+                    ? ((tech.rating * count) + stars) / (count + 1)
+                    : stars;
+
+                tech.rating = Math.round(next * 100) / 100;
+                tech.ratingCount = count + 1;
+                await tech.save();
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: { stars, tags },
+            message: "Thank you - that goes straight to the office.",
+        });
+    } catch (error) {
+        console.error("Rate ticket error:", error);
+        return res.status(500).json({ success: false, message: "Could not save your rating." });
+    }
+};
+
+/** The chips the app offers, so there is one list rather than two. */
+const ratingTags = (_req, res) => res.status(200).json({ success: true, data: RATING_TAGS });
+
 const listAddresses = async (req, res) => {
     try {
         return res.status(200).json({ success: true, data: await addressService.list(req.user._id) });
@@ -1077,6 +1202,8 @@ const savePushToken = async (req, res) => {
 };
 
 module.exports = {
+    rateTicket,
+    ratingTags,
     savePushToken,
     listAddresses,
     addAddress,

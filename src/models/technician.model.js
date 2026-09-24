@@ -50,7 +50,16 @@ const technicianSchema = new mongoose.Schema({
         email: { type: String, trim: true, lowercase: true },
     skills: [{ type: String }],
     hasVehicle: { type: Boolean, default: false },
+    /*
+     * The running average, and the number of answers behind it.
+     *
+     * The default of five is a placeholder for a vendor nobody has rated yet,
+     * not a score they earned - which is why the count matters. With no
+     * ratings the first one replaces the default outright rather than being
+     * averaged into it, so one genuine three does not show as a four.
+     */
     rating: { type: Number, default: 5.0, min: 0, max: 5 },
+    ratingCount: { type: Number, default: 0 },
 
     location: {
         // No default on type - Mongoose would stamp { type: "Point" } onto every

@@ -100,4 +100,9 @@ router.post("/book", isAuthenticated, bookLimiter, customer.book);
 router.get("/tickets", isAuthenticated, customer.myTickets);
 router.get("/tickets/:id", isAuthenticated, customer.ticketDetail);
 
+// What the customer thought of a job, once it is finished. See rateTicket -
+// their own ticket, closed, and once.
+router.get("/rating-tags", customer.ratingTags);
+router.post("/tickets/:id/rating", isAuthenticated, customer.rateTicket);
+
 module.exports = router;
