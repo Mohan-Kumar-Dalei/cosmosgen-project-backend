@@ -16,6 +16,7 @@ const paymentService = require("../services/payment.service");
 const assistant = require("../services/assistant.service");
 const WebChat = require("../models/webChat.model");
 const { lookupPlace } = require("./map.controller");
+const { serviceRanges } = require("../services/estimate.service");
 const { SERVICE_CATALOG, issuePhrases, getServiceByKey, buildSkillRegex, escapeRegex } = require("../config/services");
 
 const isProd = process.env.NODE_ENV === "production";
@@ -246,6 +247,20 @@ const getServices = async (req, res) => {
 
         const said = (i) => (lang === "en" ? i.en : i[lang] || i.en);
 
+        /*
+         * What the work usually comes to, from the office's own price list.
+         *
+         * Asked for here rather than left off the screen, because "we cannot
+         * tell you anything about the price" is the reason somebody closes the
+         * app and rings a man they already know. It is a range and it is
+         * labelled as one - the engineer still settles the real figure at the
+         * door, after he has seen the fault.
+         *
+         * The same numbers the assistant quotes, read through the same helper,
+         * so the app and the conversation cannot say different things.
+         */
+        const ranges = await serviceRanges();
+
         const data = SERVICE_CATALOG.map((service) => ({
             key: service.key,
             label: service.label,
@@ -274,9 +289,24 @@ const getServices = async (req, res) => {
             })),
 
             issues: (service.issues || []).map((i) => ({ key: i.key, label: i.en, display: said(i) })),
+
+            // { from, to } in whole rupees, or absent when nothing is priced
+            usually: ranges[service.key] || null,
         }));
 
-        return res.status(200).json({ success: true, data });
+        /*
+         * The windows the app offers, sent with the list rather than typed
+         * into the app.
+         *
+         * A window the screen shows but the server refuses is the worst kind
+         * of bug - the customer fills the form and is told no for a reason
+         * they cannot see. One list, held where it is enforced.
+         */
+        return res.status(200).json({
+            success: true,
+            data,
+            slots: { windows: booking.SLOT_WINDOWS, aheadDays: booking.BOOK_AHEAD_DAYS },
+        });
     } catch (error) {
         console.error("Get services error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
@@ -372,6 +402,16 @@ const book = async (req, res) => {
             // Which saved address this one is for. Absent is the account's
             // own, which is what the app sent before there was a list.
             addressId: req.body.addressId,
+
+            /*
+             * When they want somebody, if they said so.
+             *
+             * Both absent is the old behaviour and still the right one for a
+             * customer who wants the next available engineer - the office
+             * treats a job with no day on it exactly as it always has.
+             */
+            scheduledFor: req.body.scheduledFor,
+            slotWindow: req.body.slotWindow,
         });
 
         if (result.ok) {
@@ -381,8 +421,12 @@ const book = async (req, res) => {
                     ticketNumber: result.ticket.ticketNumber,
                     id: result.ticket._id,
                     serviceLabel: result.ticket.serviceLabel,
+                    scheduledFor: result.ticket.scheduling?.scheduledFor || null,
+                    slotWindow: result.ticket.scheduling?.slotWindow || "",
                 },
-                message: "Booked. We are finding somebody near you now.",
+                message: result.ticket.scheduling?.scheduledFor
+                    ? "Booked. We will have somebody there on the day you picked."
+                    : "Booked. We are finding somebody near you now.",
             });
         }
 
@@ -392,6 +436,11 @@ const book = async (req, res) => {
             no_location: "We need your address to send somebody. Add it in your profile first.",
             limit_reached: "You already have " + booking.MAX_OPEN
                 + " requests open. Let one finish before booking another.",
+            bad_slot_date: "We could not read the day you picked. Choose it again.",
+            slot_in_the_past: "That day has gone. Pick today or a day after it.",
+            slot_too_far: "We take bookings up to " + booking.BOOK_AHEAD_DAYS
+                + " days ahead. Pick a nearer day.",
+            bad_slot_window: "Pick one of the time windows on the screen.",
         }[result.code];
 
         if (result.code === "already_booked") {

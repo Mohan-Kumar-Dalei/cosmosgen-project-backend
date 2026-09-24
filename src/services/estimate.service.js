@@ -106,4 +106,33 @@ const estimateBlock = async () => {
     }
 };
 
-module.exports = { estimateBlock };
+/**
+ * The same ranges, as figures rather than as a paragraph.
+ *
+ * `estimateBlock` writes for the model; this writes for a screen. Both read the
+ * office's own price list through `rangeFor`, so a rate changed once is changed
+ * everywhere - the card in the app, the sentence the assistant says, and the
+ * bill the engineer raises cannot drift apart.
+ *
+ * A service with nothing priced comes back absent rather than as zero. The card
+ * then says nothing about money, which is honest: we do not know yet.
+ */
+const serviceRanges = async () => {
+    try {
+        const docs = await ServicePricing.find().select("serviceKey itemsList").lean();
+        const out = {};
+
+        docs.forEach((doc) => {
+            const range = rangeFor(doc);
+            if (range) out[doc.serviceKey] = range;
+        });
+
+        return out;
+    } catch (error) {
+        // A missing price list costs the figure, not the screen.
+        console.error("[ESTIMATE] could not read the price list:", error.message);
+        return {};
+    }
+};
+
+module.exports = { estimateBlock, serviceRanges };

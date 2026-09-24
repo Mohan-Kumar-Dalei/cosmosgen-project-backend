@@ -34,6 +34,52 @@ const OPEN_STATUSES = ["Pending", "Queued", "Assigned", "In-Progress", "Payment-
  */
 const MAX_OPEN = 3;
 
+/*
+ * When somebody wants the engineer, in the only shapes the office can act on.
+ *
+ * Booking used to capture what was wrong and nothing about when, so every job
+ * arrived as "now" whether or not anybody would be home - and the office found
+ * out by ringing. A customer booking at eleven at night for a flat they reach
+ * tomorrow evening is the ordinary case, not the exception.
+ *
+ * Windows rather than times, because an engineer crossing Bhubaneswar cannot
+ * promise four o'clock and the office should not print a number it will have
+ * to apologise for. Four of them covers a working day.
+ */
+const SLOT_WINDOWS = ["9 AM - 12 PM", "12 PM - 3 PM", "3 PM - 6 PM", "6 PM - 9 PM"];
+
+/** How far ahead a job may be booked. Beyond this nobody knows their week. */
+const BOOK_AHEAD_DAYS = 14;
+
+/**
+ * The day and window, checked before they reach the ticket.
+ *
+ * Absent means "as soon as you can", which is what every caller sent before
+ * this existed and is still what WhatsApp sends - so no slot is a valid answer
+ * and not a missing one. A day in the past is not: it is a clock that has
+ * drifted or a payload somebody typed, and either way the office would be
+ * shown a job for last Tuesday.
+ */
+const readSlot = (scheduledFor, slotWindow) => {
+    if (!scheduledFor) return { ok: true, slot: null };
+
+    const day = new Date(scheduledFor);
+    if (Number.isNaN(day.getTime())) return { ok: false, code: "bad_slot_date" };
+
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    if (day < midnight) return { ok: false, code: "slot_in_the_past" };
+
+    const furthest = new Date(midnight);
+    furthest.setDate(furthest.getDate() + BOOK_AHEAD_DAYS);
+    if (day > furthest) return { ok: false, code: "slot_too_far" };
+
+    const window = String(slotWindow || "").trim();
+    if (window && !SLOT_WINDOWS.includes(window)) return { ok: false, code: "bad_slot_window" };
+
+    return { ok: true, slot: { scheduledFor: day, slotWindow: window || "" } };
+};
+
 const openTicketsFor = (customerId) =>
     Ticket.find({ customer: customerId, status: { $in: OPEN_STATUSES } })
         .select("ticketNumber status serviceKey serviceLabel technicianSnapshot scheduling")
@@ -63,9 +109,22 @@ const bookJob = async ({
      * changes only this ticket, never where the customer lives.
      */
     addressId,
+
+    /*
+     * When they want somebody, if they said.
+     *
+     * The office reads this on the assign screen and decides between sending
+     * a vendor now and holding the job for the day asked for - which is the
+     * whole point of collecting it.
+     */
+    scheduledFor,
+    slotWindow,
 }) => {
     const service = getServiceByKey(serviceKey);
     if (!service) return { ok: false, code: "unknown_service" };
+
+    const asked = readSlot(scheduledFor, slotWindow);
+    if (!asked.ok) return { ok: false, code: asked.code };
 
     const user = await UserModel.findById(customerId);
     if (!user) return { ok: false, code: "no_profile" };
@@ -154,6 +213,9 @@ const bookJob = async ({
          * and nothing to explain why. A job always has a door to draw, even
          * before anybody is coming to it.
          */
+        // Absent unless they picked a day - see readSlot.
+        ...(asked.slot ? { scheduling: asked.slot } : {}),
+
         tracking: { token: issueToken(), issuedAt: new Date() },
         statusHistory: [{ to: "Pending", actorRole: channel === "whatsapp" ? "ai" : "customer", at: new Date() }],
     });
@@ -177,4 +239,4 @@ const bookJob = async ({
     return { ok: true, ticket, service };
 };
 
-module.exports = { bookJob, openTicketsFor, OPEN_STATUSES, MAX_OPEN };
+module.exports = { bookJob, openTicketsFor, OPEN_STATUSES, MAX_OPEN, SLOT_WINDOWS, BOOK_AHEAD_DAYS };
