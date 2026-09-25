@@ -90,7 +90,12 @@ const addEarningsForOnlineJob = async (technicianId, ticketId, ticketNumber, tot
         description: "Your share of online job #" + ticketNumber + " (after " + commissionRate + "% commission)",
     });
 
-    await autoVerifyCashPayments(technicianId);
+    /*
+     * No sweep here. What the company owes this vendor for an online job
+     * says nothing about whether he has handed back the cash he collected on
+     * a different one, and closing those rows from this event is how a cash
+     * commission got marked verified without anybody looking at it.
+     */
     announceBalance(technicianId, updatedTech.walletBalancePaise, "job_online");
     return txn;
 };
@@ -147,10 +152,31 @@ const processPayout = async (technicianId, amountPaise, referenceNote, method = 
 };
 
 /**
- * Auto-verifies pending cash payments when the technician's wallet is credited.
+ * Closes the cash jobs a settlement has actually paid for - on the office's
+ * instruction, and with the office's name on them.
+ *
+ * This used to run by itself, from any credit to any wallet, and write
+ * "verified" with nobody's name attached. That is the one thing Mohan has
+ * been clearest about: verified means somebody checked, and if nobody
+ * checked then nothing was verified. Crediting a vendor for an online job -
+ * money that has nothing to do with the cash he is still holding - swept his
+ * cash jobs clean, and a manual adjustment did the same.
+ *
+ * It still does the useful half. When the office has checked a settlement
+ * reference at the gateway and recorded it, the cash jobs that money covers
+ * do need closing, and working out which ones from the balance is the right
+ * arithmetic. What has changed is that it happens because a person did
+ * something, and their id goes on every row it touches.
+ *
+ * Without an admin id it does nothing at all, deliberately.
  */
-const autoVerifyCashPayments = async (technicianId) => {
+const settleCashJobsFor = async (technicianId, adminId) => {
     try {
+        if (!adminId) {
+            console.warn("[WALLET] refusing to verify cash jobs with nobody's name on them");
+            return;
+        }
+
         const tech = await Technician.findById(technicianId).select("walletBalancePaise name").lean();
         if (!tech) return;
 
@@ -169,8 +195,12 @@ const autoVerifyCashPayments = async (technicianId) => {
         if (balance >= 0) {
             // Balance is zero or positive -> they owe nothing. Verify all.
             for (const job of pendingCashJobs) {
-                await Payment.updateOne({ _id: job._id }, { status: "verified", verifiedAt: new Date() });
-                await ticketModel.updateOne({ _id: job.ticket }, { "payment.status": "Verified", "payment.verifiedAt": new Date() });
+                await Payment.updateOne({ _id: job._id }, {
+                    status: "verified", verifiedBy: adminId, verifiedAt: new Date(),
+                });
+                await ticketModel.updateOne({ _id: job.ticket }, {
+                    "payment.status": "Verified", "payment.verifiedBy": adminId, "payment.verifiedAt": new Date(),
+                });
                 verifiedCount++;
             }
         } else {
@@ -182,8 +212,12 @@ const autoVerifyCashPayments = async (technicianId) => {
             for (const job of pendingCashJobs) {
                 if (unverifiedCommission <= targetDebt) break;
 
-                await Payment.updateOne({ _id: job._id }, { status: "verified", verifiedAt: new Date() });
-                await ticketModel.updateOne({ _id: job.ticket }, { "payment.status": "Verified", "payment.verifiedAt": new Date() });
+                await Payment.updateOne({ _id: job._id }, {
+                    status: "verified", verifiedBy: adminId, verifiedAt: new Date(),
+                });
+                await ticketModel.updateOne({ _id: job.ticket }, {
+                    "payment.status": "Verified", "payment.verifiedBy": adminId, "payment.verifiedAt": new Date(),
+                });
                 
                 unverifiedCommission -= (job.commissionPaise || 0);
                 verifiedCount++;
@@ -204,7 +238,7 @@ const autoVerifyCashPayments = async (technicianId) => {
  * the office. Credits the wallet so the negative balance moves back
  * towards zero.
  */
-const recordRecharge = async (technicianId, amountPaise, referenceNote, method = "Razorpay", description = null) => {
+const recordRecharge = async (technicianId, amountPaise, referenceNote, method = "Razorpay", description = null, adminId = null) => {
     const amount = Number(amountPaise);
     if (!Number.isFinite(amount) || amount <= 0) {
         throw new Error("Recharge amount must be positive");
@@ -231,7 +265,9 @@ const recordRecharge = async (technicianId, amountPaise, referenceNote, method =
             || "Settled: Rs " + (amount / 100).toFixed(2) + (referenceNote ? " (" + referenceNote + ")" : ""),
     });
 
-    await autoVerifyCashPayments(technicianId);
+    // The office has just checked this reference at the gateway and recorded
+    // it, so the jobs it covers close with that person's name on them.
+    await settleCashJobsFor(technicianId, adminId);
     announceBalance(technicianId, updatedTech.walletBalancePaise, "recharge");
     return txn;
 };
@@ -270,10 +306,11 @@ const adjustBalance = async (technicianId, deltaPaise, reason, method = null, re
         description: "Manual adjustment: " + String(reason).trim(),
     });
 
-    if (delta > 0) {
-        await autoVerifyCashPayments(technicianId);
-    }
-
+    /*
+     * An adjustment is a correction, not a check. It used to close cash jobs
+     * whenever it moved the balance the right way, which meant a typo fixed
+     * in one direction quietly verified money nobody had looked for.
+     */
     announceBalance(technicianId, updatedTech.walletBalancePaise, "adjustment");
     return txn;
 };

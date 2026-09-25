@@ -2038,10 +2038,32 @@ const collectCash = async (req, res) => {
             return res.status(409).json({ success: false, message: "This ticket was already closed" });
         }
 
+        /*
+         * A split is not verified by the vendor saying he took his cash.
+         *
+         * It used to be. The reasoning was that a split leaves nothing
+         * outstanding in either direction - which is true of the wallet and
+         * has nothing to do with what "verified" means here. Verified means
+         * somebody asked Razorpay and Razorpay said the money was captured,
+         * and on a split the company's half genuinely did go through the
+         * gateway: there is a payment id on the row and it can be checked
+         * like any other. Marking it verified on the doorstep skipped that
+         * check entirely, so the one kind of payment where the customer and
+         * the vendor each handled part of the money was the one kind nobody
+         * ever confirmed.
+         *
+         * It lands in the queue now, in its own tab, and the office presses
+         * the same button it presses on a UPI payment.
+         *
+         * `nothingToSettle` stays as it was. With no commission there is no
+         * gateway reference to ask about - the money never involved the
+         * company - and a refusal is caught by needsAmountCheck above, which
+         * puts the visit charge in front of the office to confirm the figure.
+         */
         await Payment.findOneAndUpdate(
             { ticket: ticket._id },
             {
-                status: needsAmountCheck ? "collected" : (isSplit || nothingToSettle) ? "verified" : "collected",
+                status: (!needsAmountCheck && !isSplit && nothingToSettle) ? "verified" : "collected",
                 collectedBy: req.technician._id,
                 collectedAt: new Date(),
                 note: note ? String(note).trim().slice(0, 200) : undefined,
@@ -2648,7 +2670,11 @@ const getPaymentStatus = async (req, res) => {
                 ).lean();
 
                 if (marked) {
-                    const { feePaise, taxPaise } = estimateGatewayFee(ticket.payment?.split?.companyOnlinePaise || 0);
+                    const { feePaise, taxPaise } = estimateGatewayFee(
+                        ticket.payment?.split?.companyOnlinePaise || 0,
+                        await settingsService.getSetting("GATEWAY_FEE_PERCENT"),
+                        await settingsService.getSetting("GATEWAY_FEE_GST_PERCENT"),
+                    );
                     await Payment.updateOne(
                         { ticket: ticket._id },
                         {
@@ -2715,7 +2741,11 @@ const getPaymentStatus = async (req, res) => {
 
             // The webhook carries the exact gateway fee. This path doesn't
             // have it, so estimate - the webhook overwrites it when it lands.
-            const { feePaise, taxPaise } = estimateGatewayFee(closed.billing?.totalPaise || 0);
+            const { feePaise, taxPaise } = estimateGatewayFee(
+                closed.billing?.totalPaise || 0,
+                await settingsService.getSetting("GATEWAY_FEE_PERCENT"),
+                await settingsService.getSetting("GATEWAY_FEE_GST_PERCENT"),
+            );
 
             await Payment.findOneAndUpdate(
                 { ticket: ticket._id, status: "pending" },

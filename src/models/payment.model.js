@@ -7,7 +7,25 @@ const paymentSchema = new mongoose.Schema({
 
     amountPaise: { type: Number, required: true },
 
-    method: { type: String, enum: ["cash", "upi", "online"], default: "cash" },
+    /*
+     * How the money moved, and it is not a tidy list.
+     *
+     * Three of these are ours - cash, online and split, chosen by the vendor
+     * when the bill is raised. The rest are Razorpay's: the webhook
+     * overwrites the method with whatever the gateway says it actually was,
+     * so an online bill comes back as "upi" or "card" or "netbanking".
+     *
+     * The enum said cash, upi, online and had been wrong for as long as
+     * splits existed. It never threw, because findOneAndUpdate does not run
+     * validators unless asked - so the field quietly held values the schema
+     * denied, and the first person to add runValidators would have broken
+     * every split in the system. Written down properly instead.
+     */
+    method: {
+        type: String,
+        enum: ["cash", "online", "split", "upi", "card", "netbanking", "wallet", "emi", "paylater"],
+        default: "cash",
+    },
 
     status: {
         type: String,

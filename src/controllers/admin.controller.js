@@ -27,7 +27,7 @@ const { promoteQueuedTicket } = require("../services/dispatch.service");
 const walletService = require("../services/wallet.service");
 const settingsService = require("../services/settings.service");
 const {
-    estimateGatewayFee, GATEWAY_FEE_PERCENT,
+    estimateGatewayFee,
     getRazorpay, isConfigured: razorpayConfigured,
 } = require("../config/razorpay");
 
@@ -194,8 +194,29 @@ const getDashboardStats = async (req, res) => {
                 // - it is settled on the job it belongs to.
                 { $match: { ticket: { $ne: null } } },
                 {
+                    /*
+                     * Grouped by which tab the row belongs to, not by
+                     * "is it cash".
+                     *
+                     * A split is neither cash nor a gateway payment, and
+                     * bucketing on `isCash` put it in with the online ones -
+                     * so the UPI badge counted work that was not in the UPI
+                     * tab. Three kinds, three buckets, and the tabs and their
+                     * badges finally agree.
+                     */
                     $group: {
-                        _id: { status: "$status", isCash: { $eq: ["$method", "cash"] } },
+                        _id: {
+                            status: "$status",
+                            kind: {
+                                $switch: {
+                                    branches: [
+                                        { case: { $eq: ["$method", "cash"] }, then: "cash" },
+                                        { case: { $eq: ["$method", "split"] }, then: "split" },
+                                    ],
+                                    default: "online",
+                                },
+                            },
+                        },
                         count: { $sum: 1 },
                         totalPaise: { $sum: "$amountPaise" },
                     },
@@ -264,18 +285,29 @@ const getDashboardStats = async (req, res) => {
         const byStatus = {};
         ticketStats.forEach((s) => { byStatus[s._id] = s.count; });
 
-        const bucket = (status, isCash) =>
-            paymentGroups.find((g) => g._id.status === status && g._id.isCash === isCash) || {};
+        const bucket = (status, kind) =>
+            paymentGroups.find((g) => g._id.status === status && g._id.kind === kind) || {};
 
-        const verifyCash = bucket("collected", true);
-        const verifyOnline = bucket("collected", false);
-        const verifyCount = (verifyCash.count || 0) + (verifyOnline.count || 0);
+        /*
+         * A badge means work waiting in that tab, and only "collected" is
+         * work.
+         *
+         * The UPI badge used to count `pending` rows - bills the customer had
+         * not paid yet - which is nothing for the office to do and made the
+         * tab light up over somebody else's inaction. Cash counted
+         * `collected` and UPI counted `pending`, so the same red dot meant
+         * two different things depending on which tab it sat under.
+         */
+        const verifyCash = bucket("collected", "cash");
+        const verifyOnline = bucket("collected", "online");
+        const verifySplit = bucket("collected", "split");
 
         // Raised but not paid at all yet - the customer still owes the bill.
-        const pendingCash = bucket("pending", true);
-        const pendingOnline = bucket("pending", false);
-        const awaitingCount = (pendingCash.count || 0) + (pendingOnline.count || 0);
-        const awaitingPaise = (pendingCash.totalPaise || 0) + (pendingOnline.totalPaise || 0);
+        // Counted for the headline figure, never for a badge.
+        const awaitingCount = ["cash", "online", "split"]
+            .reduce((n, k) => n + (bucket("pending", k).count || 0), 0);
+        const awaitingPaise = ["cash", "online", "split"]
+            .reduce((n, k) => n + (bucket("pending", k).totalPaise || 0), 0);
 
         const queuedBy = {};
         queuedSplit.forEach((q) => { queuedBy[q._id] = q.count; });
@@ -304,10 +336,14 @@ const getDashboardStats = async (req, res) => {
 
                 technicians: techStats[0] || { total: 0, available: 0, onJob: 0 },
 
-                // The whole queue - this is the badge number
+                // Everything still to be checked, whichever way it was
+                // paid. The dashboard's own headline; the Payments tabs each
+                // carry their own share of it as a badge.
                 toVerify: {
-                    count: verifyCount,
-                    amountDisplay: paiseToRupees((verifyCash.totalPaise || 0) + (verifyOnline.totalPaise || 0)),
+                    count: (verifyCash.count || 0) + (verifyOnline.count || 0) + (verifySplit.count || 0),
+                    amountDisplay: paiseToRupees(
+                        (verifyCash.totalPaise || 0) + (verifyOnline.totalPaise || 0) + (verifySplit.totalPaise || 0)
+                    ),
                 },
 
                 // Online only: money that reached the company account and has
@@ -353,9 +389,9 @@ const getDashboardStats = async (req, res) => {
                     // Cash and visits are counted separately as well as inside
                     // the queue, because the tabs that hold them are the ones
                     // the office actually works from.
-                    paymentsToVerify: verifyCount,
                     paymentsCash: verifyCash.count || 0,
-                    paymentsOnline: pendingOnline.count || 0,
+                    paymentsOnline: verifyOnline.count || 0,
+                    paymentsSplit: verifySplit.count || 0,
                     paymentsVisits: visitsToCheck,
                     wallets: walletsToSettle,
 
@@ -1920,16 +1956,50 @@ const getTechnicianById = async (req, res) => {
  * lands: the commission has not been sent yet at the moment the office is
  * looking at the card.
  */
-const settlementFor = (payment, billing) => {
+const settlementFor = (payment, billing, rate = {}) => {
+    const feePercent = rate.percent ?? 2.2;
+    const gstPercent = rate.gstPercent ?? 18;
+
+    /*
+     * Three methods, and the code used to know about two.
+     *
+     * `isCash` was the whole test, so a split - which is neither cash nor
+     * online - fell into the online branch and the screen told the office a
+     * story about it that was not true: "Paid online Rs 500" on a job where
+     * the customer handed Rs 350 to the vendor at the door and only Rs 150
+     * ever reached the gateway. The arithmetic underneath happened to come
+     * out right, which is worse rather than better - a wrong label over a
+     * right number is the kind of thing an office reconciles against and
+     * only discovers months later.
+     */
     const isCash = payment.method === "cash";
-    const grossPaise = payment.amountPaise || 0;
+    const isSplit = payment.method === "split";
     const commissionPaise = payment.commissionPaise || 0;
 
-    // Already charged and recorded by the webhook, on the customer's payment
+    /*
+     * What actually came in through this payment.
+     *
+     * On a split only the company's half did, and that half is the
+     * commission by construction - generateBill sets companyOnlinePaise to
+     * exactly commissionPaise. The rest of the bill never touched the
+     * company: the vendor took it in notes.
+     */
+    const grossPaise = isSplit ? commissionPaise : (payment.amountPaise || 0);
+
+    // Already charged and recorded by the webhook, on whatever the customer
+    // paid through the gateway
     const customerGatewayPaise = (payment.gatewayFeePaise || 0) + (payment.gatewayTaxPaise || 0);
 
-    // Still to come, on the technician's commission transfer
-    const onCommission = isCash ? estimateGatewayFee(commissionPaise) : { feePaise: 0, taxPaise: 0 };
+    /*
+     * Still to come, on the vendor's commission transfer - and only on cash.
+     *
+     * On a split the customer paid the commission directly, so there is
+     * nothing for the vendor to send and nothing more for the gateway to
+     * take. On a visit charge there is no commission at all.
+     */
+    const onCommission = isCash
+        ? estimateGatewayFee(commissionPaise, feePercent, gstPercent)
+        : { feePaise: 0, taxPaise: 0 };
     const technicianGatewayPaise = onCommission.feePaise + onCommission.taxPaise;
 
     // The bill already charged the customer GST, so part of the commission is
@@ -1940,15 +2010,39 @@ const settlementFor = (payment, billing) => {
         : 0;
 
     return {
-        collectedIn: isCash ? "cash" : "online",
+        collectedIn: isCash ? "cash" : (isSplit ? "split" : "online"),
+
+        /*
+         * A visit charge is not a job the company earned anything on.
+         *
+         * The vendor travelled out, the customer refused after the quote,
+         * and the whole amount is his. The office's only question is whether
+         * the figure is right - so the screen is told what this is rather
+         * than being left to infer it from a commission that happens to be
+         * zero today. The day a commission on visits is set, this flag stays
+         * true and the ordinary arithmetic starts applying underneath it.
+         */
+        isVisitCharge: Boolean(payment.isVisitCharge),
+
         grossDisplay: paiseToRupees(grossPaise),
+
+        // Only on a split: what the vendor took in notes at the door, which
+        // never appears in any of the figures above.
+        cashAtDoorDisplay: isSplit ? paiseToRupees(payment.technicianSharePaise || 0) : null,
 
         commissionPercent: payment.commissionPercent ?? null,
         commissionDisplay: paiseToRupees(commissionPaise),
         gstInCommissionDisplay: paiseToRupees(gstInCommissionPaise),
         technicianShareDisplay: paiseToRupees(payment.technicianSharePaise || 0),
 
-        gatewayPercent: GATEWAY_FEE_PERCENT,
+        gatewayPercent: feePercent,
+        gatewayGstPercent: gstPercent,
+
+        // True only while the figure beside it is our own estimate. Once the
+        // gateway has reported the real one there is nothing approximate
+        // left to apologise for.
+        gatewayIsEstimate: isCash && commissionPaise > 0,
+
         customerGatewayDisplay: paiseToRupees(customerGatewayPaise),
         technicianGatewayDisplay: paiseToRupees(technicianGatewayPaise),
         technicianGatewayIsEstimate: isCash && commissionPaise > 0,
@@ -1968,7 +2062,7 @@ const settlementFor = (payment, billing) => {
 const roundHalfUp = (expr) => ({ $floor: { $add: [expr, 0.5] } });
 
 /** The same netting as settlementFor, rolled up across every paid job. */
-const earningsFrom = (row) => {
+const earningsFrom = (row, feePercent = 2.2) => {
     const commissionPaise = row?.commissionPaise || 0;
     const customerGatewayPaise = row?.customerGatewayPaise || 0;
     const technicianGatewayPaise = row?.technicianGatewayPaise || 0;
@@ -1980,7 +2074,7 @@ const earningsFrom = (row) => {
         technicianGatewayDisplay: paiseToRupees(technicianGatewayPaise),
         gatewayTotalDisplay: paiseToRupees(customerGatewayPaise + technicianGatewayPaise),
         netDisplay: paiseToRupees(netPaise),
-        gatewayPercent: GATEWAY_FEE_PERCENT,
+        gatewayPercent: feePercent,
     };
 };
 
@@ -2031,6 +2125,12 @@ const paymentSearchFilter = async (term) => {
 
 const getPayments = async (req, res) => {
     try {
+        // One read for the whole handler. The rate is an owner setting now,
+        // cached for a minute in settings.service, so this costs nothing and
+        // means the rows, the strip and the label all quote the same number.
+        const feePercent = await settingsService.getSetting("GATEWAY_FEE_PERCENT");
+        const gstPercent = await settingsService.getSetting("GATEWAY_FEE_GST_PERCENT");
+
         const status = req.query.status || "all";
         const method = req.query.method;
         const page = Math.max(1, Number(req.query.page) || 1);
@@ -2045,8 +2145,22 @@ const getPayments = async (req, res) => {
         // reference list in the wallet both read it - just not queued.
         const filter = { ticket: { $ne: null } };
         if (status !== "all") filter.status = status;
+        /*
+         * Three ways a customer can have paid, and three filters.
+         *
+         * "online" used to mean "anything that is not cash", which quietly
+         * swept splits into the UPI list - a job where most of the money
+         * never went near the gateway sitting in the gateway's own tab. A
+         * split now has its own tab and its own filter.
+         *
+         * Online still cannot be matched on the literal string: the webhook
+         * overwrites the method with whatever Razorpay says it was, so a card
+         * payment comes back as "card" and a netbanking one as "netbanking".
+         * Excluding the two we can name is the only filter that keeps them.
+         */
         if (method === "cash") filter.method = "cash";
-        else if (method === "online") filter.method = { $ne: "cash" };
+        else if (method === "split") filter.method = "split";
+        else if (method === "online") filter.method = { $nin: ["cash", "split"] };
 
         // Trips where the customer refused and only the visit was billed.
         // Worth their own list: a technician who keeps coming back with just
@@ -2104,7 +2218,7 @@ const getPayments = async (req, res) => {
                         techFeePaise: {
                             $cond: [
                                 { $eq: ["$method", "cash"] },
-                                roundHalfUp({ $divide: [{ $multiply: [{ $ifNull: ["$commissionPaise", 0] }, GATEWAY_FEE_PERCENT] }, 100] }),
+                                roundHalfUp({ $divide: [{ $multiply: [{ $ifNull: ["$commissionPaise", 0] }, feePercent] }, 100] }),
                                 0,
                             ],
                         },
@@ -2115,7 +2229,7 @@ const getPayments = async (req, res) => {
                         _id: null,
                         commissionPaise: { $sum: "$commissionPaise" },
                         technicianGatewayPaise: {
-                            $sum: { $add: ["$techFeePaise", roundHalfUp({ $divide: [{ $multiply: ["$techFeePaise", 18] }, 100] })] },
+                            $sum: { $add: ["$techFeePaise", roundHalfUp({ $divide: [{ $multiply: ["$techFeePaise", gstPercent] }, 100] })] },
                         },
                         customerGatewayPaise: {
                             $sum: { $add: [{ $ifNull: ["$gatewayFeePaise", 0] }, { $ifNull: ["$gatewayTaxPaise", 0] }] },
@@ -2152,7 +2266,7 @@ const getPayments = async (req, res) => {
                     technicianShareDisplay: paiseToRupees(p.technicianSharePaise || 0),
                     gatewayFeeDisplay: paiseToRupees((p.gatewayFeePaise || 0) + (p.gatewayTaxPaise || 0)),
 
-                    settlement: settlementFor(p, billing),
+                    settlement: settlementFor(p, billing, { percent: feePercent, gstPercent }),
 
                     // collectedBy is empty on an online payment, because the
                     // gateway settled it rather than a person. The ticket's
@@ -2211,7 +2325,7 @@ const getPayments = async (req, res) => {
                 };
             }),
             summary: totals,
-            earnings: earningsFrom(earnings[0]),
+            earnings: earningsFrom(earnings[0], feePercent),
             searched: Boolean(search),
             pagination: { page, limit, total, pages: Math.ceil(total / limit) },
         });
@@ -2930,6 +3044,13 @@ const toggleStaffActive = async (req, res) => {
 
 const getRevenueAnalytics = async (req, res) => {
     try {
+        // The same rate the Payments screen quotes. Two screens estimating
+        // the same fee at two different rates is how a company ends up with
+        // two answers to "what did we earn".
+        const feePercent = await settingsService.getSetting("GATEWAY_FEE_PERCENT");
+        const gstPercent = await settingsService.getSetting("GATEWAY_FEE_GST_PERCENT");
+        const feeWithGst = feePercent * (1 + (gstPercent / 100));
+
         const days = Math.min(365, Math.max(1, Number(req.query.days) || 30));
         const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
         since.setHours(0, 0, 0, 0);
@@ -2967,7 +3088,7 @@ const getRevenueAnalytics = async (req, res) => {
                                 { $eq: ["$method", "cash"] },
                                 roundHalfUp({
                                     $divide: [
-                                        { $multiply: [{ $ifNull: ["$commissionPaise", 0] }, GATEWAY_FEE_PERCENT * 1.18] },
+                                        { $multiply: [{ $ifNull: ["$commissionPaise", 0] }, feeWithGst] },
                                         100,
                                     ],
                                 }),
@@ -3882,7 +4003,27 @@ const getWalletSummary = async (req, res) => {
             summary: {
                 owedToTechniciansDisplay: paiseToRupees(owedToTechnicians),
                 owedByTechniciansDisplay: paiseToRupees(owedByTechnicians),
-                netDisplay: paiseToRupees(owedToTechnicians - owedByTechnicians),
+
+                /*
+                 * What is left once every vendor is squared up - and which
+                 * way it points.
+                 *
+                 * This used to be sent as a single signed number under the
+                 * name "Net position", which Mohan quite reasonably read as
+                 * the company's net position and then reported as broken
+                 * when it showed zero. It was not broken: zero is the right
+                 * answer when nobody owes anybody anything, and it has
+                 * nothing to do with what the company earned - that lives on
+                 * the Analytics screen as Net company commission.
+                 *
+                 * Sent as an amount plus a direction so the screen can name
+                 * it honestly instead of leaving a minus sign to carry the
+                 * meaning.
+                 */
+                netDisplay: paiseToRupees(Math.abs(owedToTechnicians - owedByTechnicians)),
+                netDirection: owedToTechnicians === owedByTechnicians
+                    ? "settled"
+                    : (owedToTechnicians > owedByTechnicians ? "company_owes" : "vendors_owe"),
 
                 visitsPendingCount: pendingVisits.reduce((n, v) => n + v.count, 0),
                 visitsPendingDisplay: paiseToRupees(pendingVisits.reduce((n, v) => n + v.totalPaise, 0)),
@@ -4128,7 +4269,13 @@ const collectFromTechnician = async (req, res) => {
             how,
             "Collected from technician via " + how
                 + (reference ? " (" + reference + ")" : "")
-                + (covers.length ? " for " + covers.join(", ") : "")
+                + (covers.length ? " for " + covers.join(", ") : ""),
+
+            // Whose check this was. The cash jobs this settlement covers are
+            // closed inside recordRecharge, and every one of them carries
+            // this id - a verified row with nobody's name on it is not
+            // evidence of anything.
+            req.admin?._id || null
         );
 
         /*

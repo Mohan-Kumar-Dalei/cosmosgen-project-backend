@@ -23,16 +23,23 @@ const getRazorpay = () => {
     return instance;
 };
 
-// Razorpay charges roughly 2% plus 18% GST on that fee. The webhook gives
-// the exact number, but a link can be paid before the webhook lands - this
-// keeps the P&L close until the real figure arrives.
-const GATEWAY_FEE_PERCENT = Number(process.env.GATEWAY_FEE_PERCENT) || 2;
-const GATEWAY_GST_PERCENT = 18;
-
-const estimateGatewayFee = (amountPaise) => {
-    const feePaise = Math.round((amountPaise * GATEWAY_FEE_PERCENT) / 100);
-    const taxPaise = Math.round((feePaise * GATEWAY_GST_PERCENT) / 100);
+/*
+ * What the gateway will take, when nobody has told us yet.
+ *
+ * Razorpay reports the real fee on the payment entity and the webhook writes
+ * it down - so this is only ever used for money that has not moved: the
+ * commission a vendor still owes on a cash job. The rate is passed in rather
+ * than read here, because it is an owner setting now (GATEWAY_FEE_PERCENT in
+ * settings.service) and not a deploy-time constant.
+ *
+ * The defaults are the fallback of a fallback: if a caller somehow has no
+ * setting to hand, an estimate slightly on the high side is the safer error -
+ * it understates the margin rather than overstating it.
+ */
+const estimateGatewayFee = (amountPaise, percent = 2.2, gstPercent = 18) => {
+    const feePaise = Math.round((amountPaise * percent) / 100);
+    const taxPaise = Math.round((feePaise * gstPercent) / 100);
     return { feePaise, taxPaise };
 };
 
-module.exports = { getRazorpay, isConfigured, estimateGatewayFee, GATEWAY_FEE_PERCENT };
+module.exports = { getRazorpay, isConfigured, estimateGatewayFee };
