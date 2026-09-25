@@ -103,8 +103,27 @@ router.get("/settlements", isAdminAuthenticated, adminController.getSettlements)
 router.get("/wallets", isAdminAuthenticated, adminController.getWalletSummary);
 router.get("/wallets/:technicianId", isAdminAuthenticated, adminController.getTechnicianWallet);
 router.get("/wallets/:technicianId/references", isAdminAuthenticated, adminController.getTechnicianPaymentReferences);
-router.post("/technicians/payout", isAdminAuthenticated, isSuperAdmin, adminController.issueTechnicianPayout);
-router.post("/wallets/:technicianId/collect", isAdminAuthenticated, isSuperAdmin, adminController.collectFromTechnician);
+/*
+ * Recording a payout is office work too.
+ *
+ * It sits beside collect for a reason: both are the same clerk, at the same
+ * screen, writing down money that has already moved. Neither of them moves
+ * it - the transfer happens in a bank app, and this is the record of it - so
+ * gating one behind the owner and not the other only meant a vendor waited
+ * for the owner to log in before his payment appeared on his own wallet.
+ */
+router.post("/technicians/payout", isAdminAuthenticated, adminController.issueTechnicianPayout);
+/*
+ * Recording a collection is backoffice work, not owner work.
+ *
+ * It was behind isSuperAdmin, which meant the one person who is not sitting
+ * in front of the queue all day was the only one who could clear it - so a
+ * vendor's settlement waited for the owner to log in. The office already
+ * verifies these references against Razorpay; recording what it just
+ * verified is the same job finished. Payout, just above, went the same way
+ * for the same reason.
+ */
+router.post("/wallets/:technicianId/collect", isAdminAuthenticated, adminController.collectFromTechnician);
 
 /* ---------- SUPERADMIN ONLY ---------- */
 // Blocking bars that phone number permanently, so it stays with the owner

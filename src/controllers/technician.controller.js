@@ -1000,6 +1000,7 @@ const guardOtp = async (ticket, purpose, entered) => {
     return { status: 400, body: { success: false, message: result.message, reason: result.reason } };
 };
 
+
 const startWork = async (req, res) => {
     try {
         // The customer has to say the word before the clock starts. Checked
@@ -1007,7 +1008,7 @@ const startWork = async (req, res) => {
         // leaves the job exactly where it was.
         const before = await ticketModel
             .findOne({ _id: req.params.id, technician: req.technician._id, status: "Assigned" })
-            .select("otp")
+            .select("otp acceptedAt")
             .lean();
 
         if (!before) {
@@ -1017,10 +1018,27 @@ const startWork = async (req, res) => {
         const blocked = await guardOtp(before, "start", req.body?.otp);
         if (blocked) return res.status(blocked.status).json(blocked.body);
 
+        /*
+         * Starting work is a stronger acceptance than pressing Accept.
+         *
+         * The gate was only in the app: the server let a vendor go from
+         * Assigned straight to In-Progress with acceptedAt still null, and
+         * everything downstream reads that field - the customer is told who
+         * is coming when it is set, and the vendor's own screen decides
+         * whether to show the accept panel or the job. So a vendor who
+         * reached the work another way ended up inside a job the app
+         * insisted he had not taken, and the customer was never told his
+         * name at all.
+         *
+         * Stamped here rather than refused. He is at the door; telling him
+         * to go back and press a button first would be the wrong answer to
+         * a bug of ours.
+         */
         const ticket = await ticketModel.findOneAndUpdate(
             { _id: req.params.id, technician: req.technician._id, status: "Assigned" },
             {
                 status: "In-Progress",
+                ...(before?.acceptedAt ? {} : { acceptedAt: new Date() }),
                 $push: {
                     statusHistory: {
                         from: "Assigned",
@@ -1036,6 +1054,19 @@ const startWork = async (req, res) => {
 
         if (!ticket) {
             return res.status(404).json({ success: false, message: "Ticket not found or already started" });
+        }
+
+        /*
+         * If the accept only just happened here, the customer has still not
+         * been told who is at their door - so they are told now, before they
+         * are told he has started.
+         *
+         * Out of order otherwise: "work has started" from a name they have
+         * never heard is the message this whole accept step exists to
+         * prevent.
+         */
+        if (!before?.acceptedAt) {
+            await notification.notifyCustomerAccepted(ticket);
         }
 
         // Goes to both channels - a WhatsApp customer never had the web
@@ -1072,10 +1103,23 @@ const startWork = async (req, res) => {
  */
 const acceptTicket = async (req, res) => {
     try {
+        /*
+         * A job already under way counts as his too.
+         *
+         * This only looked at Queued and Assigned, so a vendor whose screen
+         * had not caught up - or who had reached the work without the accept
+         * ever landing - pressed the button and was told "Job not found or
+         * not currently yours" about a job he was standing inside. Mohan hit
+         * exactly that on CG-2609-0042: In-Progress, a visit charge raised,
+         * and acceptedAt still null.
+         *
+         * Any status where the job is his is a status where accepting is
+         * either true already or catching up with the truth.
+         */
         const ticket = await ticketModel.findOne({
             _id: req.params.id,
             technician: req.technician._id,
-            status: { $in: ["Queued", "Assigned"] },
+            status: { $in: ["Queued", "Assigned", "In-Progress", "Payment-Pending"] },
         }).lean();
 
         if (!ticket) {
@@ -1114,7 +1158,18 @@ const acceptTicket = async (req, res) => {
             return res.status(200).json({ success: true, message: "Already accepted", data: ticket });
         }
 
-        await notification.notifyCustomerAccepted(updated);
+        /*
+         * Only if the customer has something to learn from it.
+         *
+         * This endpoint now also catches up a job that reached the work with
+         * acceptedAt still null, and on one of those the customer heard about
+         * this vendor long ago - when work started, or when the bill arrived.
+         * Introducing him again, after he has been and gone, would be the
+         * second introduction this whole step exists to prevent.
+         */
+        if (["Queued", "Assigned"].includes(ticket.status)) {
+            await notification.notifyCustomerAccepted(updated);
+        }
 
         // And the map they may already be watching, which otherwise stays on
         // "Finding somebody" until the next position ping happens along.

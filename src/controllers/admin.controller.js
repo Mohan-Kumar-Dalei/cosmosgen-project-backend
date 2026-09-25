@@ -2194,8 +2194,20 @@ const getPayments = async (req, res) => {
             Payment.aggregate([
                 { $match: { ticket: { $ne: null } } },
                 {
+                    // Three kinds, same as the tabs and the badges.
                     $group: {
-                        _id: { status: "$status", isCash: { $eq: ["$method", "cash"] } },
+                        _id: {
+                            status: "$status",
+                            kind: {
+                                $switch: {
+                                    branches: [
+                                        { case: { $eq: ["$method", "cash"] }, then: "cash" },
+                                        { case: { $eq: ["$method", "split"] }, then: "split" },
+                                    ],
+                                    default: "online",
+                                },
+                            },
+                        },
                         count: { $sum: 1 },
                         totalPaise: { $sum: "$amountPaise" },
                     },
@@ -2239,13 +2251,34 @@ const getPayments = async (req, res) => {
             ]),
         ]);
 
-        const totals = { cash: {}, online: {} };
+        /*
+         * Per method, and across all of them.
+         *
+         * The headline cards read `online` only, so a cash bill the customer
+         * had not paid was missing from "Awaiting payment" and a verified
+         * cash job was missing from "Verified" - the office was looking at a
+         * figure that silently excluded most of the business. A card that
+         * means "everything waiting" now has a bucket that means that.
+         */
+        const totals = { cash: {}, online: {}, split: {}, all: {} };
+        const seen = {};
+
         summary.forEach((s) => {
-            const bucket = s._id.isCash ? "cash" : "online";
-            totals[bucket][s._id.status] = {
+            const kind = s._id.kind || "online";
+            totals[kind] = totals[kind] || {};
+            totals[kind][s._id.status] = {
                 count: s.count,
                 amountDisplay: paiseToRupees(s.totalPaise),
             };
+
+            const running = seen[s._id.status] || { count: 0, totalPaise: 0 };
+            running.count += s.count;
+            running.totalPaise += s.totalPaise;
+            seen[s._id.status] = running;
+        });
+
+        Object.entries(seen).forEach(([status, v]) => {
+            totals.all[status] = { count: v.count, amountDisplay: paiseToRupees(v.totalPaise) };
         });
 
         return res.status(200).json({
