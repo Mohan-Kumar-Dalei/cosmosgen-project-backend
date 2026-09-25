@@ -166,15 +166,52 @@ const answer = async ({ message, history = [], user }) => {
         { role: "user", parts: [{ text: String(message).slice(0, 2000) }] },
     ];
 
-    const response = await keyring.generate({
-        model: MODEL_NAME,
-        contents,
-        config: {
-            systemInstruction: INSTRUCTION
-                + (user?.name ? "\n\nThey are called " + user.name + "." : "")
-                + record,
-            temperature: 0.3,
-        },
+    const config = {
+        systemInstruction: INSTRUCTION
+            + (user?.name ? "\n\nThey are called " + user.name + "." : "")
+            + record,
+        temperature: 0.3,
+
+        /*
+         * Two settings that are the whole of why this felt slow.
+         *
+         * Gemini 3 thinks before it answers unless it is told not to, and on
+         * a question like "what does a gas refill cost" that deliberation is
+         * seconds of somebody watching a waiting animation for no gain - the
+         * answer was already in the system instruction. Turned to its lowest
+         * setting the model replies to a customer's question the way a person
+         * behind a counter would, which is immediately.
+         *
+         * And the length is capped. Generation time is paid per token
+         * produced, so an assistant that is allowed to write six paragraphs
+         * takes six paragraphs' worth of seconds to say a thing worth two
+         * sentences. Four hundred tokens is a long answer for this screen.
+         */
+        thinkingConfig: { thinkingLevel: "low" },
+        maxOutputTokens: 400,
+    };
+
+    /*
+     * And if this build of the API has never heard of thinkingConfig, the
+     * answer still arrives.
+     *
+     * The field is version dependent - 2.5 wanted a budget in tokens, 3.x
+     * wants a level - and a wrong name is a 400 on every question a customer
+     * asks rather than a slower reply. Worth having, not worth risking, so
+     * the setting is dropped and the call repeated once.
+     */
+    const ask = (body) => keyring.generate({ model: MODEL_NAME, contents, config: body });
+
+    const response = await ask(config).catch((error) => {
+        const said = String(error?.message || "");
+        const aboutThinking = /thinking/i.test(said) || /INVALID_ARGUMENT/i.test(said);
+
+        if (!aboutThinking) throw error;
+
+        console.warn("[ASSISTANT] thinkingConfig refused, asking again without it:", said);
+
+        const { thinkingConfig, ...rest } = config;
+        return ask(rest);
     });
 
     return response.text;
