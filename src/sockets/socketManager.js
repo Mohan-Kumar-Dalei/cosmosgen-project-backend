@@ -29,9 +29,28 @@ function initSocketServer(httpServer) {
 
     console.log("[SOCKET] Initializing. Allowed origins:", CLIENT_ORIGINS);
 
+    /*
+     * The same rule the HTTP side uses - see corsOrigin in app.js.
+     *
+     * Kept in step because a web build that can fetch but cannot open a socket
+     * is the worse half of the problem: the screen loads, and then no job ever
+     * moves on it.
+     */
+    const allowed = (origin, done) => {
+        if (!origin) return done(null, true);
+        if (CLIENT_ORIGINS.includes(origin)) return done(null, true);
+
+        if (process.env.NODE_ENV !== "production"
+            && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+            return done(null, true);
+        }
+
+        return done(null, false);
+    };
+
     const io = new Server(httpServer, {
         cors: {
-            origin: CLIENT_ORIGINS,
+            origin: allowed,
             methods: ["GET", "POST"],
             credentials: true,
         },

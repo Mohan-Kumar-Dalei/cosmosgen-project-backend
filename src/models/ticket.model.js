@@ -321,6 +321,34 @@ const ticketSchema = new mongoose.Schema({
 
     cancelReason: { type: String },
 
+    /*
+     * The offer this job was booked with, held until there is a bill to take
+     * it off.
+     *
+     * A snapshot rather than a reference to the Discount row. The office
+     * changing a percentage next month must not rewrite what a customer was
+     * promised today - the same reason the commission rate is frozen onto a
+     * bill instead of being read live when somebody opens it.
+     *
+     * Absent on every ticket so far. When it is absent the bill is built
+     * exactly as it always was.
+     */
+    discount: {
+        discountId: { type: mongoose.Schema.Types.ObjectId, ref: "Discount", default: null },
+        code: { type: String, default: null },
+        label: { type: String, default: null },
+        kind: { type: String, enum: ["percent", "flat"] },
+        value: { type: Number },
+        maxDiscountPaise: { type: Number, default: 0 },
+
+        // Whose earnings it comes out of. Only discount.service reads this -
+        // see split() there - so the policy lives in one place.
+        bornBy: { type: String, enum: ["company", "vendor", "shared"], default: "company" },
+        vendorSharePercent: { type: Number, default: 0 },
+
+        appliedAt: { type: Date },
+    },
+
     billing: {
         invoiceNumber: { type: String },
 
@@ -350,9 +378,41 @@ const ticketSchema = new mongoose.Schema({
         }],
         workDone: { type: String },
         subtotalPaise: { type: Number, default: 0 },
+
+        /*
+         * What came off, and under whose name.
+         *
+         * Stored on the bill as well as on the ticket because the two answer
+         * different questions: the ticket holds the offer the customer was
+         * given at booking, and this holds what it was actually worth against
+         * the figures the vendor typed at the door. An offer quoted on an
+         * estimate and an offer applied to a real bill are rarely the same
+         * number, and the invoice has to show the one that was taken.
+         *
+         * Zero on every bill in the system today - no offers exist yet - so
+         * the arithmetic below is unchanged until one is created.
+         */
+        discountPaise: { type: Number, default: 0 },
+        discountLabel: { type: String, default: null },
+        discountCode: { type: String, default: null },
+
+        // GST is charged on the net, so this is the subtotal after the
+        // discount and the figure the tax is worked out on.
+        taxablePaise: { type: Number, default: 0 },
+
         gstPercent: { type: Number, default: 0 },
         gstPaise: { type: Number, default: 0 },
         totalPaise: { type: Number, default: 0 },
+
+        /*
+         * What the job would have come to without the offer.
+         *
+         * Kept so the vendor's share can be worked out on the full price when
+         * the company is carrying the discount, and so the invoice can show
+         * the customer what they saved. Equal to totalPaise whenever there is
+         * no discount, which is every bill so far.
+         */
+        grossTotalPaise: { type: Number, default: 0 },
 
         // Snapshot the commission that applied when this job was billed.
         // Reading the technician's live rate later would silently rewrite

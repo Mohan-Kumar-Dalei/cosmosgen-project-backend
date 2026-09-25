@@ -212,4 +212,95 @@ const sendToCustomer = async (customerId, { title, body, data = {} }) => {
     }
 };
 
-module.exports = { sendToTechnician, sendToCustomer, JOB_CHANNEL };
+/**
+ * The same thing, to everybody at once.
+ *
+ * For the office broadcasting - a festival, an offer, a change of hours - which
+ * is the only reason to write to every customer at the same moment. A job
+ * update is never sent this way; it belongs to one person and goes through
+ * sendToCustomer.
+ *
+ * Sent in hundreds because that is Expo's own limit on a request, and slowly on
+ * purpose: thirty thousand phones is three hundred requests, and firing them
+ * together is how a server gets rate-limited into delivering half a campaign.
+ * Nothing waits on this - the caller has already answered the office - so a
+ * broadcast that takes a minute to go out costs nobody anything.
+ *
+ * Returns how many phones it was actually handed to, which is the figure the
+ * office sees on the notice afterwards. It is not a delivery count: a phone
+ * that is off, or has notifications turned off, is counted here and hears
+ * nothing, and no push service anywhere can tell the difference.
+ */
+const BATCH = 100;
+
+const sendToAllCustomers = async ({ title, body, data = {} }) => {
+    const rows = await userModel
+        .find({ pushToken: { $exists: true, $ne: "" } })
+        .select("pushToken")
+        .lean();
+
+    const tokens = rows
+        .map((r) => String(r.pushToken || "").trim())
+        .filter(looksLikeAToken);
+
+    if (!tokens.length) {
+        console.log("[PUSH] broadcast had nobody to send to");
+        return 0;
+    }
+
+    let sent = 0;
+
+    for (let i = 0; i < tokens.length; i += BATCH) {
+        const slice = tokens.slice(i, i + BATCH);
+
+        try {
+            // eslint-disable-next-line no-await-in-loop
+            const res = await fetch(EXPO_PUSH_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Accept: "application/json" },
+                body: JSON.stringify(slice.map((to) => ({
+                    to,
+                    title,
+                    body,
+                    data,
+                    sound: "default",
+                    priority: "high",
+                    channelId: "updates",
+                }))),
+            });
+
+            // eslint-disable-next-line no-await-in-loop
+            const out = await res.json().catch(() => null);
+            const tickets = Array.isArray(out?.data) ? out.data : [];
+
+            sent += tickets.filter((t) => t?.status !== "error").length;
+
+            /*
+             * Dead tokens are cleared as they are found.
+             *
+             * A broadcast is the only time the whole list is walked, so it is
+             * also the only chance to notice the phones that have been wiped or
+             * signed out since the last one. Left alone they accumulate, and
+             * every future campaign spends requests on nothing.
+             */
+            const dead = tickets
+                .map((t, n) => (t?.details?.error === "DeviceNotRegistered" ? slice[n] : null))
+                .filter(Boolean);
+
+            if (dead.length) {
+                // eslint-disable-next-line no-await-in-loop
+                await userModel
+                    .updateMany({ pushToken: { $in: dead } }, { $unset: { pushToken: 1 } })
+                    .catch(() => { /* they will be found again next time */ });
+            }
+        } catch (err) {
+            console.error("[PUSH] a broadcast batch failed: " + err.message);
+            errors.report(err, "push.broadcast", { batch: String(i) });
+        }
+    }
+
+    console.log("[PUSH] broadcast \"" + title + "\" went to " + sent + " of " + tokens.length + " phones");
+    return sent;
+};
+
+module.exports = { sendToTechnician, sendToCustomer, sendToAllCustomers, JOB_CHANNEL };

@@ -23,6 +23,37 @@ const CLIENT_ORIGINS = (process.env.CLIENT_ORIGINS || "http://localhost:5173")
     .split(",")
     .map((o) => o.trim());
 
+/**
+ * Who may call this API from a browser.
+ *
+ * The list above is the real answer and it comes from the environment, so the
+ * live server allows exactly what it is told to allow and nothing else.
+ *
+ * The one addition is a laptop. `expo start --web` runs the customer app on a
+ * localhost port that changes with whatever else is already running, and every
+ * one of those would otherwise have to be typed into CLIENT_ORIGINS before the
+ * app could fetch anything - which is the difference between looking at a
+ * screen and spending ten minutes working out why it is empty. A development
+ * server has nothing worth protecting from a page on the same machine.
+ *
+ * Only off production. On the live box this branch never runs, so the API's
+ * public CORS is unchanged: if the web build is to be pointed at production,
+ * its origin goes in CLIENT_ORIGINS deliberately, by somebody who meant it.
+ */
+const isLocalhost = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+
+const corsOrigin = (origin, done) => {
+    // A request with no Origin header is not a browser - curl, a webhook, the
+    // apps themselves - and CORS has nothing to say about it.
+    if (!origin) return done(null, true);
+
+    if (CLIENT_ORIGINS.includes(origin)) return done(null, true);
+
+    if (process.env.NODE_ENV !== "production" && isLocalhost(origin)) return done(null, true);
+
+    return done(null, false);
+};
+
 // Behind the Render proxy - the rate limiter needs the real client IP
 app.set("trust proxy", 1);
 
@@ -33,7 +64,7 @@ app.use(helmet({
 app.use(compression());
 
 app.use(cors({
-    origin: CLIENT_ORIGINS,
+    origin: corsOrigin,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,

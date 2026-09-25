@@ -15,6 +15,8 @@ const registration = require("../services/registration.service");
 const paymentService = require("../services/payment.service");
 const assistant = require("../services/assistant.service");
 const WebChat = require("../models/webChat.model");
+const Announcement = require("../models/announcement.model");
+const ratings = require("../services/rating.service");
 const { lookupPlace } = require("./map.controller");
 const { serviceRanges } = require("../services/estimate.service");
 const { SERVICE_CATALOG, issuePhrases, getServiceByKey, buildSkillRegex, escapeRegex } = require("../config/services");
@@ -261,6 +263,15 @@ const getServices = async (req, res) => {
          */
         const ranges = await serviceRanges();
 
+        /*
+         * What customers have said about each trade.
+         *
+         * The card has always carried a star and the number beside it was 4.8,
+         * typed into the app. Every rating needed to replace it was already
+         * being collected on the tickets; it was only never counted.
+         */
+        const scores = await ratings.byService();
+
         const data = SERVICE_CATALOG.map((service) => ({
             key: service.key,
             label: service.label,
@@ -292,6 +303,19 @@ const getServices = async (req, res) => {
 
             // { from, to } in whole rupees, or absent when nothing is priced
             usually: ranges[service.key] || null,
+
+            /*
+             * The score and how many people are behind it.
+             *
+             * `ratingCount` matters as much as the figure: 4.9 from three
+             * customers and 4.5 from four hundred are not the same claim, and
+             * a screen that shows only the first number cannot tell them
+             * apart. A trade nobody has rated yet falls back to the shared
+             * starting figure rather than showing nothing, because an empty
+             * corner on one card in a row of nine reads as a fault.
+             */
+            rating: scores[service.key]?.rating ?? ratings.DEFAULT_RATING,
+            ratingCount: scores[service.key]?.count || 0,
         }));
 
         /*
@@ -1101,6 +1125,11 @@ const rateTicket = async (req, res) => {
 
         await ticket.save();
 
+        // The trade's score is counted from the tickets and held for a few
+        // minutes. Dropping it here means the customer who just rated a job
+        // sees their own rating reflected rather than the figure from before.
+        ratings.forget();
+
         /*
          * And the vendor's own average moves with it.
          *
@@ -1213,7 +1242,99 @@ const savePushToken = async (req, res) => {
     }
 };
 
+/**
+ * GET /api/customer/announcements
+ *
+ * The posters for the home screen and the notices behind the bell.
+ *
+ * Both in one request because the home screen needs both and a second round
+ * trip on app open is a second chance to be slow on a phone holding one bar of
+ * signal. Only what is live: inactive rows and anything outside its dates never
+ * leaves the server, so the app has no rules of its own to get wrong.
+ *
+ * A notice that has never been sent is a draft and is not shown either. The
+ * office writing one is not the office publishing it.
+ */
+const announcements = async (req, res) => {
+    try {
+        const now = new Date();
+
+        const live = {
+            isActive: true,
+            $and: [
+                { $or: [{ startsAt: null }, { startsAt: { $lte: now } }] },
+                { $or: [{ endsAt: null }, { endsAt: { $gte: now } }] },
+            ],
+        };
+
+        const [posters, notices] = await Promise.all([
+            Announcement.find({ ...live, placement: "poster" })
+                .sort({ order: 1, createdAt: -1 })
+                .limit(8)
+                .lean(),
+
+            Announcement.find({ ...live, placement: "notice", pushedAt: { $ne: null } })
+                .sort({ pushedAt: -1 })
+                .limit(30)
+                .lean(),
+        ]);
+
+        const seenAt = req.user?.noticesSeenAt || null;
+
+        const shape = (row) => ({
+            id: String(row._id),
+            title: row.title,
+            body: row.body || "",
+            imageUrl: row.imageUrl || "",
+            action: {
+                kind: row.action?.kind || "none",
+                serviceKey: row.action?.serviceKey || null,
+                url: row.action?.url || null,
+            },
+            at: row.pushedAt || row.createdAt,
+        });
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                posters: posters.map(shape),
+                notices: notices.map(shape),
+
+                // What the bell's badge shows. Counted here rather than in the
+                // app so the number and the list can never disagree.
+                unread: seenAt
+                    ? notices.filter((n) => n.pushedAt > seenAt).length
+                    : notices.length,
+            },
+        });
+    } catch (error) {
+        console.error("Announcements error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/customer/notices/seen
+ *
+ * The bell has been opened, so the badge goes.
+ *
+ * Stamped with the server's own clock rather than one the app sends: a phone
+ * whose date is a week ahead would otherwise mark every future notice read on
+ * arrival, and the customer would never hear about anything again.
+ */
+const noticesSeen = async (req, res) => {
+    try {
+        await userModel.updateOne({ _id: req.user._id }, { noticesSeenAt: new Date() });
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Notices seen error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 module.exports = {
+    announcements,
+    noticesSeen,
     rateTicket,
     ratingTags,
     savePushToken,

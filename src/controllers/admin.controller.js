@@ -386,6 +386,25 @@ const getDashboardStats = async (req, res) => {
                     ticketsScheduled: queuedBy.scheduled || 0,
                     ticketsActive: activeCount,
 
+                    /*
+                     * Every bill waiting to be checked, counted once.
+                     *
+                     * The sidebar asked for this figure and the server never
+                     * sent it, so the Payments item added an undefined to the
+                     * online count and the wallet count and called the result a
+                     * total: one cash bill and three split ones lit up as
+                     * nothing at all, and the number the office saw was
+                     * whichever single tab happened to be included.
+                     *
+                     * It is the three method tabs added together and not the
+                     * five, because Visits is a slice of them rather than a
+                     * queue of its own - a visit charge taken in notes is a
+                     * cash bill that also appears under Visits, and adding both
+                     * would count the same trip twice.
+                     */
+                    paymentsToVerify:
+                        (verifyCash.count || 0) + (verifyOnline.count || 0) + (verifySplit.count || 0),
+
                     // Cash and visits are counted separately as well as inside
                     // the queue, because the tabs that hold them are the ones
                     // the office actually works from.

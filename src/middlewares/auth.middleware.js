@@ -40,7 +40,13 @@ const isAuthenticated = async (req, res, next) => {
              * chosen", because `language` always holds a value whether they
              * picked it or not.
              */
-            .select("_id name phone address state area lat lon role language languageConfirmedAt")
+            /*
+             * `noticesSeenAt` rides along because the bell is drawn on every
+             * screen of the app, so the request that answers it is the request
+             * the app makes first. Reading it separately would be a second
+             * round trip to the same document to fetch one date.
+             */
+            .select("_id name phone address state area lat lon role language languageConfirmedAt noticesSeenAt")
             .lean();
 
         if (!user) {

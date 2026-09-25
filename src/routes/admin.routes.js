@@ -7,6 +7,7 @@ const adminController = require("../controllers/admin.controller");
 const serviceAdmin = require("../controllers/serviceAdmin.controller");
 const siteImage = require("../controllers/siteImage.controller");
 const keyAdmin = require("../controllers/apiKey.controller");
+const announcement = require("../controllers/announcement.controller");
 const upload = require("../middlewares/multer");
 
 const authLimiter = rateLimit({
@@ -63,6 +64,16 @@ router.delete("/services/:key", isAdminAuthenticated, isSuperAdmin, serviceAdmin
 router.get("/images", isAdminAuthenticated, isSuperAdmin, siteImage.listImages);
 router.put("/images/appliance/:key/:appliance", isAdminAuthenticated, isSuperAdmin, upload.single("image"), siteImage.saveApplianceImage);
 router.put("/images/:slot", isAdminAuthenticated, isSuperAdmin, upload.single("image"), siteImage.saveSiteImage);
+
+/* ---------- WHAT THE OFFICE IS SAYING ----------
+   The posters on the app's home screen and the notices behind its bell. Owner
+   only for the same reason the pictures are: this reaches every customer at
+   once, and Send cannot be taken back. */
+router.get("/announcements", isAdminAuthenticated, isSuperAdmin, announcement.list);
+router.post("/announcements", isAdminAuthenticated, isSuperAdmin, announcement.create);
+router.put("/announcements/:id", isAdminAuthenticated, isSuperAdmin, announcement.update);
+router.delete("/announcements/:id", isAdminAuthenticated, isSuperAdmin, announcement.remove);
+router.post("/announcements/:id/push", isAdminAuthenticated, isSuperAdmin, announcement.send);
 
 /* ---------- THE KEYS ----------
    Which API key the platform is spending, how much of it is left, and what to

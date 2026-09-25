@@ -21,6 +21,7 @@ const { recordDecline, isSuspended } = require("../services/discipline.service")
 const rideService = require("../services/ride.service");
 const { emitToRoom, userRoom, techRoom, adminRoom, dropRoom } = require("../sockets/socket.instance");
 const walletService = require("../services/wallet.service");
+const discountService = require("../services/discount.service");
 const settingsService = require("../services/settings.service");
 const { estimateGatewayFee } = require("../config/razorpay");
 const isProd = process.env.NODE_ENV === "production";
@@ -1466,9 +1467,25 @@ const billVisitCharge = async (req, res) => {
             lineItems: bill.lineItems,
             workDone: bill.workDone,
             subtotalPaise: bill.subtotalPaise,
+
+            /*
+             * No offer on a wasted trip.
+             *
+             * A visit charge is what the company takes when the customer sent
+             * the vendor away, and discounting it would be discounting the one
+             * bill that exists precisely because no work was wanted. Written
+             * out rather than left to the defaults so the intent is on the
+             * record and not an omission somebody later reads as a bug.
+             */
+            discountPaise: 0,
+            discountLabel: null,
+            discountCode: null,
+
+            taxablePaise: bill.taxablePaise,
             gstPercent: bill.gstPercent,
             gstPaise: bill.gstPaise,
             totalPaise: bill.totalPaise,
+            grossTotalPaise: bill.grossTotalPaise,
             commissionPercent,
             commissionPaise,
             technicianSharePaise: bill.totalPaise - commissionPaise,
@@ -1801,11 +1818,17 @@ const generateBill = async (req, res) => {
                 .map((i) => [String(i._id), { name: i.name, pricePaise: i.pricePaise }])
         );
 
+        // The offer the job was booked with, if it was booked with one. Always
+        // null today: nothing creates a discount yet, so `held` is absent and
+        // buildBill returns the figures it always returned.
+        const held = ticket.discount?.discountId ? ticket.discount : null;
+
         const bill = paymentService.buildBill({
             catalogItems: Array.isArray(catalogItems) ? catalogItems : [],
             customItems: Array.isArray(customItems) ? customItems : [],
             workDone,
             priceMap,
+            held,
         });
 
         if (bill.error) {
@@ -1822,8 +1845,38 @@ const generateBill = async (req, res) => {
         // next month, this job's numbers must not move with it.
         const techData = await technicianModel.findById(req.technician._id).select("commissionRate").lean();
         const commissionPercent = techData?.commissionRate ?? parseInt(process.env.DEFAULT_COMMISSION_RATE) ?? 20;
-        let commissionPaise = walletService.calculateCommission(bill.totalPaise, commissionPercent);
-        let technicianSharePaise = bill.totalPaise - commissionPaise;
+
+        /*
+         * The split, worked out on the full price and then adjusted for who is
+         * carrying the offer.
+         *
+         * The vendor's share is taken from what the job would have cost, so a
+         * company offer costs the vendor nothing - they are paid for the work
+         * they did, not for the price the office chose to advertise. Whatever
+         * the offer is worth then comes off one side or the other, and only
+         * discount.service decides which.
+         *
+         * With no discount `grossTotalPaise` equals `totalPaise` and both of
+         * the lines below collapse to the arithmetic that was always here.
+         */
+        const shareOnFullPrice = bill.grossTotalPaise
+            - walletService.calculateCommission(bill.grossTotalPaise, commissionPercent);
+
+        const borne = discountService.split(held, bill.discountPaise);
+
+        let technicianSharePaise = Math.max(0, shareOnFullPrice - borne.vendorPaise);
+
+        /*
+         * Clamped, because an offer bigger than the commission would otherwise
+         * make the company pay the vendor to do the job.
+         *
+         * If this ever fires the offer was set up wrong - a 30% discount on a
+         * 20% commission - and the right place to stop it is the screen that
+         * creates the offer. Until that screen exists the money is at least
+         * kept the right way round.
+         */
+        let commissionPaise = Math.max(0, bill.totalPaise - technicianSharePaise);
+        technicianSharePaise = bill.totalPaise - commissionPaise;
 
         // On a split the technician is handed physical notes, so his half is
         // rounded down to a whole rupee - nobody counts out 30 paise on a
@@ -1878,9 +1931,14 @@ const generateBill = async (req, res) => {
             lineItems: bill.lineItems,
             workDone: bill.workDone,
             subtotalPaise: bill.subtotalPaise,
+            discountPaise: bill.discountPaise,
+            discountLabel: bill.discountLabel,
+            discountCode: bill.discountCode,
+            taxablePaise: bill.taxablePaise,
             gstPercent: bill.gstPercent,
             gstPaise: bill.gstPaise,
             totalPaise: bill.totalPaise,
+            grossTotalPaise: bill.grossTotalPaise,
             commissionPercent,
             commissionPaise,
             technicianSharePaise,
@@ -1923,6 +1981,22 @@ const generateBill = async (req, res) => {
 
         await ticket.save();
 
+        /*
+         * The offer is spent here, not when it was quoted.
+         *
+         * A customer who is shown a discount and then does not go ahead has
+         * used nothing, and a limited offer burnt on an abandoned booking is an
+         * offer the next customer cannot have. A correction only counts once,
+         * which is why an edit does not claim again.
+         *
+         * Not awaited: a counter that fails to move costs the office a slightly
+         * generous offer, and that is not worth failing a bill over with the
+         * vendor standing in somebody's kitchen.
+         */
+        if (!isEdit && bill.discountPaise > 0) {
+            discountService.claim(held.discountId);
+        }
+
         // One payment row per bill. A correction rewrites it rather than
         // leaving the old amount behind for revenue to double-count.
         await Payment.findOneAndUpdate(
@@ -1956,8 +2030,19 @@ const generateBill = async (req, res) => {
             (bill.workDone ? "\nWork done: " + bill.workDone + "\n" : "") +
             "\n" + itemLines + "\n\n";
 
-        if (bill.gstPaise > 0) {
+        // The subtotal is worth writing out whenever something was taken off
+        // it, not only when there is GST - a total that is less than the lines
+        // above it with no line explaining why reads as an error.
+        if (bill.gstPaise > 0 || bill.discountPaise > 0) {
             message += "Subtotal: Rs " + paymentService.paiseToRupees(bill.subtotalPaise) + "\n";
+        }
+
+        if (bill.discountPaise > 0) {
+            message += (bill.discountLabel || "Discount") + ": - Rs "
+                + paymentService.paiseToRupees(bill.discountPaise) + "\n";
+        }
+
+        if (bill.gstPaise > 0) {
             message += "GST (" + bill.gstPercent + "%): Rs " + paymentService.paiseToRupees(bill.gstPaise) + "\n";
         }
         message += "*Total: Rs " + paymentService.paiseToRupees(bill.totalPaise) + "*\n\n";

@@ -275,6 +275,19 @@ const buildInvoicePdf = (ticket) =>
 
             sum("Subtotal", money(bill.subtotalPaise));
 
+            /*
+             * What came off, under the offer's own name.
+             *
+             * Named rather than shown as a bare "Discount", because an invoice
+             * is the document somebody produces six months later to ask why
+             * they paid what they paid, and "Diwali week" answers that where a
+             * number does not. Written with a minus in front so the column
+             * still adds up when read down.
+             */
+            if (bill.discountPaise > 0) {
+                sum(bill.discountLabel || "Discount", "- " + money(bill.discountPaise));
+            }
+
             if (bill.gstPaise) {
                 sum("GST (" + (bill.gstPercent || 0) + "%)", money(bill.gstPaise));
             }

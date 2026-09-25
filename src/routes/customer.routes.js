@@ -105,4 +105,9 @@ router.get("/tickets/:id", isAuthenticated, customer.ticketDetail);
 router.get("/rating-tags", customer.ratingTags);
 router.post("/tickets/:id/rating", isAuthenticated, customer.rateTicket);
 
+// What the office is saying to everybody: the home screen's posters and the
+// notices behind the bell. Signed in, because the unread count is per customer.
+router.get("/announcements", isAuthenticated, customer.announcements);
+router.post("/notices/seen", isAuthenticated, customer.noticesSeen);
+
 module.exports = router;

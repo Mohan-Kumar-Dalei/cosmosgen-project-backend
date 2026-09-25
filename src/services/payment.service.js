@@ -1,5 +1,6 @@
 const Payment = require("../models/payment.model");
 const Counter = require("../models/counter.model");
+const discountService = require("./discount.service");
 const { getRazorpay, isConfigured } = require("../config/razorpay");
 
 const paiseToRupees = (paise) => (Number(paise || 0) / 100).toFixed(2);
@@ -18,8 +19,17 @@ const LIMITS = {
  * Builds a bill from catalog items (priced server-side) plus any custom
  * lines the technician typed in. Catalog prices always win over anything
  * the client sends - only custom lines carry a client-supplied amount.
+ *
+ * `held` is the offer the ticket was booked with, if any - see the `discount`
+ * field on the ticket. It is passed in rather than looked up here so this stays
+ * a pure calculation: given the same lines and the same offer it always returns
+ * the same figures, which is what makes an invoice reproducible.
+ *
+ * The order matters and is the Indian one: lines, then the discount off the
+ * subtotal, then GST on what is left. Taking the discount off after tax would
+ * have the company paying GST on money it never collected.
  */
-const buildBill = ({ catalogItems = [], customItems = [], workDone = "", priceMap }) => {
+const buildBill = ({ catalogItems = [], customItems = [], workDone = "", priceMap, held = null }) => {
     const lineItems = [];
 
     for (const entry of catalogItems) {
@@ -65,16 +75,40 @@ const buildBill = ({ catalogItems = [], customItems = [], workDone = "", priceMa
         return { error: `Total cannot exceed ₹${LIMITS.MAX_TOTAL_RUPEES}` };
     }
 
+    /*
+     * The offer, worked out against the bill that actually exists.
+     *
+     * Whatever was quoted at booking was a guess against an estimate - nobody
+     * knows what a job comes to until the vendor has looked at it - so the
+     * figure is computed again here, from the snapshot the ticket is carrying,
+     * against the real subtotal. Without an offer this is zero and everything
+     * below is the arithmetic that was always here.
+     */
+    const discountPaise = held ? discountService.amountOn(held, subtotalPaise) : 0;
+    const taxablePaise = subtotalPaise - discountPaise;
+
     const gstPercent = Number(process.env.GST_PERCENT) || 0;
-    const gstPaise = Math.round((subtotalPaise * gstPercent) / 100);
+    const gstPaise = Math.round((taxablePaise * gstPercent) / 100);
+
+    // What it would have come to at full price. The vendor's share is worked
+    // out on this when the company is carrying the offer, and the invoice shows
+    // the customer the difference.
+    const grossTotalPaise = subtotalPaise + Math.round((subtotalPaise * gstPercent) / 100);
 
     return {
         lineItems,
         workDone: String(workDone || "").trim().slice(0, 300),
         subtotalPaise,
+
+        discountPaise,
+        discountLabel: discountPaise > 0 ? (held.label || "Discount") : null,
+        discountCode: discountPaise > 0 ? (held.code || null) : null,
+
+        taxablePaise,
         gstPercent,
         gstPaise,
-        totalPaise: subtotalPaise + gstPaise,
+        totalPaise: taxablePaise + gstPaise,
+        grossTotalPaise,
     };
 };
 

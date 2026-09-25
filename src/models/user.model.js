@@ -52,6 +52,20 @@ const userSchema = new mongoose.Schema({
      */
     pushToken: { type: String, trim: true },
 
+    /*
+     * When this customer last opened the bell.
+     *
+     * One date rather than a read flag per notice. The bell holds a handful of
+     * things the office broadcast to everybody, and a customer who has looked
+     * at the list has looked at all of it - keeping a row per customer per
+     * notice would be a join and a write on every open to answer a question a
+     * timestamp already answers.
+     *
+     * Absent on a customer who has never opened it, which reads correctly as
+     * "everything is unread".
+     */
+    noticesSeenAt: { type: Date, default: null },
+
     addresses: [{
         // What the customer calls it: Home, Office, Mum's place.
         label: { type: String, default: "", trim: true },
