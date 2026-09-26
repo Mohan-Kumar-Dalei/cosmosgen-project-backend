@@ -233,7 +233,7 @@ const sendToCustomer = async (customerId, { title, body, data = {} }) => {
  */
 const BATCH = 100;
 
-const sendToAllCustomers = async ({ title, body, data = {} }) => {
+const sendToAllCustomers = async ({ title, body, data = {}, image = "" }) => {
     const rows = await userModel
         .find({ pushToken: { $exists: true, $ne: "" } })
         .select("pushToken")
@@ -266,6 +266,22 @@ const sendToAllCustomers = async ({ title, body, data = {} }) => {
                     sound: "default",
                     priority: "high",
                     channelId: "updates",
+
+                    /*
+                     * The picture on the notification itself.
+                     *
+                     * A notice written with a poster was arriving as two lines
+                     * of text: the image was on the row in the app's bell and
+                     * nowhere on the phone's own shade, which is where most
+                     * people actually see it. Android calls this a big picture
+                     * notification and Expo exposes it as `richContent.image`.
+                     *
+                     * Left off entirely when there is no picture rather than
+                     * sent as an empty string, because an image key pointing at
+                     * nothing makes Android fall back to a blank expanded panel
+                     * instead of the ordinary two-line notification.
+                     */
+                    ...(image ? { richContent: { image } } : {}),
                 }))),
             });
 

@@ -1091,7 +1091,17 @@ const rateTicket = async (req, res) => {
             return res.status(400).json({ success: false, message: "Pick between one and five stars." });
         }
 
-        const ticket = await ticketModel.findOne({ _id: req.params.id, user: req.user._id });
+        /*
+         * `customer`, not `user`.
+         *
+         * A ticket names its owner in a field called `customer` - every other
+         * query in this file scopes on it - and this one asked for `user`,
+         * which no ticket has. So the filter never matched, and every rating
+         * anybody tried to leave came back as "We could not find that job" on
+         * a job they were looking at. It was not a permission check failing; it
+         * was a field name that does not exist.
+         */
+        const ticket = await ticketModel.findOne({ _id: req.params.id, customer: req.user._id });
         if (!ticket) return res.status(404).json({ success: false, message: "We could not find that job." });
 
         if (ticket.status !== "Closed") {

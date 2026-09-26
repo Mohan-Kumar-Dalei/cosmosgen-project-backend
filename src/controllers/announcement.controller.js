@@ -203,6 +203,10 @@ const send = async (req, res) => {
             title: row.title,
             body: row.body || "",
             data: { kind: "notice", id: String(row._id) },
+
+            // The same picture the bell shows, on the phone's own shade. Most
+            // people see a notice there and never open the app for it.
+            image: row.imageUrl || "",
         })
             .then((count) => Announcement.updateOne({ _id: row._id }, { pushedCount: count }))
             .catch((err) => console.error("[PUSH] broadcast failed: " + err.message));
