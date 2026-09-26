@@ -322,6 +322,31 @@ const ticketSchema = new mongoose.Schema({
     cancelReason: { type: String },
 
     /*
+     * A customer asking for a job to be called off after somebody has taken
+     * it.
+     *
+     * Before a vendor accepts, the customer cancels it themselves and this is
+     * never written - there is nothing to weigh up, nobody has committed
+     * anything. After acceptance an engineer may already be travelling, so the
+     * ask is recorded here and the office decides. That is the line Mohan drew
+     * when he was asked: cancel freely until it is assigned, and after that it
+     * is a request.
+     *
+     * Kept on the ticket rather than in a queue of its own so the office sees
+     * it on the job it belongs to, which is the only place the decision can
+     * actually be made.
+     */
+    cancelRequest: {
+        reason: { type: String, default: "" },
+        note: { type: String, default: "" },
+        at: { type: Date },
+
+        // Set when the office has dealt with it either way, so a ticket does
+        // not keep shouting about a request already answered.
+        settledAt: { type: Date },
+    },
+
+    /*
      * The offer this job was booked with, held until there is a bill to take
      * it off.
      *

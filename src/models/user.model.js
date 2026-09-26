@@ -53,6 +53,26 @@ const userSchema = new mongoose.Schema({
     pushToken: { type: String, trim: true },
 
     /*
+     * A picture of the customer, if they choose to add one.
+     *
+     * Optional and asked for nowhere - the account works identically without
+     * it, and the engineer is given a name and a door rather than a face. It
+     * exists because Mohan asked for the option on the profile screen, and it
+     * is a link rather than a file for the same reason every other picture in
+     * this system is: ImageKit holds it and the database holds its address.
+     */
+    photoUrl: { type: String, default: "", trim: true },
+
+    /*
+     * Trades this customer has kept.
+     *
+     * Service keys rather than rows in a collection of their own. A bookmark
+     * is one short string, there are seven trades to choose from, and a join
+     * table for that is a second thing to keep in step with the catalogue.
+     */
+    bookmarks: [{ type: String }],
+
+    /*
      * When this customer last opened the bell.
      *
      * One date rather than a read flag per notice. The bell holds a handful of
@@ -78,6 +98,18 @@ const userSchema = new mongoose.Schema({
 
         lat: { type: Number },
         lon: { type: Number },
+
+        /*
+         * The two lines that actually get an engineer through the gate.
+         *
+         * A pin puts him on the right pavement and a street name gets him to
+         * the right road; neither tells him which bell to press. These are what
+         * the reference's address form asks for and they earn their place -
+         * "second floor, opposite the Reliance Fresh" is worth more to somebody
+         * standing outside than any of the fields above it.
+         */
+        floor: { type: String, default: "", trim: true },
+        landmark: { type: String, default: "", trim: true },
 
         /*
          * Exactly one of these is true, and the account's own address fields

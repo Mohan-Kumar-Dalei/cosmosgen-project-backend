@@ -15,7 +15,9 @@ const registration = require("../services/registration.service");
 const paymentService = require("../services/payment.service");
 const assistant = require("../services/assistant.service");
 const WebChat = require("../models/webChat.model");
+const uploadImage = require("../utils/imagekit");
 const Announcement = require("../models/announcement.model");
+const { emitToRoom, adminRoom } = require("../sockets/socket.instance");
 const ratings = require("../services/rating.service");
 const { lookupPlace } = require("./map.controller");
 const { serviceRanges } = require("../services/estimate.service");
@@ -186,6 +188,17 @@ const updateProfile = async (req, res) => {
         if (String(address || "").trim()) typed.address = String(address).trim();
         if (String(state || "").trim()) typed.state = String(state).trim();
         if (String(area || "").trim()) typed.area = String(area).trim();
+
+        /*
+         * A picture, as a link.
+         *
+         * Cleared by sending an empty string, which is how the profile screen
+         * removes one - a separate delete route for a single optional field is
+         * a route that exists to be forgotten about.
+         */
+        if (typeof req.body.photoUrl === "string") {
+            typed.photoUrl = req.body.photoUrl.trim().slice(0, 500);
+        }
 
         if (LANGUAGES.includes(language)) {
             typed.language = language;
@@ -1393,8 +1406,190 @@ const noticesSeen = async (req, res) => {
     }
 };
 
+/**
+ * POST /api/customer/photo
+ *
+ * A picture of the customer, uploaded from their phone.
+ *
+ * Every other image in this system is a link the office pastes, because the
+ * office has ImageKit open in another tab. A customer does not, so this is the
+ * one place the app sends the bytes and the server does the uploading - what
+ * comes back is still a link, stored exactly like the rest.
+ *
+ * Entirely optional. Nothing in the product needs it: the engineer is given a
+ * name and a door.
+ */
+const savePhoto = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: "No picture came through." });
+        }
+
+        const result = await uploadImage(
+            req.file.buffer,
+            "customer_" + String(req.user._id) + "_" + Date.now(),
+            "CustomerPhotos"
+        );
+
+        await userModel.updateOne({ _id: req.user._id }, { photoUrl: result.url });
+
+        return res.status(200).json({ success: true, data: { photoUrl: result.url } });
+    } catch (error) {
+        console.error("Customer photo error:", error.message);
+        return res.status(500).json({ success: false, message: "Could not save that picture." });
+    }
+};
+
+/**
+ * GET / POST / DELETE /api/customer/bookmarks
+ *
+ * Trades this customer has kept, as a list of service keys.
+ *
+ * Kept on the account rather than on the phone so they survive a reinstall and
+ * follow somebody to a new handset - a saved list that disappears with the app
+ * is worse than none, because it was promised.
+ */
+const listBookmarks = async (req, res) => {
+    try {
+        const user = await userModel.findById(req.user._id).select("bookmarks").lean();
+        return res.status(200).json({ success: true, data: user?.bookmarks || [] });
+    } catch (error) {
+        console.error("Bookmarks error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const addBookmark = async (req, res) => {
+    try {
+        const key = String(req.body?.serviceKey || "").trim();
+
+        // Only a trade the company actually sells. A key that is not in the
+        // catalogue would sit in the list for ever showing a blank card.
+        if (!SERVICE_CATALOG.some((s) => s.key === key)) {
+            return res.status(400).json({ success: false, message: "We do not have that service." });
+        }
+
+        // $addToSet rather than $push: pressing the heart twice is one
+        // bookmark, not two.
+        await userModel.updateOne({ _id: req.user._id }, { $addToSet: { bookmarks: key } });
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Add bookmark error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const removeBookmark = async (req, res) => {
+    try {
+        await userModel.updateOne(
+            { _id: req.user._id },
+            { $pull: { bookmarks: String(req.params.key || "").trim() } }
+        );
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Remove bookmark error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/customer/tickets/:id/cancel
+ *
+ * Called off, or asked to be called off - and which of the two depends on
+ * whether anybody has taken the job yet.
+ *
+ * Mohan's line, when he was asked directly: a customer may cancel freely right
+ * up until a vendor accepts, because nothing has been committed and nobody has
+ * travelled. After that an engineer may already be on their way, so the same
+ * button records a request and the office decides. That keeps his older rule -
+ * only the backoffice ends a job - true for every job that has actually
+ * started.
+ */
+const CANCEL_REASONS = [
+    "Change in plans",
+    "Found another provider",
+    "Unexpected work",
+    "Change in requirements",
+    "Conflict in scheduling",
+    "Other",
+];
+
+const cancelTicket = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOne({ _id: req.params.id, customer: req.user._id });
+        if (!ticket) return res.status(404).json({ success: false, message: "We could not find that job." });
+
+        if (["Closed", "Cancelled"].includes(ticket.status)) {
+            return res.status(400).json({ success: false, message: "That job is already finished." });
+        }
+
+        const reason = CANCEL_REASONS.includes(req.body?.reason) ? req.body.reason : "Other";
+        const note = String(req.body?.note || "").trim().slice(0, 300);
+
+        // Nobody has taken it. The customer ends it themselves.
+        const unassigned = ["Pending", "Queued"].includes(ticket.status) && !ticket.technician;
+
+        if (unassigned) {
+            ticket.status = "Cancelled";
+            ticket.cancelReason = reason + (note ? " - " + note : "");
+            ticket.statusHistory.push({
+                from: ticket.status,
+                to: "Cancelled",
+                actorRole: "customer",
+                actorId: req.user._id,
+                reason: ticket.cancelReason,
+                at: new Date(),
+            });
+
+            await ticket.save();
+
+            // The desk watches its queues live, so the board empties without
+            // anybody refreshing it.
+            emitToRoom(adminRoom(), "ticket:cancelled", {
+                ticketNumber: ticket.ticketNumber,
+                by: "customer",
+            });
+
+            return res.status(200).json({
+                success: true,
+                cancelled: true,
+                message: "Cancelled. Nothing is charged.",
+            });
+        }
+
+        // Somebody has it. This is an ask, not an instruction.
+        ticket.cancelRequest = { reason, note, at: new Date(), settledAt: null };
+        await ticket.save();
+
+        emitToRoom(adminRoom(), "ticket:cancel-requested", {
+            ticketId: String(ticket._id),
+            ticketNumber: ticket.ticketNumber,
+            customerName: req.user.name || "",
+            reason,
+            note,
+        });
+
+        return res.status(200).json({
+            success: true,
+            cancelled: false,
+            message: "The office has your request. Somebody may already be on the way, so they will call you.",
+        });
+    } catch (error) {
+        console.error("Cancel ticket error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const cancelReasons = (_req, res) => res.status(200).json({ success: true, data: CANCEL_REASONS });
+
 module.exports = {
     serviceReviews,
+    savePhoto,
+    listBookmarks,
+    addBookmark,
+    removeBookmark,
+    cancelTicket,
+    cancelReasons,
     announcements,
     noticesSeen,
     rateTicket,

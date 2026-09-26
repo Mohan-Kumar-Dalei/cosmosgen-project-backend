@@ -1,4 +1,5 @@
 const express = require("express");
+const upload = require("../middlewares/multer");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
 
@@ -110,6 +111,21 @@ router.post("/tickets/:id/rating", isAuthenticated, customer.rateTicket);
 // What people said about a trade. Public - somebody deciding whether to book
 // has every reason to read it and no reason to have an account first.
 router.get("/services/:key/reviews", customer.serviceReviews);
+
+// Trades this customer has kept. On the account rather than on the phone, so
+// they survive a reinstall.
+// The one picture in this system the customer uploads rather than the office
+// pasting a link. See savePhoto.
+router.post("/photo", isAuthenticated, upload.single("photo"), customer.savePhoto);
+
+router.get("/bookmarks", isAuthenticated, customer.listBookmarks);
+router.post("/bookmarks", isAuthenticated, customer.addBookmark);
+router.delete("/bookmarks/:key", isAuthenticated, customer.removeBookmark);
+
+// Called off before anybody takes it; a request to the office after. See
+// cancelTicket - the line is whether a vendor has accepted.
+router.get("/cancel-reasons", customer.cancelReasons);
+router.post("/tickets/:id/cancel", isAuthenticated, customer.cancelTicket);
 
 router.get("/announcements", isAuthenticated, customer.announcements);
 router.post("/notices/seen", isAuthenticated, customer.noticesSeen);

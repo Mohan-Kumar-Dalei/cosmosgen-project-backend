@@ -46,7 +46,7 @@ const isAuthenticated = async (req, res, next) => {
              * the app makes first. Reading it separately would be a second
              * round trip to the same document to fetch one date.
              */
-            .select("_id name phone address state area lat lon role language languageConfirmedAt noticesSeenAt")
+            .select("_id name phone address state area lat lon role language languageConfirmedAt noticesSeenAt photoUrl bookmarks")
             .lean();
 
         if (!user) {

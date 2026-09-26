@@ -29,6 +29,11 @@ const clean = (body = {}) => ({
     city: String(body.city || "").trim().slice(0, 80),
     state: String(body.state || "").trim().slice(0, 80),
     pincode: String(body.pincode || "").trim().slice(0, 10),
+
+    // What gets somebody through the gate rather than to the road. See the
+    // note on these in the user model.
+    floor: String(body.floor || "").trim().slice(0, 40),
+    landmark: String(body.landmark || "").trim().slice(0, 120),
     lat: Number.isFinite(Number(body.lat)) ? Number(body.lat) : undefined,
     lon: Number.isFinite(Number(body.lon)) ? Number(body.lon) : undefined,
 });
