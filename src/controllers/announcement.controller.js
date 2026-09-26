@@ -31,6 +31,7 @@ const shape = (row) => ({
         url: row.action?.url || null,
     },
     order: row.order || 0,
+    offerServiceKeys: row.offerServiceKeys || [],
     startsAt: row.startsAt || null,
     endsAt: row.endsAt || null,
     isActive: row.isActive !== false,
@@ -70,6 +71,16 @@ const readBody = (body = {}) => {
             serviceKey: kind === "service" && known ? serviceKey : null,
             url: kind === "url" && /^https?:\/\//i.test(url) ? url : null,
         },
+
+        /*
+         * Which trades an offer applies to.
+         *
+         * Filtered against the catalogue rather than trusted, so a trade that
+         * was renamed last month cannot leave an offer pointing at nothing.
+         */
+        offerServiceKeys: (Array.isArray(body.offerServiceKeys) ? body.offerServiceKeys : [])
+            .map((k) => String(k || "").trim())
+            .filter((k) => SERVICE_CATALOG.some((s) => s.key === k)),
 
         order: Number.isFinite(Number(body.order)) ? Number(body.order) : 0,
         startsAt: body.startsAt ? new Date(body.startsAt) : null,

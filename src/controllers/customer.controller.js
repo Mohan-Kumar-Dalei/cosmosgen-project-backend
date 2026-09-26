@@ -1137,12 +1137,25 @@ const rateTicket = async (req, res) => {
             .filter((t) => RATING_TAGS.includes(t))
             .slice(0, RATING_TAGS.length);
 
+        /*
+         * Whatever pictures came with it, already on ImageKit.
+         *
+         * The app uploads them first and sends the addresses here, so a rating
+         * is never held open while four photographs go up a phone connection -
+         * if the upload fails the customer still gets to leave the stars.
+         */
+        const photos = (Array.isArray(req.body.photos) ? req.body.photos : [])
+            .map((u) => String(u || "").trim())
+            .filter((u) => /^https?:\/\//i.test(u))
+            .slice(0, 4);
+
         ticket.feedback = {
             ...(ticket.feedback?.toObject?.() || ticket.feedback || {}),
             source: "app",
             ratedAt: new Date(),
             rating: stars,
             tags,
+            photos,
             note: String(req.body.comment || "").trim().slice(0, 500),
         };
 
@@ -1304,6 +1317,7 @@ const serviceReviews = async (req, res) => {
             // Whatever they typed, which is almost never anything - the chips
             // exist because of that.
             note: t.feedback.note || "",
+            photos: t.feedback.photos || [],
 
             at: t.feedback.ratedAt,
             vendor: t.technicianSnapshot?.name || null,
@@ -1365,6 +1379,12 @@ const announcements = async (req, res) => {
                 serviceKey: row.action?.serviceKey || null,
                 url: row.action?.url || null,
             },
+
+            // Sent so the app can say how long is left and put an offer on the
+            // trades it applies to. Null on anything that is not an offer.
+            endsAt: row.endsAt || null,
+            offerServiceKeys: row.offerServiceKeys || [],
+
             at: row.pushedAt || row.createdAt,
         });
 

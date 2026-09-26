@@ -60,7 +60,34 @@ const announcementSchema = new mongoose.Schema({
     order: { type: Number, default: 0 },
 
     startsAt: { type: Date, default: null },
+
+    /*
+     * When it stops being true.
+     *
+     * A notice about a festival week is wrong the day after it ends, and a
+     * customer who opens the bell a fortnight later should not be reading it.
+     * The app hides anything past this and says how long is left while it is
+     * still running, which is the difference between an announcement and a
+     * reminder.
+     */
     endsAt: { type: Date, default: null },
+
+    /*
+     * The trades an offer applies to, if it is an offer.
+     *
+     * Empty means the whole catalogue, or that the notice is not an offer at
+     * all. The app reads it to put the offer on the right service pages rather
+     * than only in the bell - which is where Mohan asked for it: "notification
+     * only notify karega, actually offer main rahega wo jo bhi offer jis bhi
+     * category par apply hoga usmain".
+     *
+     * What it is worth is deliberately not here. Discounts have their own
+     * collection with the rules and the arithmetic in them - see
+     * models/discount.model.js - and a second, looser copy of the same idea on
+     * an announcement is how two figures start disagreeing.
+     */
+    offerServiceKeys: [{ type: String }],
+
     isActive: { type: Boolean, default: true },
 
     /*

@@ -240,6 +240,22 @@ const ticketSchema = new mongoose.Schema({
          * the compromise: one tap, and they carry the reason.
          */
         tags: [{ type: String }],
+
+        /*
+         * Pictures the customer took of the finished work.
+         *
+         * Links, like every other image in this system - the app uploads to
+         * ImageKit through the server and what is stored is the address. A
+         * cleaned kitchen or a repaired board says more to the next customer
+         * than five stars do, which is why these are shown on the trade's page
+         * rather than kept for the office.
+         *
+         * Capped at four. Somebody who takes twelve is documenting a
+         * complaint, and that belongs in a conversation with the desk rather
+         * than in a public carousel.
+         */
+        photos: [{ type: String }],
+
         workOk: { type: Boolean },
         behaviourOk: { type: Boolean },
         complaint: { type: String, default: "" },
