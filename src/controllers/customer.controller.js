@@ -1253,6 +1253,57 @@ const savePushToken = async (req, res) => {
 };
 
 /**
+ * GET /api/customer/services/:key/reviews
+ *
+ * What customers said about jobs of this trade.
+ *
+ * Real ratings off real closed jobs - the same ones the star on the card is
+ * averaged from - so a Reviews tab is a window onto the record rather than a
+ * page of testimonials somebody wrote. A trade nobody has rated yet returns an
+ * empty list, and the screen says so plainly instead of inventing three.
+ *
+ * Public: somebody deciding whether to book has every reason to read this and
+ * no reason to have an account first. Nothing identifying goes out - a first
+ * name, the stars, the chips they tapped and the month.
+ */
+const serviceReviews = async (req, res) => {
+    try {
+        const key = String(req.params.key || "").trim();
+
+        const rows = await ticketModel
+            .find({
+                serviceKey: key,
+                "feedback.ratedAt": { $ne: null },
+                "feedback.rating": { $gt: 0 },
+            })
+            .select("feedback customerSnapshot technicianSnapshot createdAt")
+            .sort({ "feedback.ratedAt": -1 })
+            .limit(20)
+            .lean();
+
+        const data = rows.map((t) => ({
+            // A first name only. "Mohan K." is somebody; "Mohan Kumar Dalei"
+            // beside a complaint about their own house is somebody's address.
+            name: String(t.customerSnapshot?.name || "A customer").trim().split(/\s+/)[0],
+            stars: t.feedback.rating,
+            tags: t.feedback.tags || [],
+
+            // Whatever they typed, which is almost never anything - the chips
+            // exist because of that.
+            note: t.feedback.note || "",
+
+            at: t.feedback.ratedAt,
+            vendor: t.technicianSnapshot?.name || null,
+        }));
+
+        return res.status(200).json({ success: true, data });
+    } catch (error) {
+        console.error("Service reviews error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
  * GET /api/customer/announcements
  *
  * The posters for the home screen and the notices behind the bell.
@@ -1343,6 +1394,7 @@ const noticesSeen = async (req, res) => {
 };
 
 module.exports = {
+    serviceReviews,
     announcements,
     noticesSeen,
     rateTicket,

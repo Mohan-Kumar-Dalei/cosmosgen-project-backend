@@ -107,6 +107,10 @@ router.post("/tickets/:id/rating", isAuthenticated, customer.rateTicket);
 
 // What the office is saying to everybody: the home screen's posters and the
 // notices behind the bell. Signed in, because the unread count is per customer.
+// What people said about a trade. Public - somebody deciding whether to book
+// has every reason to read it and no reason to have an account first.
+router.get("/services/:key/reviews", customer.serviceReviews);
+
 router.get("/announcements", isAuthenticated, customer.announcements);
 router.post("/notices/seen", isAuthenticated, customer.noticesSeen);
 
