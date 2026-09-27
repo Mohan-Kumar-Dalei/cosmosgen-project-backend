@@ -300,6 +300,59 @@ const issuePhrases = (serviceKey, values, language) => {
         .filter(Boolean);
 };
 
+/**
+ * The same faults, kept under the machine each one came off.
+ *
+ * `issuePhrases` above flattens: it turns keys into words and hands back one
+ * list, because that is all a ticket has ever stored and all the vendor, the
+ * assistant and the WhatsApp flow have ever read. It cannot do better, either
+ * - by the time it sees "Not cooling properly" the machine is gone, and an air
+ * conditioner and a refrigerator both offer exactly that phrase, so two boxes
+ * with the same complaint arrive as the same word twice.
+ *
+ * The app knows which machine each fault was picked under. It sends that
+ * alongside, as `machine:fault` keys, and this turns them into groups the
+ * office can read - Mohan's ask, after a two-appliance ticket reached the
+ * panel as four badges in a row with nothing saying which box was which.
+ *
+ * Nothing is replaced. The flat list is still stored and still what everything
+ * downstream reads; this rides beside it, and a booking that did not send the
+ * prefixed keys - WhatsApp, the assistant, an older app - simply has none, and
+ * the panel falls back to the badges it always drew.
+ */
+const issueGroups = (serviceKey, prefixedKeys, language) => {
+    const service = getServiceByKey(serviceKey);
+    if (!service || !Array.isArray(prefixedKeys)) return [];
+
+    const order = [];
+    const byMachine = new Map();
+
+    prefixedKeys.forEach((value) => {
+        if (typeof value !== "string" || !value.includes(":")) return;
+
+        const [applianceKey, issueKey] = value.split(":");
+
+        const appliance = (service.appliances || []).find((a) => a.key === applianceKey);
+        if (!appliance) return;
+
+        const issue = (appliance.issues || []).find((i) => i.key === issueKey);
+        if (!issue) return;
+
+        if (!byMachine.has(applianceKey)) {
+            order.push(applianceKey);
+            byMachine.set(applianceKey, {
+                applianceKey,
+                applianceLabel: displayLabel(appliance, language),
+                issues: [],
+            });
+        }
+
+        byMachine.get(applianceKey).issues.push(issueLabel(issue, language));
+    });
+
+    return order.map((key) => byMachine.get(key));
+};
+
 module.exports = {
     SERVICE_CATALOG,
     setCatalog,
@@ -308,6 +361,7 @@ module.exports = {
     getAppliance,
     issueLabel,
     issuePhrases,
+    issueGroups,
     displayLabel,
     buildSkillRegex,
     escapeRegex,

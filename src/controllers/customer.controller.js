@@ -21,7 +21,7 @@ const { emitToRoom, adminRoom } = require("../sockets/socket.instance");
 const ratings = require("../services/rating.service");
 const { lookupPlace } = require("./map.controller");
 const { serviceRanges } = require("../services/estimate.service");
-const { SERVICE_CATALOG, issuePhrases, getServiceByKey, buildSkillRegex, escapeRegex } = require("../config/services");
+const { SERVICE_CATALOG, issuePhrases, issueGroups, getServiceByKey, buildSkillRegex, escapeRegex } = require("../config/services");
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -419,6 +419,20 @@ const book = async (req, res) => {
         const issues = issuePhrases(serviceKey, selectedIssues, "english");
 
         /*
+         * And the same faults under their machines, when the app said so.
+         *
+         * `issueKeys` carries the fault keys with their appliance still in
+         * front - AC:NOT_COOLING - which the booking screen has always had and
+         * always threw away on the way out. The office asked to see them
+         * grouped, and a phrase on its own cannot be regrouped afterwards
+         * because two machines share several of them word for word.
+         *
+         * Optional, so a phone running the older build books exactly as it
+         * did and simply sends no grouping.
+         */
+        const groups = issueGroups(serviceKey, req.body.issueKeys, "english");
+
+        /*
          * Describing it in your own words is optional once faults are picked.
          *
          * Mohan's point: the customer has already said what is wrong by
@@ -444,6 +458,7 @@ const book = async (req, res) => {
             customerId: req.user._id,
             serviceKey,
             selectedIssues: issues,
+            selectedIssueGroups: groups,
             problemDescription: description,
             channel: "app",
             location: { lat, lon, address, area, state },

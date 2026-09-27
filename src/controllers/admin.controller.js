@@ -460,7 +460,7 @@ const getTickets = async (req, res) => {
         const [tickets, total] = await Promise.all([
             ticketModel
                 .find(filter)
-                .select("ticketNumber channel serviceLabel serviceKey selectedIssues problemDescription customerSnapshot status technicianSnapshot scheduling rejection cancelReason billing.totalPaise payment.status createdAt assignedAt queuedAt updatedAt")
+                .select("ticketNumber channel serviceLabel serviceKey selectedIssues selectedIssueGroups problemDescription customerSnapshot status technicianSnapshot scheduling rejection cancelReason billing.totalPaise payment.status createdAt assignedAt queuedAt updatedAt")
                 .sort(status === "scheduled" ? { "scheduling.scheduledFor": 1 } : { createdAt: -1 })
                 .skip((page - 1) * limit)
                 .limit(limit)

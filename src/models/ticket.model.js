@@ -42,6 +42,28 @@ const ticketSchema = new mongoose.Schema({
     serviceLabel: { type: String, required: true },
 
     selectedIssues: [{ type: String }],
+
+    /*
+     * The same faults, kept under the machine each was picked for.
+     *
+     * A job can carry two of anything - an air conditioner and a refrigerator
+     * on one visit - and both offer "Not cooling properly". Flattened into
+     * `selectedIssues` those arrive as the same phrase twice with nothing
+     * saying which box is which, which is what the office was being asked to
+     * read. This keeps the grouping the customer actually made.
+     *
+     * Beside the flat list rather than instead of it. Every other reader -
+     * the vendor app, the assistant, the WhatsApp flow, the bill - still takes
+     * `selectedIssues`, and a booking made anywhere but the app's fault step
+     * leaves this empty.
+     */
+    selectedIssueGroups: [{
+        _id: false,
+        applianceKey: { type: String },
+        applianceLabel: { type: String },
+        issues: [{ type: String }],
+    }],
+
     problemDescription: { type: String },
     aiDiagnosis: { type: String },
 

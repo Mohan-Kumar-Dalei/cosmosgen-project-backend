@@ -96,6 +96,11 @@ const bookJob = async ({
     customerId,
     serviceKey,
     selectedIssues,
+
+    // The same faults under their machines, where the channel knew them.
+    // Empty from WhatsApp and the assistant, which never asked that way.
+    selectedIssueGroups,
+
     problemDescription,
     channel = "app",
     location,
@@ -200,6 +205,7 @@ const bookJob = async ({
         serviceKey: service.key,
         serviceLabel: service.label,
         selectedIssues: Array.isArray(selectedIssues) ? selectedIssues : [],
+        selectedIssueGroups: Array.isArray(selectedIssueGroups) ? selectedIssueGroups : [],
         problemDescription,
         status: "Pending",
 
