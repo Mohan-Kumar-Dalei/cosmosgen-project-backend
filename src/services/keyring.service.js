@@ -247,6 +247,28 @@ const isBusy = (error) => {
 /** How long to wait before asking a busy model again, and how many times. */
 const BUSY_WAITS_MS = [400, 1200];
 
+/**
+ * The model to ask when the usual one is full.
+ *
+ * A 503 from Gemini says the model is busy, not that the key is - and the
+ * queue below was built to step past a spent key, which does nothing about
+ * capacity. A second key asks the same overloaded model and is turned away for
+ * the same reason, and on an account with one key there is not even that. So
+ * the assistant went quiet whenever flash-lite had a busy hour, and the log
+ * filled with "trying the next one" when there was no next one.
+ *
+ * Moving to a different model is what actually helps, because it is a
+ * different pool. The default is the full flash model rather than another lite
+ * one: it is the nearest sibling with its own capacity, and a slower answer is
+ * worth incomparably more than no answer at all.
+ *
+ * Empty turns it off, and any model the account can reach may be named here
+ * instead.
+ */
+const FALLBACK_MODEL = String(
+    process.env.GEMINI_FALLBACK_MODEL ?? "gemini-3.1-flash"
+).trim();
+
 const pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 /**
@@ -332,72 +354,133 @@ const attempt = async (params, call, { pin }) => {
         throw new Error("No Gemini key is available. Add one under Developer.");
     }
 
-    let last;
+    /*
+     * Every key once, against one model.
+     *
+     * This used to be the whole of the function. It is a named pass now so
+     * that the same queue can be run again against a different model, which is
+     * the only thing that answers a busy one - see the call below.
+     *
+     * `swap` names the model for this pass and is null on the first, which
+     * leaves the caller's choice and the key's own exactly as they were. It
+     * reports back whether the pass ended on a busy model, because that is the
+     * single failure worth asking a different model about.
+     */
+    const runQueue = async (swap) => {
+        let last = null;
+        let busyAtTheEnd = false;
 
-    for (const entry of queue) {
-        try {
-            /*
-             * A busy model is asked again before the key is blamed.
-             *
-             * Two short waits, and only for a 503 - long enough to ride out
-             * the spike that causes almost all of them, short enough that a
-             * customer on a phone call does not notice. Anything else drops
-             * out of this loop on the first try, exactly as before.
-             */
-            let response = null;
-            let busyError = null;
+        for (const entry of queue) {
+            try {
+                /*
+                 * A busy model is asked again before the key is blamed.
+                 *
+                 * Two short waits, and only for a 503 - long enough to ride
+                 * out the spike that causes almost all of them, short enough
+                 * that a customer on a phone call does not notice. Anything
+                 * else drops out of this loop on the first try.
+                 */
+                let response = null;
+                let busyError = null;
 
-            for (let attempt = 0; attempt <= BUSY_WAITS_MS.length; attempt += 1) {
-                try {
-                    response = await call(clientFor(entry.secret), {
-                        ...params,
-                        model: (pin && entry.model) || params.model,
-                    });
-                    busyError = null;
-                    break;
-                } catch (error) {
-                    if (!isBusy(error) || attempt === BUSY_WAITS_MS.length) throw error;
+                for (let tries = 0; tries <= BUSY_WAITS_MS.length; tries += 1) {
+                    try {
+                        response = await call(clientFor(entry.secret), {
+                            ...params,
+                            model: swap || (pin && entry.model) || params.model,
+                        });
+                        busyError = null;
+                        break;
+                    } catch (error) {
+                        if (!isBusy(error) || tries === BUSY_WAITS_MS.length) throw error;
 
-                    busyError = error;
-                    console.warn(
-                        "Gemini is busy, waiting " + BUSY_WAITS_MS[attempt] + "ms and asking again"
-                    );
-                    await pause(BUSY_WAITS_MS[attempt]);
+                        busyError = error;
+                        console.warn(
+                            "Gemini is busy, waiting " + BUSY_WAITS_MS[tries] + "ms and asking again"
+                        );
+                        await pause(BUSY_WAITS_MS[tries]);
+                    }
                 }
+
+                if (busyError) throw busyError;
+
+                if (entry.row) spend(entry.row);
+                return { response, last: null, busy: false };
+            } catch (error) {
+                last = error;
+
+                const quota = isQuota(error);
+                const rejected = isRejected(error);
+                const busy = isBusy(error);
+
+                busyAtTheEnd = busy;
+
+                /*
+                 * Counted against the key, except for a busy fallback.
+                 *
+                 * Being out of quota or rejected is the key's own business
+                 * whichever model it was pointed at, so those are recorded
+                 * either way. A model this app chose for it being full is not:
+                 * marking a key spent for that would take a perfectly good key
+                 * out of the queue over a decision the key had no part in.
+                 */
+                if (entry.row && !(swap && busy)) {
+                    spend(entry.row, { quota, rejected, error: error.message });
+                }
+
+                /*
+                 * A key that is spent or wrong is worth swapping. Everything
+                 * else - a bad prompt, a model that does not exist, the
+                 * network - fails the same way on every key, so trying them
+                 * all only multiplies the wait. A busy model is not a reason
+                 * to change key either, but the keys after this one may be on
+                 * different models of their own, so the pass carries on and
+                 * the model swap below is what actually answers it.
+                 */
+                if (!quota && !rejected && !busy) throw error;
+
+                console.warn(
+                    "Gemini key " + (entry.row?.label || "from the environment")
+                    + (quota ? " is out of quota" : rejected ? " was rejected" : " kept getting a busy model")
+                    + ", trying the next one"
+                );
             }
-
-            if (busyError) throw busyError;
-
-            if (entry.row) spend(entry.row);
-            return response;
-        } catch (error) {
-            last = error;
-
-            const quota = isQuota(error);
-            const rejected = isRejected(error);
-            const busy = isBusy(error);
-
-            if (entry.row) spend(entry.row, { quota, rejected, error: error.message });
-
-            /*
-             * A key that is spent or wrong is worth swapping. A model that is
-             * still busy after the waits above is worth swapping too - a
-             * different key can land on different capacity. Everything else -
-             * a bad prompt, a model that does not exist, the network - fails
-             * the same way on every key, so trying them all only multiplies
-             * the wait.
-             */
-            if (!quota && !rejected && !busy) throw error;
-
-            console.warn(
-                "Gemini key " + (entry.row?.label || "from the environment")
-                + (quota ? " is out of quota" : rejected ? " was rejected" : " kept getting a busy model")
-                + ", trying the next one"
-            );
         }
+
+        return { response: null, last, busy: busyAtTheEnd };
+    };
+
+    const first = await runQueue(null);
+    if (first.response) return first.response;
+
+    /*
+     * Everything was busy, so ask somewhere else.
+     *
+     * Only for a conversation. An embedding names its vector space in the
+     * model - answering from a different one would not fail, it would quietly
+     * return a vector that does not belong beside the stored ones - and `pin`
+     * is exactly the flag that separates the two.
+     */
+    const already = (pin && queue[0]?.model) || params.model;
+
+    if (first.busy && pin && FALLBACK_MODEL && FALLBACK_MODEL !== already) {
+        console.warn(
+            "Every Gemini key found " + already + " busy - asking " + FALLBACK_MODEL + " instead"
+        );
+
+        const second = await runQueue(FALLBACK_MODEL);
+        if (second.response) return second.response;
+
+        /*
+         * The first model's refusal is the one to report.
+         *
+         * "gemini-3.1-flash is unavailable" would send whoever reads this log
+         * to look at a model the office never configured.
+         */
+        console.warn("The fallback model was no better: " + (second.last?.message || "no answer"));
     }
 
-    throw last || new Error("Every Gemini key failed.");
+    throw first.last || new Error("Every Gemini key failed.");
 };
 
 /**
