@@ -1,6 +1,7 @@
 const ServiceModel = require("../models/service.model");
 const Ticket = require("../models/ticket.model");
 const ServicePricing = require("../models/servicePricing.model");
+const estimates = require("../services/estimate.service");
 const catalog = require("../services/catalog.service");
 const author = require("../services/serviceAuthor.service");
 const booking = require("../services/booking.service");
@@ -277,6 +278,9 @@ const removeService = async (req, res) => {
 
         await ServiceModel.deleteOne({ _id: service._id });
         await ServicePricing.deleteOne({ serviceKey: key });
+
+        // The trade's prices went with it; the cached ranges still hold them.
+        estimates.forget();
 
         await catalog.refresh();
 

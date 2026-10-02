@@ -9,6 +9,7 @@ const { isSuspended } = require("../services/discipline.service");
 const Payment = require("../models/payment.model");
 const WalletTransaction = require("../models/walletTransaction.model");
 const ServicePricing = require("../models/servicePricing.model");
+const estimates = require("../services/estimate.service");
 const { buildSkillRegex, escapeRegex } = require("../config/services");
 // Blocking or purging a vendor has to reach the socket he already holds - the
 // connect-time check cannot, having already run
@@ -3489,6 +3490,7 @@ const addPricingItem = async (req, res) => {
             { returnDocument: "after", upsert: true }
         ).lean();
 
+        estimates.forget();
         return res.status(201).json({ success: true, message: "Item added", data: doc });
     } catch (error) {
         console.error("Add pricing item error:", error);
@@ -3528,6 +3530,7 @@ const updatePricingItem = async (req, res) => {
             return res.status(404).json({ success: false, message: "Item not found" });
         }
 
+        estimates.forget();
         return res.status(200).json({ success: true, message: "Item updated", data: doc });
     } catch (error) {
         console.error("Update pricing item error:", error);
@@ -3552,6 +3555,7 @@ const deletePricingItem = async (req, res) => {
             return res.status(404).json({ success: false, message: "Service not found" });
         }
 
+        estimates.forget();
         return res.status(200).json({ success: true, message: "Item removed", data: doc });
     } catch (error) {
         console.error("Delete pricing item error:", error);

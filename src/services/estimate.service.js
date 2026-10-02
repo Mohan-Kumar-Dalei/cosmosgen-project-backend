@@ -30,6 +30,22 @@ const CACHE_MS = 10 * 60 * 1000;
 
 let cached = { at: 0, text: "" };
 
+/*
+ * The same answer for the app's cards, kept for the same reason.
+ *
+ * `serviceRanges` below used to read the price list on every call, and it is
+ * called once per `/customer/services` - which is every app open, every pull
+ * to refresh, every visit to the shelf. Prices change perhaps twice a year.
+ * On a shared-tier Atlas cluster that is a round trip spent on an answer that
+ * was already correct, and the cluster's ceiling is operations per second
+ * rather than anything about this box.
+ *
+ * Cleared the moment the office edits a rate - see `forget` - so the ten
+ * minutes is the staleness nobody is waiting on, not a delay on the change
+ * somebody just made.
+ */
+let ranges = { at: 0, data: null };
+
 /** Rounded to the nearest fifty, because a range is not an invoice. */
 const tidy = (rupees) => Math.max(50, Math.round(rupees / 50) * 50);
 
@@ -118,6 +134,8 @@ const estimateBlock = async () => {
  * then says nothing about money, which is honest: we do not know yet.
  */
 const serviceRanges = async () => {
+    if (ranges.data && Date.now() - ranges.at < CACHE_MS) return ranges.data;
+
     try {
         const docs = await ServicePricing.find().select("serviceKey itemsList").lean();
         const out = {};
@@ -127,12 +145,30 @@ const serviceRanges = async () => {
             if (range) out[doc.serviceKey] = range;
         });
 
+        ranges = { at: Date.now(), data: out };
         return out;
     } catch (error) {
-        // A missing price list costs the figure, not the screen.
+        /*
+         * A missing price list costs the figure, not the screen - and the
+         * last good answer is better than none. A cluster that is briefly
+         * unreachable should not blank the price off every card in the app.
+         */
         console.error("[ESTIMATE] could not read the price list:", error.message);
-        return {};
+        return ranges.data || {};
     }
 };
 
-module.exports = { estimateBlock, serviceRanges };
+/**
+ * The office has changed a rate, so stop answering from memory.
+ *
+ * Called from every endpoint that writes to the price list. Both caches go:
+ * the paragraph the assistant reads and the figures the cards draw come from
+ * the same list, and leaving one of them stale is how the app and the
+ * conversation end up quoting different money for the same job.
+ */
+const forget = () => {
+    cached = { at: 0, text: "" };
+    ranges = { at: 0, data: null };
+};
+
+module.exports = { estimateBlock, serviceRanges, forget };

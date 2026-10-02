@@ -5,6 +5,9 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
+const mongoose = require("mongoose");
+const redis = require("./config/redis");
+const keyring = require("./services/keyring.service");
 
 const authRoutes = require("./routes/auth.route");
 const technicianRoutes = require("./routes/technician.routes");
@@ -91,9 +94,23 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(cookieParser());
 
+/*
+ * The outer envelope, and only that.
+ *
+ * Everything worth abusing already carries its own, tighter limiter beside
+ * the route it guards - fifteen OTPs in fifteen minutes, ten bookings in an
+ * hour, forty questions to the assistant in ten. This one exists to stop a
+ * single address hammering the box, and nothing else.
+ *
+ * It was 120 a minute, which is not a lot of people. It counts per address,
+ * and Indian mobile networks put hundreds of customers behind one - so twenty
+ * people on the same carrier, each opening the app and costing half a dozen
+ * requests, were sharing an allowance built for one. The limit that was meant
+ * for an attacker was being spent by customers.
+ */
 app.use("/api", rateLimit({
     windowMs: 60 * 1000,
-    max: 120,
+    max: Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 600,
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, message: "Too many requests, please slow down." },
@@ -101,6 +118,50 @@ app.use("/api", rateLimit({
 
 app.get("/", (req, res) => {
     res.status(200).json({ success: true, message: "Server is working fine" });
+});
+
+/**
+ * Whether the things this server leans on are actually there.
+ *
+ * "Server is working fine" above answers only that Node is up, which is the
+ * one thing that was never in doubt. Everything that has gone quiet on this
+ * box went quiet underneath it - a Redis with no URL falling back to memory,
+ * a key ring with nothing in it, a cluster that dropped its connection - and
+ * finding out meant grepping pm2 logs for a line printed once at boot, hours
+ * ago, in a file that had since rotated.
+ *
+ * Deliberately open and deliberately thin. It names no host, no key and no
+ * count that would tell a stranger anything worth knowing: for each piece,
+ * whether it is up. Anybody may ask a building whether its lights are on.
+ *
+ * The status code is the part a monitor reads. Mongo being down is the server
+ * being down - nothing it serves can be answered without it - so that is a
+ * 503. Redis being down costs a cache, and the key ring being empty costs the
+ * assistant; both leave every booking, every map and every payment working,
+ * so they are reported inside a 200 rather than paging somebody at night.
+ */
+app.get("/api/health", async (req, res) => {
+    const mongoUp = mongoose.connection.readyState === 1;
+
+    let keys = 0;
+    try {
+        keys = (await keyring.health("gemini")).usable;
+    } catch {
+        // A key ring that cannot be counted is reported as empty, which is
+        // what it amounts to for anything trying to use one.
+    }
+
+    return res.status(mongoUp ? 200 : 503).json({
+        success: mongoUp,
+        uptimeSeconds: Math.round(process.uptime()),
+        mongo: mongoUp ? "up" : "down",
+
+        // "memory" rather than "down": without a URL this is the documented
+        // fallback and not a fault, and the two look identical from here.
+        redis: redis.ready() ? "up" : "memory",
+
+        geminiKeys: keys,
+    });
 });
 
 app.use("/api/auth", authRoutes);
