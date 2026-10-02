@@ -343,4 +343,11 @@ const handleRazorpayEvent = async (event) => {
     notification.notifyAdminsPaymentCollected(ticket, ticket.technicianSnapshot?.name || "Technician");
 };
 
-module.exports = { razorpayWebhook };
+/*
+ * `handleRazorpayEvent` is exported for the reconciler, which replays the
+ * events this server never received - see reconcile.service.js. Nothing else
+ * should call it: it trusts that whatever handed it an event has already
+ * checked the signature, which the route above does and a caller inside the
+ * process does not need to.
+ */
+module.exports = { razorpayWebhook, handleRazorpayEvent };

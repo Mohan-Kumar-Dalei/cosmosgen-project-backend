@@ -17,6 +17,7 @@ const initSocketServer = require("./src/sockets/socketManager");
 const initVoicebotServer = require("./src/sockets/voicebot.socket");
 const { promoteDueScheduledTickets } = require("./src/services/dispatch.service");
 const housekeeping = require("./src/services/housekeeping.service");
+const { reconcileOnlinePayments } = require("./src/services/reconcile.service");
 const catalog = require("./src/services/catalog.service");
 const keyring = require("./src/services/keyring.service");
 
@@ -53,6 +54,24 @@ const startServer = async () => {
             console.error("Scheduled promotion failed:", err.message)
         );
     }, 5 * 60 * 1000);
+
+    /*
+     * And a safety net under the money.
+     *
+     * Everything the company knows about an online payment arrives as one
+     * webhook delivery. A restart, an hour of Razorpay trouble or a signing
+     * secret that was wrong for a day loses it, and the loss is silent: the
+     * money is in the account, the ticket still says Payment-Pending, the
+     * customer is shown an unpaid job and the engineer is never credited.
+     *
+     * Every quarter of an hour this asks the gateway about the jobs still
+     * waiting, and settles any it says were paid.
+     */
+    setInterval(() => {
+        reconcileOnlinePayments().catch((err) =>
+            console.error("[RECONCILE] run failed:", err.message)
+        );
+    }, 15 * 60 * 1000);
 
     cron.schedule("30 9 * * *", async () => {
         await promoteDueScheduledTickets();
