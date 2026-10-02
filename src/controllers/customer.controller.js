@@ -1540,77 +1540,47 @@ const removeBookmark = async (req, res) => {
  * only the backoffice ends a job - true for every job that has actually
  * started.
  */
-const CANCEL_REASONS = [
-    "Change in plans",
-    "Found another provider",
-    "Unexpected work",
-    "Change in requirements",
-    "Conflict in scheduling",
-    "Other",
-];
+/*
+ * Kept beside the rule that uses them, in booking.service, because the
+ * assistant cancels through the same door now and a second list here would be
+ * the one that quietly fell behind.
+ */
+const CANCEL_REASONS = booking.CANCEL_REASONS;
 
 const cancelTicket = async (req, res) => {
     try {
         const ticket = await ticketModel.findOne({ _id: req.params.id, customer: req.user._id });
-        if (!ticket) return res.status(404).json({ success: false, message: "We could not find that job." });
 
-        if (["Closed", "Cancelled"].includes(ticket.status)) {
-            return res.status(400).json({ success: false, message: "That job is already finished." });
-        }
-
-        const reason = CANCEL_REASONS.includes(req.body?.reason) ? req.body.reason : "Other";
-        const note = String(req.body?.note || "").trim().slice(0, 300);
-
-        // Nobody has taken it. The customer ends it themselves.
-        const unassigned = ["Pending", "Queued"].includes(ticket.status) && !ticket.technician;
-
-        if (unassigned) {
-            ticket.status = "Cancelled";
-            ticket.cancelReason = reason + (note ? " - " + note : "");
-            ticket.statusHistory.push({
-                from: ticket.status,
-                to: "Cancelled",
-                actorRole: "customer",
-                actorId: req.user._id,
-                reason: ticket.cancelReason,
-                at: new Date(),
-            });
-
-            await ticket.save();
-
-            // The desk watches its queues live, so the board empties without
-            // anybody refreshing it.
-            emitToRoom(adminRoom(), "ticket:cancelled", {
-                ticketNumber: ticket.ticketNumber,
-                by: "customer",
-            });
-
-            return res.status(200).json({
-                success: true,
-                cancelled: true,
-                message: "Cancelled. Nothing is charged.",
-            });
-        }
-
-        // Somebody has it. This is an ask, not an instruction.
-        ticket.cancelRequest = { reason, note, at: new Date(), settledAt: null };
-        await ticket.save();
-
-        emitToRoom(adminRoom(), "ticket:cancel-requested", {
-            ticketId: String(ticket._id),
-            ticketNumber: ticket.ticketNumber,
-            customerName: req.user.name || "",
-            reason,
-            note,
+        /*
+         * The rule itself lives in booking.service - see cancelForCustomer.
+         *
+         * It used to be written out here, which was fine while the app was the
+         * only thing that could cancel. The assistant can now, and a rule this
+         * particular - ending it outright before anybody has taken the work,
+         * asking the office once somebody has - is exactly the kind that drifts
+         * when it exists twice.
+         */
+        const out = await booking.cancelForCustomer({
+            ticket,
+            reason: req.body?.reason,
+            note: req.body?.note,
+            actorId: req.user._id,
         });
+
+        if (!out.ok) {
+            return res.status(out.code === "not_found" ? 404 : 400).json({
+                success: false,
+                message: out.message,
+            });
+        }
 
         return res.status(200).json({
             success: true,
-            cancelled: false,
-            message: "The office has your request. Somebody may already be on the way, so they will call you.",
+            cancelled: out.cancelled,
+            message: out.message,
         });
     } catch (error) {
-        console.error("Cancel ticket error:", error.message);
+        console.error("Cancel ticket error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };

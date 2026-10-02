@@ -5,6 +5,7 @@ const voiceController = require("../controllers/voice.controller");
 const { getServiceByKey } = require("../config/services");
 const addressService = require("./address.service");
 const { issueToken } = require("./track.service");
+const { emitToRoom, adminRoom } = require("../sockets/socket.instance");
 
 /**
  * Registering a job, wherever the customer asked from.
@@ -245,4 +246,108 @@ const bookJob = async ({
     return { ok: true, ticket, service };
 };
 
-module.exports = { bookJob, openTicketsFor, OPEN_STATUSES, MAX_OPEN, SLOT_WINDOWS, BOOK_AHEAD_DAYS };
+/**
+ * The reasons a customer may give for ending a job.
+ *
+ * A short list rather than free text, because the office reads these across
+ * hundreds of jobs and "changed my mind", "change of mind" and "mind changed"
+ * are three rows that should have been one. Anything the customer says in
+ * their own words rides along as the note.
+ */
+const CANCEL_REASONS = [
+    "Change in plans",
+    "Found another provider",
+    "Unexpected work",
+    "Change in requirements",
+    "Conflict in scheduling",
+    "Other",
+];
+
+/**
+ * A customer ending their own job, or asking the office to end it.
+ *
+ * Which of the two it is depends on one thing: whether anybody has taken the
+ * work yet. Before a vendor is on it there is nothing to interrupt and nobody
+ * to tell, so the customer ends it themselves. Once somebody has it, a
+ * stranger may already be on a bike on the way to their door, and a job that
+ * vanished underneath him is the office finding out from the vendor. So it
+ * becomes a request, and the office settles it.
+ *
+ * This was written inside the app's own endpoint and is now shared, because
+ * the assistant can cancel too. Two copies of a rule is one copy that will be
+ * wrong - and the one that would have been wrong is the one a customer reaches
+ * by typing rather than tapping, which is the one nobody would have tested.
+ *
+ * Returns `{ ok, cancelled, code, message }`. `cancelled` is the whole of the
+ * difference: true means the job is over, false means somebody will ring them.
+ */
+const cancelForCustomer = async ({ ticket, reason, note, actorId }) => {
+    if (!ticket) {
+        return { ok: false, code: "not_found", message: "We could not find that job." };
+    }
+
+    if (["Closed", "Cancelled"].includes(ticket.status)) {
+        return { ok: false, code: "already_finished", message: "That job is already finished." };
+    }
+
+    const why = CANCEL_REASONS.includes(reason) ? reason : "Other";
+    const extra = String(note || "").trim().slice(0, 300);
+
+    // Nobody has taken it. The customer ends it themselves.
+    const unassigned = ["Pending", "Queued"].includes(ticket.status) && !ticket.technician;
+
+    if (unassigned) {
+        const from = ticket.status;
+
+        ticket.status = "Cancelled";
+        ticket.cancelReason = why + (extra ? " - " + extra : "");
+        ticket.statusHistory.push({
+            from,
+            to: "Cancelled",
+            actorRole: "customer",
+            actorId,
+            reason: ticket.cancelReason,
+            at: new Date(),
+        });
+
+        await ticket.save();
+
+        // The desk watches its queues live, so the board empties without
+        // anybody refreshing it.
+        emitToRoom(adminRoom(), "ticket:cancelled", {
+            ticketNumber: ticket.ticketNumber,
+            by: "customer",
+        });
+
+        return {
+            ok: true,
+            cancelled: true,
+            ticketNumber: ticket.ticketNumber,
+            message: "Cancelled. Nothing is charged.",
+        };
+    }
+
+    // Somebody has it. This is an ask, not an instruction.
+    ticket.cancelRequest = { reason: why, note: extra, at: new Date(), settledAt: null };
+    await ticket.save();
+
+    emitToRoom(adminRoom(), "ticket:cancel-requested", {
+        ticketId: String(ticket._id),
+        ticketNumber: ticket.ticketNumber,
+        customerName: "",
+        reason: why,
+        note: extra,
+    });
+
+    return {
+        ok: true,
+        cancelled: false,
+        ticketNumber: ticket.ticketNumber,
+        message: "The office has your request. Somebody may already be on the way, so they will call you.",
+    };
+};
+
+module.exports = {
+    bookJob, openTicketsFor, OPEN_STATUSES, MAX_OPEN, SLOT_WINDOWS, BOOK_AHEAD_DAYS,
+    cancelForCustomer, CANCEL_REASONS,
+};

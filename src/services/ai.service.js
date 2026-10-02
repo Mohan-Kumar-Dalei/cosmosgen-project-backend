@@ -286,6 +286,28 @@ Never offer this unasked, and never change language because their message
 happened to be typed in another one. People write to us in all three; the one
 they chose is the one they are answered in until they say otherwise.
 
+WHEN THEY WANT A JOB CANCELLED:
+You can do this. Say one short line naming the job - "shall I cancel
+CG-2610-0002, the AC repair?" - and end that message with
+[[CANCEL:CG-2610-0002]] and nothing else, using the real ticket number from
+the list in front of you. They will get a Yes/No to press.
+
+Use it the moment they ask plainly - "cancel my booking", "mu cancel karibi".
+Do not tell them to ring the office; you are not passing this on, you are
+doing it. Do not ask them to confirm in words first, because the Yes/No is
+the confirming - asking twice is how a simple request turns into an argument.
+
+What happens next is not yours to promise. If nobody has taken the job it
+ends there and then; if an engineer already has it, the office settles it and
+rings them. So do not say "it is cancelled" - say you are putting it through,
+and let the next message say which of the two happened.
+
+If more than one job is open and they have not said which, ask which one
+first, in words, with no marker.
+
+Never use this because they sound unhappy, or to offer a way out. Only when
+they have asked for it.
+
 WHEN THEY HAVE TO PICK A SERVICE:
 Say one short line - "which of these shall I book?" - and end that message with
 [[SERVICES]] and nothing else. Do not name the four services in your own words:
@@ -1098,12 +1120,31 @@ const MENU_MARK = "[[SERVICES]]";
  */
 const LANGUAGE_MARK = "[[LANGUAGE]]";
 
+/**
+ * The customer wants a job ended.
+ *
+ * Carries the ticket number - [[CANCEL:CG-2610-0002]] - because a customer may
+ * have more than one job open and "cancel it" is only clear to the person who
+ * said it. With no number the flow falls back to the one open job, and asks
+ * which when there is more than one.
+ *
+ * The marker asks; it never cancels. What follows it is a Yes/No the customer
+ * has to press, and only that press ends anything - see the WhatsApp flow.
+ * Consent for something irreversible is not a thing to leave to how convincing
+ * a sentence sounded.
+ */
+const CANCEL_MARK = /\[\[CANCEL(?::\s*([A-Za-z0-9-]+))?\]\]/;
+
 const readBooking = (raw) => {
     const text = String(raw ?? "");
     const asksToBook = text.includes(BOOK_MARK);
     const asksAddress = text.includes(ADDRESS_MARK);
     const asksService = text.includes(MENU_MARK);
     const asksLanguage = text.includes(LANGUAGE_MARK);
+
+    const cancelHit = text.match(CANCEL_MARK);
+    const asksToCancel = Boolean(cancelHit);
+    const cancelTicketNumber = (cancelHit && cancelHit[1]) || "";
 
     return {
         // Removed wherever they landed, not just off the end, and the blank
@@ -1113,12 +1154,15 @@ const readBooking = (raw) => {
             .split(ADDRESS_MARK).join("")
             .split(MENU_MARK).join("")
             .split(LANGUAGE_MARK).join("")
+            .replace(CANCEL_MARK, "")
             .replace(/\s+$/, "")
             .trim(),
         asksToBook,
         asksAddress,
         asksService,
         asksLanguage,
+        asksToCancel,
+        cancelTicketNumber,
     };
 };
 

@@ -59,6 +59,13 @@ const COPY = {
         // button at 20 characters, which assertCopyLengths below enforces.
         bookYes: "Yes, book it",
         bookNo: "Not now",
+        cancelYes: "Yes, cancel it",
+        cancelNo: "No, keep it",
+        cancelKept: "Alright, I have left it as it is.",
+        cancelDone: (n) => "Done. " + n + " is cancelled, and nothing is charged.",
+        cancelAsked: (n) => "I have put your request for " + n + " through to the office. Somebody may already be on the way, so they will call you first.",
+        cancelWhich: "Which job shall I cancel? Send me the ticket number.",
+        cancelGone: "That job is already finished, so there is nothing to cancel.",
 
         // The list of their own saved addresses, offered when a job could go
         // to more than one of them. A list button is capped at 20 characters.
@@ -193,6 +200,13 @@ const COPY = {
 
         bookYes: "Haan, book karein",
         bookNo: "Abhi nahi",
+        cancelYes: "Haan, cancel karein",
+        cancelNo: "Nahi, rehne dein",
+        cancelKept: "Theek hai, maine use waise hi rehne diya hai.",
+        cancelDone: (n) => "Ho gaya. " + n + " cancel kar diya hai, koi charge nahi lagega.",
+        cancelAsked: (n) => "Maine " + n + " ke liye aapki request office tak pahuncha di hai. Ho sakta hai koi pehle se raaste mein ho, isliye wo aapko call karenge.",
+        cancelWhich: "Kaunsa job cancel karna hai? Ticket number bhej dijiye.",
+        cancelGone: "Wo job pehle hi poora ho chuka hai, cancel karne ko kuch nahi hai.",
         ownWords: "Koi baat nahi - apne shabdon mein bataiye kya ho raha hai.",
         aiUnavailable: "Maaf kijiye, abhi process nahi kar paya. Kripya thodi der baad try karein.",
     },
@@ -305,6 +319,13 @@ const COPY = {
 
         bookYes: "ହଁ, book କରନ୍ତୁ",
         bookNo: "ଏବେ ନୁହେଁ",
+        cancelYes: "ହଁ, cancel କରନ୍ତୁ",
+        cancelNo: "ନା, ରହୁନ୍ତୁ",
+        cancelKept: "ଠିକ ଅଛି ଆଜ୍ଞା। ମୁଁ ସେଭଳି ଛାଡ଼ି ଦେଇଛି।",
+        cancelDone: (n) => "ହୋଇଗଲା ଆଜ୍ଞା। " + n + " cancel କରିଦେଇଛି, କୌଣସି ଚାର୍ଜ ଲାଗିବ ନାହିଁ।",
+        cancelAsked: (n) => "ମୁଁ " + n + " ପାଇଁ ଆପଣଙ୍କ ଅନୁରୋଧ office କୁ ଜଣାଇଦେଇଛି ଆଜ୍ଞା। କେହି ହୁଏତ ଇତିମଧ୍ୟରେ ବାଟରେ ଅଛନ୍ତି, ତେଣୁ ସେମାନେ ଆଗେ ଆପଣଙ୍କୁ call କରିବେ।",
+        cancelWhich: "କେଉଁ job ଟି cancel କରିବି ଆଜ୍ଞା? Ticket number ଟି ପଠାନ୍ତୁ।",
+        cancelGone: "ସେଇ job ପହିଲେ ସରିକି ସାରିଛି ଆଜ୍ଞା, cancel କରିବାକୁ କିଛି ନାହିଁ।",
 
         ownWords: "ଠିକ ଅଛି ଆଜ୍ଞା - ଦୟାକରି ନିଜ ଭାଷାରେ କୁହନ୍ତୁ କଣ ହେଉଛି।",
         aiUnavailable: "କ୍ଷମା କରିବେ, ଏବେ ମୁଁ ଏହା process କରିପାରିଲି ନାହିଁ। ଦୟାକରି ଟିକେ ପରେ ଆଉ ଥରେ ଚେଷ୍ଟା କରନ୍ତୁ।",
@@ -335,6 +356,7 @@ const assertCopyLengths = () => {
 
         // Reply buttons are capped tighter than list buttons by WhatsApp.
         bookYes: 20, bookNo: 20,
+        cancelYes: 20, cancelNo: 20,
     };
 
     Object.entries(COPY).forEach(([language, strings]) => {

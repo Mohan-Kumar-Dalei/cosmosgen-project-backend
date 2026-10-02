@@ -9,6 +9,7 @@ const aiService = require("../services/ai.service");
 const { createMemory, queryMemory } = require("../services/vector.service");
 const { SERVICE_CATALOG, getServiceByKey, getAppliance, issueLabel, displayLabel } = require("../config/services");
 const { copyFor } = require("../config/copy");
+const booking = require("../services/booking.service");
 
 const OPEN_STATUSES = ["Pending", "Queued", "Assigned", "In-Progress", "Payment-Pending"];
 
@@ -212,6 +213,48 @@ const handleMessage = async (phone, message, profileName) => {
             await convo.save();
             return;
         }
+    }
+
+    /*
+     * The one place a job is actually ended from this channel.
+     *
+     * The assistant only ever asks - it sends a line and a Yes/No, and the
+     * press is here. Keeping the act behind a button rather than behind a
+     * sentence means a model that mis-reads "don't cancel it" cannot end
+     * somebody's job: the worst it can do is ask a question they answer with
+     * No.
+     */
+    if (convo.user && (interactiveId === "cancel_yes" || interactiveId === "cancel_no")) {
+        const t = copyFor(convo.language);
+        const ticketId = convo.pendingCancel;
+
+        convo.pendingCancel = null;
+
+        if (interactiveId === "cancel_no" || !ticketId) {
+            await whatsapp.sendText(convo.phone, t.cancelKept);
+            await convo.save();
+            return;
+        }
+
+        const ticket = await Ticket.findOne({ _id: ticketId, customer: convo.user });
+        const out = await booking.cancelForCustomer({
+            ticket,
+            reason: "Other",
+            note: "Asked on WhatsApp",
+            actorId: convo.user,
+        });
+
+        if (!out.ok) {
+            await whatsapp.sendText(convo.phone, t.cancelGone);
+        } else if (out.cancelled) {
+            await whatsapp.sendText(convo.phone, t.cancelDone(out.ticketNumber));
+        } else {
+            await whatsapp.sendText(convo.phone, t.cancelAsked(out.ticketNumber));
+        }
+
+        convo.lastOutboundAt = new Date();
+        await convo.save();
+        return;
     }
 
     if (convo.user && (interactiveId === "book_yes" || interactiveId === "book_no")) {
@@ -963,7 +1006,10 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * it forgets, the reply simply goes out as text and the customer types,
      * exactly as before.
      */
-    const { text: reply, asksToBook, asksAddress, asksService, asksLanguage } = aiService.readBooking(raw);
+    const {
+        text: reply, asksToBook, asksAddress, asksService, asksLanguage,
+        asksToCancel, cancelTicketNumber,
+    } = aiService.readBooking(raw);
 
     /*
      * Buttons only where WhatsApp will actually take them.
@@ -999,6 +1045,47 @@ const runAI = async (convo, userMessage, opts = {}) => {
      * has to be able to read before they have a language set, and a picker
      * written in the language you are trying to leave helps nobody.
      */
+    /*
+     * Which job they mean, before anything is offered.
+     *
+     * The assistant names a ticket number when it can see one. It is checked
+     * here against this customer's own open jobs rather than trusted: a number
+     * that came out of a model is a number that may have been invented, and
+     * the cost of getting it wrong is somebody else's job ending.
+     *
+     * With no number and one open job, that is the one. With no number and
+     * several, nobody can tell which - so the question goes back rather than a
+     * guess going forward.
+     */
+    if (asksToCancel && reply.length > 0) {
+        const t = copyFor(convo.language);
+
+        const open = await Ticket
+            .find({ customer: user._id, status: { $in: booking.OPEN_STATUSES } })
+            .select("ticketNumber")
+            .lean();
+
+        const wanted = cancelTicketNumber
+            ? open.find((o) => o.ticketNumber === cancelTicketNumber)
+            : (open.length === 1 ? open[0] : null);
+
+        if (!wanted) {
+            await whatsapp.sendText(convo.phone, open.length ? t.cancelWhich : t.cancelGone);
+            convo.lastOutboundAt = new Date();
+            return;
+        }
+
+        sent = await whatsapp.sendButtons(convo.phone, {
+            body: reply,
+            buttons: [
+                { id: "cancel_yes", title: t.cancelYes },
+                { id: "cancel_no", title: t.cancelNo },
+            ],
+        });
+
+        if (sent) convo.pendingCancel = wanted._id;
+    }
+
     if (asksLanguage && reply.length > 0 && reply.length <= 1024) {
         sent = await whatsapp.sendList(convo.phone, {
             body: reply,

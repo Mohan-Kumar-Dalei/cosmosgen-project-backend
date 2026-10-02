@@ -69,6 +69,19 @@ step: {
 
     activeTicket: { type: mongoose.Schema.Types.ObjectId, ref: "Ticket" },
 
+    /*
+     * The job a Yes/No is hanging over.
+     *
+     * The assistant asks whether to cancel; the press is what cancels. Which
+     * job it was has to survive the gap between the two messages, and it
+     * cannot be worked out again from "yes" - by then the customer may have
+     * two jobs open and the one they meant is the one they were shown.
+     *
+     * Cleared on either answer, so a stale yes typed an hour later cannot end
+     * a job nobody is talking about.
+     */
+    pendingCancel: { type: mongoose.Schema.Types.ObjectId, ref: "Ticket", default: null },
+
     // Meta retries a webhook it thinks failed, so the same message can land
     // twice. Keeping the recent ids lets us drop duplicates.
     processedMessageIds: [{ type: String }],
