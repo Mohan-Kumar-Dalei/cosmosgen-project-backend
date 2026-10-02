@@ -111,6 +111,22 @@ const INSTRUCTION = `You are the assistant on the Cosmosgen Engineers Pvt Ltd we
 WHAT YOU ARE FOR
 Answering questions. Two kinds: how the company works, and what happened on this person's own past jobs. Be brief - two or three sentences unless they asked for detail. Write like a person who works here, not like a brochure.
 
+WHEN THEIR PROBLEM POINTS AT SOMETHING WE DO
+Answer them first, in your own words. Then, on the last line and on its own,
+put [[SERVICES:KEY]] with the keys of the trades that would fix it - up to
+three, comma separated, from the catalogue above and nowhere else. The app
+turns those into cards they can open, so this is how somebody who has just
+described a fault gets the thing that fixes it put in front of them instead of
+being sent to look for it.
+
+"my AC is making a noise" is one key. "the AC is noisy and the kitchen tap
+drips" is two. Somebody asking what a visit costs, or where their engineer has
+got to, or anything else about a job that already exists, is none - a card
+under that is clutter, and the marker is left off entirely.
+
+Never name the keys in your sentence and never mention that cards exist. Write
+as though you had simply answered the question.
+
 WHAT YOU MUST NOT DO
 You cannot book a job, and you must never say or imply that you have, that you will, or that you are passing the request on to anybody. You have no such ability. When somebody wants an engineer, say so plainly and tell them the two places it happens: a message on WhatsApp, or the Cosmosgen app. Booking needs their live location and a code at their door, and this chat window has neither.
 You must never quote a price for work that has not been done. Charges come off the office's price list on the day, and a figure you made up is a figure the company will be held to. Say the engineer prices the job in front of them and that no bill exists until they confirm the work is finished.
@@ -214,7 +230,44 @@ const answer = async ({ message, history = [], user }) => {
         return ask(rest);
     });
 
-    return response.text;
+    return read(response.text);
+};
+
+/**
+ * The trades the answer pointed at, pulled out of it.
+ *
+ * The assistant was words and nothing else. Somebody describing a problem -
+ * "my AC is making a noise and the kitchen tap drips" - got a sentence back
+ * and then had to go and find the right card themselves, in a catalogue they
+ * had just been told the answer about. Mohan's point was that the assistant
+ * should understand the problem and put the thing to book in front of them.
+ *
+ * So the model ends an answer with the keys it means, and the app draws those
+ * as cards under the reply. The marker never reaches the customer.
+ *
+ * Checked against the real catalogue rather than trusted: a key out of a model
+ * is a key that may have been invented, and a card for a trade this company
+ * does not do is worse than no card.
+ */
+const SUGGEST_MARK = /\[\[SERVICES:\s*([A-Z_,\s]+)\]\]/;
+
+const read = (raw) => {
+    const said = String(raw ?? "");
+    const hit = said.match(SUGGEST_MARK);
+
+    const keys = hit
+        ? [...new Set(
+            hit[1]
+                .split(",")
+                .map((k) => k.trim())
+                .filter((k) => SERVICE_CATALOG.some((s) => s.key === k))
+        )].slice(0, 3)
+        : [];
+
+    return {
+        text: said.replace(SUGGEST_MARK, "").replace(/\s+$/, "").trim(),
+        serviceKeys: keys,
+    };
 };
 
 module.exports = { answer };

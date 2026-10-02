@@ -1032,7 +1032,8 @@ const ask = async (req, res) => {
             ? existing.turns.map((turn) => ({ role: turn.role, text: turn.text }))
             : (Array.isArray(req.body.history) ? req.body.history : []);
 
-        const reply = await assistant.answer({ message, history, user: req.user });
+        const said = await assistant.answer({ message, history, user: req.user });
+        const reply = said?.text || "";
 
         if (!reply) {
             return res.status(502).json({
@@ -1066,7 +1067,21 @@ const ask = async (req, res) => {
             console.error("Chat not saved:", err.message);
         });
 
-        return res.status(200).json({ success: true, data: { reply, chatId: saved.chatId } });
+        /*
+         * The trades the answer pointed at, for the app to draw as cards.
+         *
+         * Keys rather than whole services: the app already holds the
+         * catalogue, so sending the pictures, the prices and the fault lists
+         * back down a chat response would be sending it what it has.
+         */
+        return res.status(200).json({
+            success: true,
+            data: {
+                reply,
+                services: said?.serviceKeys || [],
+                chatId: saved.chatId,
+            },
+        });
     } catch (error) {
         console.error("Assistant error:", error.message);
         return res.status(500).json({
