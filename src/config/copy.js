@@ -42,6 +42,7 @@ const COPY = {
             "Welcome to Cosmosgen services. If that is not where you want somebody sent, " +
             "change the address in the app.",
         alreadyHaveLocation: "No need for that - we already use the address you saved on the app, and that is where somebody will be sent.",
+        languageAsk: "Which language would you like to chat in?",
         languageDone: (name) => "Done. We will chat in " + name + ".",
         welcomeBack: (name) => "Hi" + name + "! Welcome back to Cosmosgen.",
         serviceBody: "What do you need help with today?",
@@ -131,6 +132,7 @@ const COPY = {
             "Verify ho gaya: " + name + (place ? " - " + place : "") + "." + "\n\n" +
             "Cosmosgen services mein aapka swagat hai. Agar wahan nahi bhijwana hai toh app mein address badal lijiye.",
         alreadyHaveLocation: "Iski zaroorat nahi - jo address aapne app mein save kiya hai wahi hum use karte hain, aur wahin bheja jayega.",
+        languageAsk: "Aap kis language mein baat karna chahenge?",
         languageDone: (name) => "Theek hai, hum " + name + " mein baat karenge.",
         welcomeBack: (name) => "Hi" + name + "! Cosmosgen mein wapas swagat hai.",
         serviceBody: "Aaj aapko kis cheez mein madad chahiye?",
@@ -242,6 +244,7 @@ const COPY = {
             (place ? " ଆମ technician " + place + " ରେ ଥିବା ଆପଣଙ୍କ ଠିକଣାକୁ ଆସିବେ।" : " ଆପଣ app ରେ save କରିଥିବା ଠିକଣାକୁ ଆମ technician ଆସିବେ।") +
             " ଅନ୍ୟ ଠିକଣାକୁ ଡାକିବାକୁ ଚାହିଁଲେ ଦୟାକରି app ରେ ଠିକଣା ବଦଳାଇଦିଅନ୍ତୁ।",
         alreadyHaveLocation: "ଆଜ୍ଞା, ଏହାର ଆବଶ୍ୟକତା ନାହିଁ। ଆପଣ app ରେ ଯେଉଁ ଠିକଣା save କରିଛନ୍ତି ତାହା ଆମ ପାଖରେ ଅଛି, ଆମ technician ସେଇଠିକୁ ହିଁ ଆସିବେ। ବଦଳାଇବାକୁ ଚାହିଁଲେ ଦୟାକରି app ରେ ବଦଳାଇଦିଅନ୍ତୁ।",
+        languageAsk: "ଆପଣ କେଉଁ ଭାଷାରେ କଥା ହେବାକୁ ଚାହାଁଛନ୍ତି ଆଜ୍ଞା?",
         languageDone: (name) => "ଠିକ ଅଛି ଆଜ୍ଞା। ଆମେ ଏବେଠାରୁ " + name + " ରେ କଥା ହେବା।",
         welcomeBack: (name) => "ନମସ୍କାର" + name + "! Cosmosgen କୁ ପୁଣିଥରେ ସ୍ୱାଗତ।",
         serviceBody: "ଆଜି ଆପଣଙ୍କୁ କେଉଁ କାମରେ ସାହାଯ୍ୟ ଦରକାର ଆଜ୍ଞା?",

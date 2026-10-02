@@ -267,13 +267,36 @@ const handleMessage = async (phone, message, profileName) => {
             await startFlow(convo);
             break;
 
-        case "AWAITING_LANGUAGE":
-            if (interactiveId?.startsWith("lang_")) {
-                await handleLanguagePick(convo, interactiveId);
-            } else {
-                await askForLanguage(convo);
+        /*
+         * The picker is an offer, not a gate.
+         *
+         * Anything that was not a tap sent the picker again, which made this
+         * state impossible to leave by typing. Mohan found it by being asked
+         * whether he wanted a different language, answering "no, Odia is
+         * fine", and being handed the same English picker - and he would have
+         * been handed it again for every sentence he wrote after that.
+         *
+         * Three ways out now. A tap, which is what the list is for. A language
+         * named in words, because people answer questions with sentences. And
+         * anything else at all, which is not an answer to this question and is
+         * treated as what it is - the customer saying something, to be read
+         * and replied to. Declining costs them nothing: their language is
+         * already on their record and nothing here has touched it.
+         */
+        case "AWAITING_LANGUAGE": {
+            const named = interactiveId?.startsWith("lang_")
+                ? interactiveId
+                : languageFromWords(text);
+
+            if (named) {
+                await handleLanguagePick(convo, named);
+                break;
             }
+
+            convo.step = "IN_DIAGNOSIS";
+            if (text) await runAI(convo, text);
             break;
+        }
 
         case "AWAITING_SERVICE":
             if (interactiveId?.startsWith("svc_")) {
@@ -386,14 +409,49 @@ const LANGUAGES = [
     { id: "lang_english", key: "english", title: "English", description: "English only" },
 ];
 
+/*
+ * The question in their language; the rows always in English.
+ *
+ * The two are not the same decision. Somebody who already has a language
+ * should be asked in it - this went out in English to a customer who had
+ * chosen Odia, in the middle of an Odia conversation, which reads as the
+ * company forgetting who it was talking to. The rows stay English for the
+ * reason given on LANGUAGES above: a picker written in the language you are
+ * trying to leave helps nobody.
+ *
+ * Somebody who has not chosen yet gets the English line, because there is
+ * nothing else it could be in.
+ */
 const askForLanguage = async (convo) => {
     await whatsapp.sendList(convo.phone, {
-        body: "Which language would you like to chat in?",
+        body: copyFor(convo.language).languageAsk,
         buttonText: "Choose language",
         sectionTitle: "Languages",
         rows: LANGUAGES,
     });
     convo.step = "AWAITING_LANGUAGE";
+};
+
+/**
+ * A language named in words rather than tapped.
+ *
+ * The picker is a list, and a list is a tap - but people answer a question
+ * with a sentence, and "English re kuha" is a perfectly clear answer the
+ * tap-only branch threw away.
+ *
+ * Deliberately narrow: a language word in a short message. A long sentence
+ * that merely mentions a language in passing should not drag the conversation
+ * into changing one.
+ */
+const languageFromWords = (text) => {
+    const said = String(text || "").trim().toLowerCase();
+    if (!said || said.length > 40) return null;
+
+    if (/\bodia\b|\bodiya\b|\boriya\b|\u0b13\u0b21\u0b3c\u0b3f\u0b06/.test(said)) return "lang_odia";
+    if (/\bhinglish\b|\bhindi\b|\u0939\u093f\u0902\u0926\u0940/.test(said)) return "lang_hinglish";
+    if (/\benglish\b|\bangrezi\b|\bingraji\b/.test(said)) return "lang_english";
+
+    return null;
 };
 
 const handleLanguagePick = async (convo, id) => {
