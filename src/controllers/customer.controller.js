@@ -457,6 +457,7 @@ const book = async (req, res) => {
         const result = await booking.bookJob({
             customerId: req.user._id,
             serviceKey,
+            language: chosenLanguage,
             selectedIssues: issues,
             selectedIssueGroups: groups,
             problemDescription: description,

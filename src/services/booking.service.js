@@ -96,6 +96,17 @@ const openTicketsFor = (customerId) =>
 const bookJob = async ({
     customerId,
     serviceKey,
+
+    /*
+     * The language this particular job is spoken about in.
+     *
+     * Kept on the ticket rather than read from the account whenever it is
+     * wanted, because the account can change and the job cannot: a customer
+     * who books in Odia is owed Odia about that job until it closes, however
+     * many times they switch afterwards.
+     */
+    language,
+
     selectedIssues,
 
     // The same faults under their machines, where the channel knew them.
@@ -205,6 +216,7 @@ const bookJob = async ({
         location: { type: "Point", coordinates: [where.lon, where.lat] },
         serviceKey: service.key,
         serviceLabel: service.label,
+        language: language || "",
         selectedIssues: Array.isArray(selectedIssues) ? selectedIssues : [],
         selectedIssueGroups: Array.isArray(selectedIssueGroups) ? selectedIssueGroups : [],
         problemDescription,

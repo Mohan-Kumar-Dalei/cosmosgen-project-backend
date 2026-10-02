@@ -38,6 +38,26 @@ const ticketSchema = new mongoose.Schema({
         coordinates: { type: [Number], default: undefined },
     },
 
+    /*
+     * The language this job was booked in.
+     *
+     * Not the same thing as the language on the account, and the difference is
+     * the point. A customer books in Odia, the job runs for three days, and
+     * everything said about it - the assistant on WhatsApp, the call the
+     * office places - should be Odia for those three days whatever the account
+     * has drifted to since.
+     *
+     * It was computed at the booking endpoint and then thrown away: the value
+     * existed, the comment beside it said it rode on the ticket, and there was
+     * no field for it to ride on. So a customer who booked in the app and then
+     * opened WhatsApp was answered from the account instead, which is how an
+     * Odia customer got English.
+     *
+     * Empty on an older ticket and on anything booked before this, which the
+     * readers treat as "fall back to the account" rather than as English.
+     */
+    language: { type: String, default: "" },
+
     serviceKey: { type: String, required: true },
     serviceLabel: { type: String, required: true },
 

@@ -276,7 +276,26 @@ const handleMessage = async (phone, message, profileName) => {
         // language is settled. Otherwise a "hi" typed at the language question
         // would skip it for good, since nothing downstream asks again.
         if (convo.user && convo.language && convo.customerName) {
-            await sendServiceMenu(convo, { greet: true });
+            /*
+             * Unless there is a job running, in which case that is what the
+             * hello is about.
+             *
+             * This branch is the fast path for somebody saying hi, and it went
+             * straight to the catalogue - so a customer who had booked on the
+             * app an hour earlier said hello and was handed a list of four
+             * services. The job they were asking about was not mentioned.
+             */
+            const live = await openJobFor(convo.user);
+
+            if (live) {
+                if (live.language) convo.language = live.language;
+
+                convo.step = "IN_DIAGNOSIS";
+                convo.activeTicket = live._id;
+                await runAI(convo, OPENING_NOTE(live));
+            } else {
+                await sendServiceMenu(convo, { greet: true });
+            }
         } else {
             convo.step = "NEW";
             await startFlow(convo);
@@ -683,10 +702,18 @@ const resumeOnboarding = async (convo, known, opts = {}) => {
      * house has no memory of last month's preference, and somebody who wanted
      * Odia once should not be stuck with it.
      */
-    const running = await Ticket.exists({
-        customer: onFile._id,
-        status: { $in: OPEN_STATUSES },
-    });
+    const running = await openJobFor(onFile._id);
+
+    /*
+     * A job already settled this, so take its language rather than the
+     * account's.
+     *
+     * The flow's own copy - the welcome, the menus, the confirmations - is
+     * read from `convo.language`, and that was being set from the account.
+     * Somebody who booked in Odia on the app and then opened WhatsApp got an
+     * English welcome before the assistant had said a word.
+     */
+    if (running?.language) convo.language = running.language;
 
     /*
      * Except when they have this second answered it.
@@ -705,6 +732,28 @@ const resumeOnboarding = async (convo, known, opts = {}) => {
 
     convo.customerName = onFile.name;
 
+    /*
+     * Somebody with a job already running is here about that job.
+     *
+     * The menu is for somebody who wants something. A customer who booked on
+     * the app twenty minutes ago and then said hello here does not want a list
+     * of four services - they want to know what is happening to the thing they
+     * booked, and being handed the catalogue instead reads as the company not
+     * knowing who they are.
+     *
+     * So the assistant opens instead. It already has the whole ticket list in
+     * front of it, and the instruction tells it what this turn is for: greet
+     * them, say where their job has got to, and offer to answer. In the
+     * language that job was booked in, which was settled above.
+     */
+    if (running) {
+        convo.step = "IN_DIAGNOSIS";
+        convo.activeTicket = running._id;
+
+        await runAI(convo, OPENING_NOTE(running));
+        return;
+    }
+
     await whatsapp.sendText(
         convo.phone,
         copyFor(convo.language).welcomeVerified(onFile.name, registration.whereWeSend(onFile))
@@ -712,6 +761,36 @@ const resumeOnboarding = async (convo, known, opts = {}) => {
 
     await sendServiceMenu(convo);
 };
+
+/**
+ * What the assistant is told this turn is, when a customer with a live job
+ * opens the conversation.
+ *
+ * Written as a note from the flow rather than put in the customer's mouth -
+ * they said "hi", and storing anything else as their words would poison the
+ * history every later turn reads back. The model is told the situation and
+ * what to do with it; everything it needs to say is already in the ticket
+ * block it gets anyway.
+ */
+/**
+ * The job this customer has running, or nothing.
+ *
+ * The newest, because somebody with two open jobs who says hello is almost
+ * always asking about the one they booked last. The fields are the ones the
+ * greeting and the language rule need and no more.
+ */
+const openJobFor = (customerId) => Ticket
+    .findOne({ customer: customerId, status: { $in: OPEN_STATUSES } })
+    .sort({ createdAt: -1 })
+    .select("ticketNumber serviceLabel status language createdAt")
+    .lean();
+
+const OPENING_NOTE = (ticket) =>
+    "[The customer has just opened the conversation. They have a job running: "
+    + ticket.ticketNumber + ", " + ticket.serviceLabel + ", currently " + ticket.status
+    + ". Greet them by name, tell them in one or two lines where that job has got "
+    + "to, and ask whether they would like to know anything about it. Do not list "
+    + "the services and do not offer to book anything - they already have.]";
 
 const sendServiceMenu = async (convo, opts = {}) => {
     const t = copyFor(convo.language);
@@ -896,6 +975,26 @@ const withTimeout = (promise, ms, fallback, what = "lookup") =>
 
 const runAI = async (convo, userMessage, opts = {}) => {
     const user = await userModel.findById(convo.user);
+
+    /*
+     * The job they are writing about, carried in with them.
+     *
+     * The assistant decides which language to answer in - see languageFor -
+     * and the first thing that decides it is what this job was booked in. A
+     * customer who booked in Odia on the app and then opened WhatsApp was
+     * being answered from the account instead, which is how they got English.
+     *
+     * Attached to the user rather than threaded through four signatures: the
+     * model builder already takes the customer, and the job is a fact about
+     * the customer right now.
+     */
+    if (user) {
+        user.activeJob = await Ticket
+            .findOne({ customer: user._id, status: { $in: booking.OPEN_STATUSES } })
+            .sort({ createdAt: -1 })
+            .select("language createdAt ticketNumber serviceLabel status")
+            .lean();
+    }
     if (!user) {
         await whatsapp.sendText(convo.phone, "Something went wrong. Please send 'hi' to start again.");
         convo.step = "NEW";

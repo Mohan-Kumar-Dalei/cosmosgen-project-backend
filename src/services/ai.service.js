@@ -574,16 +574,77 @@ const companyBlock = () => {
         + "rather than promising to try.\n";
 };
 
-const chosenLanguage = (userData) =>
-    asLanguage(userData?.languageConfirmedAt ? userData.language : null) || "english";
+/**
+ * Which language to speak to this customer in, right now.
+ *
+ * Mohan set the order out after an Odia customer was answered in English, and
+ * it is not "whatever the account says":
+ *
+ * 1. The language the job in front of them was booked in. Somebody who booked
+ *    in the app and then opened WhatsApp is writing about that job, and that
+ *    job settled this. The account may have drifted since; the job has not.
+ * 2. Unless they have changed it since. Asking for a different language
+ *    mid-job is a real request and it wins - over the booking, and over the
+ *    call the office places afterwards. `languageConfirmedAt` is when they
+ *    last picked, so a pick newer than the booking is one that came after it.
+ * 3. Otherwise the account, if they have ever chosen at all.
+ * 4. And if they never have, an empty string - which is not English. It means
+ *    nobody has decided, and the model is told to answer in whatever language
+ *    the customer wrote in. Falling back to English here is exactly what made
+ *    somebody writing Odia get English back.
+ *
+ * `activeJob` is the open ticket where there is one. The caller passes it
+ * because it has already been fetched.
+ */
+const languageFor = (userData, activeJob) => {
+    const picked = userData?.languageConfirmedAt ? asLanguage(userData.language) : null;
+    const booked = asLanguage(activeJob?.language);
+
+    if (!booked) return picked || "";
+
+    const changedAfter = userData?.languageConfirmedAt
+        && activeJob?.createdAt
+        && new Date(userData.languageConfirmedAt) > new Date(activeJob.createdAt);
+
+    return (changedAfter && picked) || booked;
+};
+
+/*
+ * The old name, for the callers with no job to hand - the apology when the
+ * model is unreachable, and anything asked outside a booking. English is right
+ * for those: there is no message to mirror and nothing to carry over.
+ */
+const chosenLanguage = (userData) => languageFor(userData, null) || "english";
+
+/*
+ * Nobody has chosen, so follow them.
+ *
+ * Every other branch names a language and insists on it. This one cannot:
+ * there is nothing on the record and nothing on a job to insist on - and the
+ * old behaviour, quietly defaulting to English, is what answered an Odia
+ * customer in English and is what Mohan raised.
+ *
+ * Mirroring is only ever a stand-in. The moment they pick, or book, the rule
+ * below takes over and the choice sticks for that job.
+ */
+const MIRROR_RULE =
+    "Nobody has chosen a language for this customer yet. Reply in whatever " +
+    "language their own message is written in, and match the script they used: " +
+    "Odia in Odia letters is answered in Odia letters, Odia in Roman letters is " +
+    "answered in Roman letters, and the same for Hindi. If their message gives " +
+    "you nothing to go on, English.\n" +
+    "Never remark on which language they used and never ask them to write " +
+    "differently. If they ask to settle on one, offer the picker as above.\n";
 
 const languageBlock = (language) =>
     "\nLANGUAGE - THIS OVERRIDES EVERYTHING ELSE:\n" +
-    (LANGUAGE_RULES[language] || LANGUAGE_RULES.english) +
-    "\nThe customer chose this language. Every reply is in it, every turn, no " +
-    "matter what language their own message is written in. Before sending, read " +
-    "your reply back and check every word belongs to the chosen language. One " +
-    "stray word from another language is a mistake, not a style.\n";
+    (language
+        ? (LANGUAGE_RULES[language] || LANGUAGE_RULES.english)
+            + "\nThe customer chose this language. Every reply is in it, every turn, no "
+            + "matter what language their own message is written in. Before sending, read "
+            + "your reply back and check every word belongs to the chosen language. One "
+            + "stray word from another language is a mistake, not a style.\n"
+        : MIRROR_RULE);
 
 const STAGE_WORDS = {
     Pending: "logged, office is finding the right person",
@@ -845,6 +906,11 @@ const handleCreateTicket = async (args, userData, userLocation) => {
     const result = await booking.bookJob({
         customerId: userData?._id || userData?.id,
         serviceKey: args.serviceKey,
+
+        // Whatever this conversation is being held in, so the job keeps it
+        // after the conversation has moved on.
+        language: chosenLanguage(userData),
+
         /*
          * Mapped back to English before it is stored.
          *
@@ -993,7 +1059,7 @@ const runConversation = async ({ contents, userData, userLocation, instruction, 
 
         const config = {
             systemInstruction: instruction
-                + languageBlock(chosenLanguage(userData))
+                + languageBlock(languageFor(userData, userData?.activeJob))
                 + companyBlock()
                 + await estimateBlock()
                 + whoBlock(userData)
