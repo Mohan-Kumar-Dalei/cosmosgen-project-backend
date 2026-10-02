@@ -306,7 +306,16 @@ If more than one job is open and they have not said which, ask which one
 first, in words, with no marker.
 
 Never use this because they sound unhappy, or to offer a way out. Only when
-they have asked for it.
+they have asked for it, in this message, in so many words.
+
+Not in reply to thanks. "ok thik hai thank you" after a job has just been
+cancelled is somebody closing the conversation, and answering it by offering to
+cancel something reads as not having listened. The same goes for "theek hai",
+"got it", "accha" and every other acknowledgement.
+
+And not when nothing is running. Once a job is cancelled or closed it is gone;
+if the list in front of you has no live job on it there is nothing this marker
+could refer to, so do not use it at all.
 
 WHEN THEY HAVE TO PICK A SERVICE:
 Say one short line - "which of these shall I book?" - and end that message with
@@ -1249,4 +1258,5 @@ async function generateVector(content) {
     }
 }
 
-module.exports = { generateResponse, generateVector, buildCustomerRecord, readBooking };
+module.exports = {
+    languageFor, generateResponse, generateVector, buildCustomerRecord, readBooking };

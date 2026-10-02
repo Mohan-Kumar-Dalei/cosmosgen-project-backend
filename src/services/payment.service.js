@@ -133,7 +133,7 @@ const createPaymentLink = async ({ ticket, amountPaise, invoiceNumber }) => {
         const customer = ticket.customerSnapshot || {};
         const phone = String(customer.phone || "").replace(/\D/g, "");
 
-        const link = await getRazorpay().paymentLink.create({
+        const link = await askGateway("payment link", () => getRazorpay().paymentLink.create({
             amount: amountPaise,
             currency: "INR",
             description: `${ticket.serviceLabel} - ${ticket.ticketNumber}`,
@@ -150,7 +150,11 @@ const createPaymentLink = async ({ ticket, amountPaise, invoiceNumber }) => {
             },
             callback_url: process.env.PAYMENT_CALLBACK_URL || undefined,
             callback_method: process.env.PAYMENT_CALLBACK_URL ? "get" : undefined,
-        });
+        }));
+
+        // askGateway has already said why, and said it once rather than as a
+        // null dereference three lines further on.
+        if (!link) return null;
 
         return { linkId: link.id, linkUrl: link.short_url };
     } catch (error) {
@@ -168,6 +172,59 @@ const createPaymentLink = async ({ ticket, amountPaise, invoiceNumber }) => {
  * the correction still goes through, because the new link is what the
  * customer is told to use.
  */
+/**
+ * Ask the gateway again before giving up on it.
+ *
+ * A payment link was one attempt. Razorpay refusing for a second - a timeout,
+ * a 502, one of the brief wobbles every gateway has - failed the whole bill:
+ * the vendor got a 502 of his own, the ticket was not touched, and he was told
+ * to take cash instead while standing in somebody's kitchen. For a fault that
+ * would very often have been over before he had read the message.
+ *
+ * Three tries with a growing gap, and only for the faults worth retrying. A
+ * refusal with a reason - a bad amount, a contact Razorpay will not accept,
+ * keys that are wrong - fails the same way however many times it is asked, and
+ * trying again only makes the vendor wait longer for the same answer.
+ *
+ * This is not a circuit breaker and does not pretend to be one. It rides out a
+ * blip; a gateway that is properly down still ends with the vendor taking cash,
+ * which is the right answer and the one the office already understands.
+ */
+const RETRY_WAITS_MS = [600, 1800];
+
+const worthRetrying = (error) => {
+    const status = error?.statusCode || error?.status || error?.response?.status;
+
+    // No status at all is a connection that never landed - the most retryable
+    // thing there is. 5xx is the gateway's own trouble. 429 is being asked to
+    // wait, which is a request to try again rather than a refusal.
+    if (!status) return true;
+    return status >= 500 || status === 429;
+};
+
+const askGateway = async (what, call) => {
+    for (let attempt = 0; ; attempt += 1) {
+        try {
+            return await call();
+        } catch (error) {
+            const last = attempt >= RETRY_WAITS_MS.length;
+            const reason = error?.error?.description || error.message;
+
+            if (last || !worthRetrying(error)) {
+                console.error("Razorpay " + what + " failed:", reason);
+                return null;
+            }
+
+            console.warn(
+                "Razorpay " + what + " did not answer (" + reason + ") - trying again in "
+                + RETRY_WAITS_MS[attempt] + "ms"
+            );
+
+            await new Promise((resolve) => { setTimeout(resolve, RETRY_WAITS_MS[attempt]); });
+        }
+    }
+};
+
 const cancelPaymentLink = async (linkId) => {
     if (!isConfigured() || !linkId) return false;
 
@@ -192,7 +249,7 @@ const createCommissionLink = async ({ ticket, amountPaise, invoiceNumber }) => {
         const customer = ticket.customerSnapshot || {};
         const phone = String(customer.phone || "").replace(/\D/g, "");
 
-        const link = await getRazorpay().paymentLink.create({
+        const link = await askGateway("payment link", () => getRazorpay().paymentLink.create({
             amount: amountPaise,
             currency: "INR",
             description: "Service charge for " + ticket.ticketNumber,
@@ -210,7 +267,11 @@ const createCommissionLink = async ({ ticket, amountPaise, invoiceNumber }) => {
             },
             callback_url: process.env.PAYMENT_CALLBACK_URL || undefined,
             callback_method: process.env.PAYMENT_CALLBACK_URL ? "get" : undefined,
-        });
+        }));
+
+        // askGateway has already said why, and said it once rather than as a
+        // null dereference three lines further on.
+        if (!link) return null;
 
         return { linkId: link.id, linkUrl: link.short_url };
     } catch (error) {
@@ -259,7 +320,7 @@ const createWalletRechargeLink = async ({ technician, amountPaise }) => {
     try {
         const phone = String(technician.phone || "").replace(/\D/g, "");
 
-        const link = await getRazorpay().paymentLink.create({
+        const link = await askGateway("payment link", () => getRazorpay().paymentLink.create({
             amount: amountPaise,
             currency: "INR",
             description: "Commission settlement, Cosmosgen",
@@ -273,7 +334,11 @@ const createWalletRechargeLink = async ({ technician, amountPaise }) => {
                 type: "wallet_recharge",
                 technicianId: String(technician._id),
             },
-        });
+        }));
+
+        // askGateway has already said why, and said it once rather than as a
+        // null dereference three lines further on.
+        if (!link) return null;
 
         return { linkId: link.id, linkUrl: link.short_url };
     } catch (error) {

@@ -522,6 +522,20 @@ const ticketSchema = new mongoose.Schema({
     },
 
     payment: {
+        /*
+         * These four words and no others.
+         *
+         * Two places wrote "Paid" here, which is not one of them. Mongoose
+         * does not check an enum on findOneAndUpdate, so it went in silently -
+         * and every reader tests for Collected or Verified, so a customer who
+         * had paid online saw the job as unpaid, the assistant believed they
+         * still owed money and would have said so, and the office's own screen
+         * showed it unsettled.
+         *
+         * "Collected" is the money having arrived; "Verified" is the office
+         * having checked it against the account. A gateway confirming a
+         * payment is the first of those, not the second.
+         */
         status: {
             type: String,
             enum: ["Pending", "Collected", "Verified", "Failed"],

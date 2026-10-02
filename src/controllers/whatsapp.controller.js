@@ -288,7 +288,8 @@ const handleMessage = async (phone, message, profileName) => {
             const live = await openJobFor(convo.user);
 
             if (live) {
-                if (live.language) convo.language = live.language;
+                convo.language = flowLanguage(await userModel.findById(convo.user)
+                    .select("language languageConfirmedAt").lean(), live);
 
                 convo.step = "IN_DIAGNOSIS";
                 convo.activeTicket = live._id;
@@ -467,7 +468,15 @@ const greetingName = (convo) => {
  */
 const LANGUAGES = [
     { id: "lang_odia", key: "odia", title: "Odia", description: "ଓଡ଼ିଆ" },
-    { id: "lang_hinglish", key: "hinglish", title: "Hinglish", description: "Hindi + English" },
+    /*
+     * Shown as "Hindi" although the key stays `hinglish`.
+     *
+     * Only the label changed, on Mohan's instruction. What it selects is
+     * unchanged - Hindi written in Roman letters, which is what people here
+     * actually read and type - but "Hinglish" is a word for people who build
+     * software, not a word a customer picks a language by.
+     */
+    { id: "lang_hinglish", key: "hinglish", title: "Hindi", description: "Hindi + English" },
     { id: "lang_english", key: "english", title: "English", description: "English only" },
 ];
 
@@ -705,15 +714,16 @@ const resumeOnboarding = async (convo, known, opts = {}) => {
     const running = await openJobFor(onFile._id);
 
     /*
-     * A job already settled this, so take its language rather than the
-     * account's.
+     * A job settles this, unless they have picked since.
      *
-     * The flow's own copy - the welcome, the menus, the confirmations - is
-     * read from `convo.language`, and that was being set from the account.
-     * Somebody who booked in Odia on the app and then opened WhatsApp got an
-     * English welcome before the assistant had said a word.
+     * The flow's own copy - the welcome, the menus, the confirmations - reads
+     * `convo.language`, and that was taken from the account, so somebody who
+     * booked in Odia on the app got an English welcome before the assistant
+     * had said a word. Taking it from the job alone was the other half of the
+     * same mistake: it ignored a language they had changed to since, and that
+     * is what put Odia buttons under a Hindi question.
      */
-    if (running?.language) convo.language = running.language;
+    convo.language = flowLanguage(onFile, running);
 
     /*
      * Except when they have this second answered it.
@@ -779,6 +789,23 @@ const resumeOnboarding = async (convo, known, opts = {}) => {
  * always asking about the one they booked last. The fields are the ones the
  * greeting and the language rule need and no more.
  */
+/**
+ * The language this conversation is held in, by the same rule the assistant
+ * uses - see `languageFor` in ai.service.
+ *
+ * Both have to agree or a single message contradicts itself. They did not:
+ * the assistant followed the rule while the flow's own copy was pinned to
+ * whatever the job was booked in, so a customer who had switched to Hindi got
+ * a Hindi question with Odia buttons under it and an Odia confirmation after
+ * it. The job wins over the account, but a pick made since the booking wins
+ * over the job, and that distinction is the whole of what was missing here.
+ *
+ * Never empty. "Nobody has chosen" is a real answer for the assistant, which
+ * then mirrors the customer; the flow's own lines have to be written in
+ * something, and English is what they fall back to.
+ */
+const flowLanguage = (onFile, job) => aiService.languageFor(onFile, job) || "english";
+
 const openJobFor = (customerId) => Ticket
     .findOne({ customer: customerId, status: { $in: OPEN_STATUSES } })
     .sort({ createdAt: -1 })
@@ -1168,8 +1195,31 @@ const runAI = async (convo, userMessage, opts = {}) => {
             ? open.find((o) => o.ticketNumber === cancelTicketNumber)
             : (open.length === 1 ? open[0] : null);
 
+        /*
+         * Nothing running, so the marker meant nothing.
+         *
+         * Mohan said "ok thik hai thank you" to a job he had just cancelled
+         * and was offered the cancellation again. The model should not have
+         * asked - the instruction now says so - but the answer is not to
+         * explain that there is nothing to cancel either. That is still a
+         * reply about cancelling to somebody who was saying goodbye.
+         *
+         * So with no live job the marker is dropped and whatever else was
+         * written goes out as an ordinary message. The only thing lost is an
+         * offer that should never have been made.
+         */
+        if (!open.length) {
+            await whatsapp.sendText(convo.phone, reply);
+            convo.lastOutboundAt = new Date();
+            return;
+        }
+
+        /*
+         * Several open and none named - ask, rather than guess. The cost of
+         * picking the wrong one is somebody's visit ending.
+         */
         if (!wanted) {
-            await whatsapp.sendText(convo.phone, open.length ? t.cancelWhich : t.cancelGone);
+            await whatsapp.sendText(convo.phone, t.cancelWhich);
             convo.lastOutboundAt = new Date();
             return;
         }

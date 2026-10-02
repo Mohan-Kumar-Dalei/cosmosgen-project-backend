@@ -259,7 +259,7 @@ const handleRazorpayEvent = async (event) => {
         { _id: ticketId, status: "Payment-Pending" },
         {
             status: "Closed",
-            "payment.status": "Paid",
+            "payment.status": "Collected",   // see the note on the enum in ticket.model.js
             "payment.method": method || "online",
             "payment.razorpayPaymentId": paymentId,
             "payment.razorpayLinkId": linkId,

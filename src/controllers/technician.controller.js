@@ -2850,7 +2850,7 @@ const getPaymentStatus = async (req, res) => {
                 { _id: ticket._id, status: "Payment-Pending" },
                 {
                     status: "Closed",
-                    "payment.status": "Paid",
+                    "payment.status": "Collected",   // see the note on the enum in ticket.model.js
                     "payment.razorpayPaymentId": status.paymentId,
                     "payment.method": status.method || "online",
                     "payment.paidAt": status.paidAt || new Date(),

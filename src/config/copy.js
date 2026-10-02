@@ -14,6 +14,14 @@
  * sentence the customer was meant to answer. Everything the flow actually
  * says - questions, confirmations, the issue rows - follows their choice.
  *
+ * `bookYes`, `bookNo`, `cancelYes` and `cancelNo` were translated anyway, and
+ * the mismatch that caused is the reason the rule exists. A button's language
+ * came from the record while the assistant's came from the job or from what
+ * the customer had just written, so a Hinglish question arrived with Odia
+ * buttons under it. An English control cannot disagree with anything above
+ * it. Anything new that sits on a button belongs in English here, whatever
+ * the entries around it look like.
+ *
  * WhatsApp caps interactive text - list button 20 characters, section title
  * 24 - and assertCopyLengths fails the boot rather than shipping a clipped
  * button.
@@ -198,10 +206,10 @@ const COPY = {
             "Invoice: " + invoice + "\n\n" +
             "Cosmosgen chunne ke liye shukriya. Ticket " + number + " ab band ho gaya hai.",
 
-        bookYes: "Haan, book karein",
-        bookNo: "Abhi nahi",
-        cancelYes: "Haan, cancel karein",
-        cancelNo: "Nahi, rehne dein",
+        bookYes: "Yes, book it",
+        bookNo: "Not now",
+        cancelYes: "Yes, cancel it",
+        cancelNo: "No, keep it",
         cancelKept: "Theek hai, maine use waise hi rehne diya hai.",
         cancelDone: (n) => "Ho gaya. " + n + " cancel kar diya hai, koi charge nahi lagega.",
         cancelAsked: (n) => "Maine " + n + " ke liye aapki request office tak pahuncha di hai. Ho sakta hai koi pehle se raaste mein ho, isliye wo aapko call karenge.",
@@ -317,10 +325,10 @@ const COPY = {
             "Invoice: " + invoice + "\n\n" +
             "Cosmosgen ବାଛିଥିବାରୁ ଧନ୍ୟବାଦ। Ticket " + number + " ବନ୍ଦ ହୋଇଗଲା।",
 
-        bookYes: "ହଁ, book କରନ୍ତୁ",
-        bookNo: "ଏବେ ନୁହେଁ",
-        cancelYes: "ହଁ, cancel କରନ୍ତୁ",
-        cancelNo: "ନା, ରହୁନ୍ତୁ",
+        bookYes: "Yes, book it",
+        bookNo: "Not now",
+        cancelYes: "Yes, cancel it",
+        cancelNo: "No, keep it",
         cancelKept: "ଠିକ ଅଛି ଆଜ୍ଞା। ମୁଁ ସେଭଳି ଛାଡ଼ି ଦେଇଛି।",
         cancelDone: (n) => "ହୋଇଗଲା ଆଜ୍ଞା। " + n + " cancel କରିଦେଇଛି, କୌଣସି ଚାର୍ଜ ଲାଗିବ ନାହିଁ।",
         cancelAsked: (n) => "ମୁଁ " + n + " ପାଇଁ ଆପଣଙ୍କ ଅନୁରୋଧ office କୁ ଜଣାଇଦେଇଛି ଆଜ୍ଞା। କେହି ହୁଏତ ଇତିମଧ୍ୟରେ ବାଟରେ ଅଛନ୍ତି, ତେଣୁ ସେମାନେ ଆଗେ ଆପଣଙ୍କୁ call କରିବେ।",
