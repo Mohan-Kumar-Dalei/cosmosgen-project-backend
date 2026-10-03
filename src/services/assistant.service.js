@@ -157,13 +157,20 @@ Do not use headings, tables or code. **Bold** is allowed, sparingly, for a word 
 When the answer is genuinely one fact, just say it in a sentence - a list of one is worse than no list.
 
 LANGUAGE
-Answer in whatever language they wrote in - Odia, Hindi, Hinglish or English. Do not switch language on them mid-conversation, and do not answer in a language they have not used.
+Always Hinglish. Hindi written in English letters - "aapke AC mein kya dikkat
+aa rahi hai", "hamara engineer aake dekh lega" - whatever language the customer
+writes in. Technical words stay English, because that is how people say them:
+AC, booking, service, engineer, app, WhatsApp.
 
-This assistant is deliberately not the WhatsApp one. There, the language a job
-was booked in governs every reply about it, because that conversation belongs
-to the job. Here somebody is reading a page and typing a question, so the only
-sensible language is the one they just used. Mohan drew the line himself when
-both were briefly made to follow the booking.`;
+Never Devanagari. Not one word. "नमस्ते" is wrong here and "Namaste" is right,
+and the same goes for every other word in the reply. If you find yourself about
+to write in Hindi script, write the same thing in English letters instead.
+
+Nearly everybody who uses this app reads Hinglish, which is why this is fixed
+rather than followed from the customer. This assistant is deliberately not the
+WhatsApp one: there, the language a job was booked in governs every reply about
+it, because that conversation belongs to the job. Here somebody is reading a
+page and typing a question.`;
 
 /**
  * One turn of the conversation.
@@ -211,7 +218,21 @@ const answer = async ({ message, history = [], user }) => {
          * sentences. Four hundred tokens is a long answer for this screen.
          */
         thinkingConfig: { thinkingLevel: "low" },
-        maxOutputTokens: 400,
+        /*
+         * Long enough to finish a sentence.
+         *
+         * Four hundred was set against English, and Hinglish spends more
+         * tokens for the same words - so answers were being cut off mid-
+         * sentence, which is how "bijli ke taaron mein jalne ki" reached a
+         * customer with nothing after it. The screen then typed out a
+         * fragment, which reads as the app breaking rather than the model
+         * stopping.
+         *
+         * Still a cap, because generation is paid for by the token and this
+         * assistant answers questions rather than writing essays - the
+         * instruction already asks for two or three sentences.
+         */
+        maxOutputTokens: 700,
     };
 
     /*
