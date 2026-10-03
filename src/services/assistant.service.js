@@ -157,7 +157,13 @@ Do not use headings, tables or code. **Bold** is allowed, sparingly, for a word 
 When the answer is genuinely one fact, just say it in a sentence - a list of one is worse than no list.
 
 LANGUAGE
-Answer in whatever language they wrote in - Odia, Hindi, Hinglish or English. Do not switch language on them mid-conversation, and do not answer in a language they have not used.`;
+Answer in whatever language they wrote in - Odia, Hindi, Hinglish or English. Do not switch language on them mid-conversation, and do not answer in a language they have not used.
+
+This assistant is deliberately not the WhatsApp one. There, the language a job
+was booked in governs every reply about it, because that conversation belongs
+to the job. Here somebody is reading a page and typing a question, so the only
+sensible language is the one they just used. Mohan drew the line himself when
+both were briefly made to follow the booking.`;
 
 /**
  * One turn of the conversation.
@@ -170,6 +176,7 @@ Answer in whatever language they wrote in - Odia, Hindi, Hinglish or English. Do
  */
 const answer = async ({ message, history = [], user }) => {
     const record = await historyFor(user?._id);
+
 
     const contents = [
         ...history
@@ -249,24 +256,61 @@ const answer = async ({ message, history = [], user }) => {
  * is a key that may have been invented, and a card for a trade this company
  * does not do is worse than no card.
  */
-const SUGGEST_MARK = /\[\[SERVICES:\s*([A-Z_,\s]+)\]\]/;
+/*
+ * Stripping and parsing are two jobs, and they were one regular expression.
+ *
+ * That expression only accepted keys - capitals and underscores - so when the
+ * model wrote [[SERVICES:Air Conditioner]] it matched nothing, nothing was
+ * stripped, and the marker was printed to the customer inside the answer. A
+ * marker reaching a customer is the worst outcome available here, and it
+ * happened because the only thing that removed it was the same thing that had
+ * to understand it.
+ *
+ * So the first of these matches a marker by its shape and nothing else, and it
+ * is what removes it. The second reads what was inside. If that content is
+ * unusable the answer still comes out clean and simply has no cards under it.
+ */
+const ANY_MARK = /\[\[SERVICES:[^\]]*\]\]/g;
+
+/**
+ * What the model meant, whether it wrote a key or a name.
+ *
+ * It is told to use keys and it wrote "Air Conditioner", which is a thing a
+ * customer would say and a thing on the screen in front of it. Insisting on
+ * the key and discarding everything else would be correct and useless.
+ *
+ * So a key matches a key, and a name matches a service or any machine under
+ * one - a machine resolving to the trade that covers it, because that is the
+ * card the app can actually draw. Anything that matches nothing is dropped.
+ */
+const resolve = (said) => {
+    const want = String(said || "").trim().toLowerCase();
+    if (!want) return null;
+
+    const byKey = SERVICE_CATALOG.find((s) => s.key.toLowerCase() === want);
+    if (byKey) return byKey.key;
+
+    const byLabel = SERVICE_CATALOG.find((s) => (s.label || "").toLowerCase() === want);
+    if (byLabel) return byLabel.key;
+
+    const byMachine = SERVICE_CATALOG.find((s) =>
+        (s.appliances || []).some((a) => (a.label || "").toLowerCase() === want));
+
+    return byMachine ? byMachine.key : null;
+};
 
 const read = (raw) => {
     const said = String(raw ?? "");
-    const hit = said.match(SUGGEST_MARK);
 
-    const keys = hit
-        ? [...new Set(
-            hit[1]
-                .split(",")
-                .map((k) => k.trim())
-                .filter((k) => SERVICE_CATALOG.some((s) => s.key === k))
-        )].slice(0, 3)
-        : [];
+    const keys = [...said.matchAll(/\[\[SERVICES:([^\]]*)\]\]/g)]
+        .flatMap((hit) => hit[1].split(","))
+        .map(resolve)
+        .filter(Boolean);
 
     return {
-        text: said.replace(SUGGEST_MARK, "").replace(/\s+$/, "").trim(),
-        serviceKeys: keys,
+        // Removed by shape, so nothing inside one can keep it on the screen.
+        text: said.replace(ANY_MARK, "").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "").trim(),
+        serviceKeys: [...new Set(keys)].slice(0, 3),
     };
 };
 
