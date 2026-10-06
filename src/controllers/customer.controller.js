@@ -1639,9 +1639,16 @@ const addBookmark = async (req, res) => {
     try {
         const key = String(req.body?.serviceKey || "").trim();
 
+        // "TRADE" or "TRADE:MACHINE" - a machine's card saves itself, not the
+        // whole trade it sits under (the app's bookmarkKey).
+        const [serviceKey, machineKey] = key.split(":");
+        const service = SERVICE_CATALOG.find((s) => s.key === serviceKey);
+        const known = Boolean(service) && (!machineKey
+            || (service.appliances || []).some((a) => a.key === machineKey));
+
         // Only a trade the company actually sells. A key that is not in the
         // catalogue would sit in the list for ever showing a blank card.
-        if (!SERVICE_CATALOG.some((s) => s.key === key)) {
+        if (!known) {
             return res.status(400).json({ success: false, message: "We do not have that service." });
         }
 
