@@ -130,4 +130,10 @@ router.post("/tickets/:id/cancel", isAuthenticated, customer.cancelTicket);
 router.get("/announcements", isAuthenticated, customer.announcements);
 router.post("/notices/seen", isAuthenticated, customer.noticesSeen);
 
+// One notice at a time, or the lot - the body says which with { id } or
+// { all: true }. Both are per customer: clearing a broadcast must never
+// take it off anybody else's phone.
+router.post("/notices/read", isAuthenticated, customer.noticesRead);
+router.post("/notices/clear", isAuthenticated, customer.noticesClear);
+
 module.exports = router;

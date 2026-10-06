@@ -86,6 +86,34 @@ const userSchema = new mongoose.Schema({
      */
     noticesSeenAt: { type: Date, default: null },
 
+    /*
+     * The two things a customer can now do to a single notice.
+     *
+     * The timestamp above answers "has this person looked at the bell", and
+     * for a long time that was the whole question. Mohan asked for the
+     * reference's behaviour instead: an All / Unread pair of tabs, one notice
+     * marked read on its own, and a notice the customer can get rid of.
+     * Neither of those is a question a single date can answer.
+     *
+     * Still not a row per customer per notice. These are broadcasts - a
+     * handful live at any time, thirty at the outside - so two short arrays of
+     * ids on the customer is the whole of it, read in the same query that
+     * already loads them.
+     *
+     *   noticesRead     - marked read one at a time. "Mark all read" does not
+     *                     write here; it moves noticesSeenAt, which is cheaper
+     *                     and covers everything older in one value.
+     *
+     *   noticesCleared  - dismissed, and so not sent to the app at all.
+     *
+     *   noticesClearedAt - "clear all", as a date for the same reason:
+     *                     everything pushed at or before it is gone, without
+     *                     writing an id per notice.
+     */
+    noticesRead: [{ type: mongoose.Schema.Types.ObjectId, ref: "Announcement" }],
+    noticesCleared: [{ type: mongoose.Schema.Types.ObjectId, ref: "Announcement" }],
+    noticesClearedAt: { type: Date, default: null },
+
     addresses: [{
         // What the customer calls it: Home, Office, Mum's place.
         label: { type: String, default: "", trim: true },

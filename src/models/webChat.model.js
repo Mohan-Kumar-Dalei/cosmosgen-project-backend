@@ -18,6 +18,11 @@ const mongoose = require("mongoose");
 const turnSchema = new mongoose.Schema({
     role: { type: String, enum: ["user", "model"], required: true },
     text: { type: String, required: true },
+
+    // The service cards an answer pointed at, kept with it - without this the
+    // app showed the cards once and lost them the next time it was opened.
+    services: { type: [String], default: [] },
+
     at: { type: Date, default: Date.now },
 }, { _id: false });
 

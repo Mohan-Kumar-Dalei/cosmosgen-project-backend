@@ -1,4 +1,5 @@
 const { LANGUAGES, asLanguage } = require("../config/languages");
+const mongoose = require("mongoose");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 
@@ -536,7 +537,8 @@ const TICKET_FIELDS =
     "ticketNumber status acceptedAt serviceKey serviceLabel selectedIssues problemDescription location "
     + "technicianSnapshot scheduling ride billing.totalPaise billing.invoiceNumber billing.workDone "
     + "payment.method payment.status tracking.token otp.start otp.close cancelReason "
-    + "billing.invoicePdfUrl createdAt updatedAt";
+    + "billing.invoicePdfUrl billing.lineItems billing.subtotalPaise billing.discountPaise "
+    + "billing.discountLabel billing.gstPercent billing.gstPaise billing.billedAt createdAt updatedAt";
 
 /**
  * Whether the customer has been told who is coming.
@@ -660,6 +662,27 @@ const shape = (t) => ({
         ? {
             invoiceNumber: t.billing.invoiceNumber,
             totalDisplay: paymentService.paiseToRupees(t.billing.totalPaise || 0),
+
+            /*
+             * The bill itself, line by line, so the job screen can show it
+             * rather than a bare total. Only what is printed on the customer's
+             * own invoice: never the commission or the engineer's share.
+             */
+            lines: (t.billing.lineItems || []).map((line) => ({
+                description: line.description || "",
+                qty: line.qty || 1,
+                amount: paymentService.paiseToRupees(line.amountPaise || 0),
+            })),
+            subtotal: paymentService.paiseToRupees(t.billing.subtotalPaise || 0),
+            discount: t.billing.discountPaise
+                ? {
+                    label: t.billing.discountLabel || "Discount",
+                    amount: paymentService.paiseToRupees(t.billing.discountPaise),
+                }
+                : null,
+            gstPercent: t.billing.gstPercent || 0,
+            gst: paymentService.paiseToRupees(t.billing.gstPaise || 0),
+            billedAt: t.billing.billedAt || null,
             workDone: t.billing.workDone || null,
             method: t.payment?.method || null,
             paid: t.payment?.status === "Collected" || t.payment?.status === "Verified",
@@ -983,7 +1006,12 @@ const chat = async (req, res) => {
             success: true,
             data: {
                 chatId: found.chatId,
-                turns: found.turns.map((turn) => ({ role: turn.role, text: turn.text })),
+                turns: found.turns.map((turn) => ({
+                    role: turn.role,
+                    text: turn.text,
+                    // So a thread read back shows the cards it was given.
+                    services: turn.services || [],
+                })),
             },
         });
     } catch (error) {
@@ -1049,7 +1077,7 @@ const ask = async (req, res) => {
          */
         const turns = [
             { role: "user", text: message },
-            { role: "model", text: reply },
+            { role: "model", text: reply, services: said?.serviceKeys || [] },
         ];
 
         const saved = existing || new WebChat({ chatId: chatId || newChatId(), turns: [] });
@@ -1400,6 +1428,23 @@ const announcements = async (req, res) => {
 
         const seenAt = req.user?.noticesSeenAt || null;
 
+        /*
+         * What this customer has already dealt with.
+         *
+         * Three values, because there are two ways to do each thing: one
+         * notice at a time, or the lot. The dates cover "all" without writing
+         * an id per notice, and the arrays cover the singles.
+         */
+        const clearedAt = req.user?.noticesClearedAt || null;
+        const cleared = new Set((req.user?.noticesCleared || []).map(String));
+        const read = new Set((req.user?.noticesRead || []).map(String));
+
+        const isRead = (row) => (seenAt && row.pushedAt && row.pushedAt <= seenAt)
+            || read.has(String(row._id));
+
+        const isGone = (row) => cleared.has(String(row._id))
+            || (clearedAt && row.pushedAt && row.pushedAt <= clearedAt);
+
         const shape = (row) => ({
             id: String(row._id),
             title: row.title,
@@ -1417,19 +1462,28 @@ const announcements = async (req, res) => {
             offerServiceKeys: row.offerServiceKeys || [],
 
             at: row.pushedAt || row.createdAt,
+
+            // So the list can show which ones are new without working it out
+            // from a timestamp the app would have to be told about.
+            read: isRead(row),
         });
+
+        // Anything the customer cleared never leaves the server, so the app
+        // has no rule of its own to get wrong - the same principle the live
+        // filter above already follows.
+        const kept = notices.filter((row) => !isGone(row));
 
         return res.status(200).json({
             success: true,
             data: {
                 posters: posters.map(shape),
-                notices: notices.map(shape),
+                notices: kept.map(shape),
 
                 // What the bell's badge shows. Counted here rather than in the
-                // app so the number and the list can never disagree.
-                unread: seenAt
-                    ? notices.filter((n) => n.pushedAt > seenAt).length
-                    : notices.length,
+                // app so the number and the list can never disagree - and
+                // counted off the same `isRead` the rows are shaped with, so
+                // the badge and the Unread tab can never disagree either.
+                unread: kept.filter((row) => !isRead(row)).length,
             },
         });
     } catch (error) {
@@ -1453,6 +1507,77 @@ const noticesSeen = async (req, res) => {
         return res.status(200).json({ success: true });
     } catch (error) {
         console.error("Notices seen error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/customer/notices/read
+ *
+ * One notice marked read, or all of them.
+ *
+ * `{ all: true }` moves the same timestamp the bell has always used, because
+ * one date says "everything up to here" without a write per notice. A single
+ * id goes into a set instead - there is no date that means "this one and not
+ * the newer one above it".
+ *
+ * $addToSet rather than $push: tapping the same notice twice is a thing
+ * somebody does, and it must not grow the array.
+ */
+const noticesRead = async (req, res) => {
+    try {
+        if (req.body?.all) {
+            await userModel.updateOne({ _id: req.user._id }, { noticesSeenAt: new Date() });
+            return res.status(200).json({ success: true });
+        }
+
+        const id = String(req.body?.id || "");
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Unknown notice" });
+        }
+
+        await userModel.updateOne({ _id: req.user._id }, { $addToSet: { noticesRead: id } });
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Notices read error:", error.message);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
+ * POST /api/customer/notices/clear
+ *
+ * One notice dismissed, or the lot.
+ *
+ * Per customer, never to the announcement itself: these are broadcasts, and a
+ * customer clearing their own bell must not take an offer off anybody else's
+ * phone. Clearing all also stamps the read date, because a list somebody has
+ * emptied cannot sensibly leave a number on the bell behind it.
+ */
+const noticesClear = async (req, res) => {
+    try {
+        const now = new Date();
+
+        if (req.body?.all) {
+            await userModel.updateOne(
+                { _id: req.user._id },
+                { noticesClearedAt: now, noticesSeenAt: now },
+            );
+            return res.status(200).json({ success: true });
+        }
+
+        const id = String(req.body?.id || "");
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Unknown notice" });
+        }
+
+        await userModel.updateOne(
+            { _id: req.user._id },
+            { $addToSet: { noticesCleared: id } },
+        );
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error("Notices clear error:", error.message);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
@@ -1612,6 +1737,8 @@ module.exports = {
     cancelTicket,
     cancelReasons,
     announcements,
+    noticesRead,
+    noticesClear,
     noticesSeen,
     rateTicket,
     ratingTags,
