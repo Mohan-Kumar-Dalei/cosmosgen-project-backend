@@ -82,8 +82,8 @@ pm2 hands the old environment straight back and the file looks ignored.
   vendors need a verified number and an authentication template.
 - **Exotel** - Flow applet URLs and StatusCallback to `https://<api>/api/voice/...`
 - **PhonePe** - Business Dashboard > Developer Settings > Webhook, URL
-  `https://<api>/api/webhook/phonepe`, events `pg.order.completed` and
-  `pg.order.failed`; the username and password go in `.env` as
+  `https://<api>/api/webhook/phonepe`, events `checkout.order.completed` and
+  `checkout.order.failed` (or `pg.order.*` once PHONEPE_FLOW=custom); the username and password go in `.env` as
   `PHONEPE_WEBHOOK_USERNAME` / `PHONEPE_WEBHOOK_PASSWORD`.
 
 ---

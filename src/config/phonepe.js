@@ -3,12 +3,13 @@ const axios = require("axios");
 const keyring = require("../services/keyring.service");
 
 /**
- * PhonePe Payment Gateway - Custom Checkout v2, UPI QR only.
+ * PhonePe Payment Gateway, UPI only.
  *
  * Every rupee the company collects online is a QR now: the vendor's phone
- * shows it, the customer scans it with whichever UPI app they already have,
- * and PhonePe tells us it landed. No card form, no link in a message, nothing
- * for the customer to sign up to.
+ * shows it, the customer scans it and pays by UPI, and PhonePe tells us it
+ * landed. No card form, nothing for the customer to sign up to. Whether the
+ * QR is a UPI QR or a link to PhonePe's payment page is PHONEPE_FLOW - see
+ * flow() below.
  *
  * Two hosts, picked by PHONEPE_ENV. "sandbox" is PhonePe's UAT, where a QR
  * scanned with any UPI app opens a page that lets you choose Success, Failure
@@ -116,14 +117,44 @@ const orderIdFor = (prefix, ...parts) =>
         .slice(0, 63);
 
 /**
- * A UPI QR for one amount.
+ * Which of PhonePe's two products the money goes through, from PHONEPE_FLOW.
+ *
+ * "custom" is Custom Checkout: PhonePe hands back a real UPI QR, which any
+ * UPI app scans straight into a payment. It is what this was built for, and
+ * PhonePe has to switch it on for the merchant - on this account it answers
+ * "Scenario with name null not found" until they do.
+ *
+ * "standard" (the default, Mohan 2026-10-09: "abhi keliye standard wala
+ * method") is Standard Checkout: PhonePe hands back a link to its own payment
+ * page. The QR then carries that link - the customer scans it with the phone
+ * camera, PhonePe's page opens, and they pay from any UPI app there. One step
+ * more, and available on every account. Changing the variable and restarting
+ * is the whole switch; nothing else here cares which it is.
+ */
+const flow = () => (process.env.PHONEPE_FLOW === "custom" ? "custom" : "standard");
+
+const PATHS = {
+    custom: { pay: "/payments/v2/pay", order: "/payments/v2/order/" },
+    standard: { pay: "/checkout/v2/pay", order: "/checkout/v2/order/" },
+};
+
+/**
+ * Where PhonePe's page sends the customer once they have paid on it. Only
+ * the standard flow has a page to come back from.
+ */
+const returnUrl = () =>
+    String(process.env.PUBLIC_API_URL || "https://cosmosgen-api.duckdns.org").trim().replace(/\/+$/, "")
+    + "/api/webhook/phonepe/return";
+
+/**
+ * A payment for one amount, as something to put in a QR.
  *
  * `meta` rides along as udf1..udf4 and comes back on the webhook and the
  * status call - it is how the webhook knows which ticket or which vendor the
  * money is for without a database lookup on the order id first.
  */
 const createQrOrder = async ({ merchantOrderId, amountPaise, expireAfterSeconds, meta = {} }) => {
-    const data = await call("post", "/payments/v2/pay", {
+    const base = {
         merchantOrderId,
         amount: amountPaise,
         expireAfter: Math.max(300, Math.min(5184000, expireAfterSeconds || 900)),
@@ -133,25 +164,80 @@ const createQrOrder = async ({ merchantOrderId, amountPaise, expireAfterSeconds,
             udf3: String(meta.technicianId || ""),
             udf4: String(meta.invoiceNumber || ""),
         },
-        paymentFlow: { type: "PG", paymentMode: { type: "UPI_QR" } },
+    };
+
+    if (flow() === "custom") {
+        const data = await call("post", PATHS.custom.pay, {
+            ...base,
+            paymentFlow: { type: "PG", paymentMode: { type: "UPI_QR" } },
+        });
+
+        return {
+            merchantOrderId,
+            orderId: data.orderId,
+            state: data.state,
+            // What the QR encodes. PhonePe returns it as qrData; intentUrl is
+            // the same upi:// payment as a link a phone can open straight into
+            // its UPI app.
+            qrData: data.qrData || "",
+            intentUrl: data.intentUrl || "",
+            expiresAt: new Date(Number(data.expireAt || data.expiryAt) || Date.now() + 900000),
+        };
+    }
+
+    // UPI only on PhonePe's page: customers are never asked for a card.
+    const checkout = (modes) => ({
+        ...base,
+        paymentFlow: {
+            type: "PG_CHECKOUT",
+            message: "Cosmosgen " + (meta.invoiceNumber || "payment"),
+            merchantUrls: { redirectUrl: returnUrl() },
+            ...(modes ? { paymentModeConfig: { enabledPaymentModes: modes } } : {}),
+        },
     });
+
+    let data;
+    try {
+        data = await call("post", PATHS.standard.pay, checkout([{ type: "UPI_INTENT" }, { type: "UPI_QR" }]));
+    } catch (error) {
+        // An account that will not take a payment-mode list still takes the
+        // order without one; the page then offers whatever PhonePe allows.
+        if (error?.response?.status !== 400) throw error;
+        console.warn("PhonePe refused the UPI-only page, asking without it:", error.response?.data?.message);
+        data = await call("post", PATHS.standard.pay, checkout(null));
+    }
 
     return {
         merchantOrderId,
         orderId: data.orderId,
         state: data.state,
-        // What the QR encodes. PhonePe returns it as qrData; intentUrl is the
-        // same upi:// payment as a link a phone can open straight into its
-        // UPI app.
-        qrData: data.qrData || "",
-        intentUrl: data.intentUrl || "",
+        // The page's address is both what the QR carries and what opens on a
+        // phone that cannot scan its own screen.
+        qrData: data.redirectUrl || "",
+        intentUrl: data.redirectUrl || "",
         expiresAt: new Date(Number(data.expireAt || data.expiryAt) || Date.now() + 900000),
     };
 };
 
-/** The order as PhonePe has it now, attempts and all. */
-const getOrderStatus = async (merchantOrderId) =>
-    call("get", "/payments/v2/order/" + encodeURIComponent(merchantOrderId) + "/status?details=false");
+/**
+ * The order as PhonePe has it now, attempts and all.
+ *
+ * Asked under the flow in use, and under the other if PhonePe does not know
+ * the order there - an order made before PHONEPE_FLOW was changed lives under
+ * the product it was made with.
+ */
+const getOrderStatus = async (merchantOrderId) => {
+    const id = encodeURIComponent(merchantOrderId);
+    const [first, second] = flow() === "custom" ? ["custom", "standard"] : ["standard", "custom"];
+
+    try {
+        return await call("get", PATHS[first].order + id + "/status?details=false");
+    } catch (error) {
+        const status = error?.response?.status;
+        if (status !== 400 && status !== 404) throw error;
+        return call("get", PATHS[second].order + id + "/status?details=false");
+    }
+};
 
 /**
  * Is this webhook really from PhonePe?
@@ -209,6 +295,7 @@ const whyNotGenuine = (header) => {
 };
 
 module.exports = {
+    flow,
     whyNotGenuine,
     isConfigured,
     orderIdFor,

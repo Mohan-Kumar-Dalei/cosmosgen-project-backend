@@ -229,6 +229,14 @@ const qrOrder = async (what, { prefix, parts, amountPaise, seconds, meta }) => {
 };
 
 /**
+ * What a QR holds: "upi" for a UPI payment any UPI app scans (Custom
+ * Checkout), "page" for the address of PhonePe's payment page, which the
+ * customer opens with the phone camera and pays on (Standard Checkout). The
+ * screens word their instructions by it.
+ */
+const qrKind = (qrData) => (/^https?:/i.test(String(qrData || "")) ? "page" : "upi");
+
+/**
  * The QR for a bill: the whole of it on an online job, or only the company's
  * share on a split, where the vendor takes his own share in cash.
  */
@@ -378,6 +386,7 @@ module.exports = {
     createBillQr,
     createSettlementQr,
     qrImage,
+    qrKind,
     fetchOrderStatus,
     fetchCharge,
     paiseToRupees,

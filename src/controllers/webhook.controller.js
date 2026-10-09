@@ -72,7 +72,8 @@ const handlePhonePeEvent = async (body) => {
 
     console.log("PhonePe webhook:", event, order.merchantOrderId, order.state);
 
-    if (event !== "pg.order.completed" || order.state !== "COMPLETED") return;
+    // pg.* for Custom Checkout orders, checkout.* for Standard Checkout ones
+    if (!["pg.order.completed", "checkout.order.completed"].includes(event) || order.state !== "COMPLETED") return;
 
     const attempts = order.paymentDetails || [];
     const attempt = attempts.find((a) => a.state === "COMPLETED") || attempts[0] || {};
@@ -429,4 +430,24 @@ const settleGatewayPayment = async (paid) => {
  */
 const phonepeWebhookAlive = (req, res) => res.status(200).json({ success: true });
 
-module.exports = { phonepeWebhook, phonepeWebhookAlive, handlePhonePeEvent, settleGatewayPayment };
+/**
+ * GET /api/webhook/phonepe/return - where PhonePe's payment page sends the
+ * customer once they have paid on it (the standard flow). It confirms nothing:
+ * the webhook does that. It only tells them they are done, in a page that
+ * reads on a phone, instead of leaving them on a blank screen.
+ */
+const phonepeReturn = (req, res) => {
+    res.set("Content-Type", "text/html; charset=utf-8").status(200).send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cosmosgen - payment</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f4f1e9;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a17}
+.card{background:#fffdf7;border:1px solid #ded9cb;border-radius:22px;padding:32px 24px;margin:16px;max-width:380px;text-align:center}
+.mark{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#34c46a,#0e7a2d);color:#fff;font-size:34px;line-height:64px;margin:0 auto 16px}
+h1{font-size:22px;margin:0 0 8px}p{color:#65645d;font-size:14.5px;line-height:1.5;margin:0}
+</style></head><body><div class="card"><div class="mark">&#10003;</div>
+<h1>Thank you</h1><p>Your payment has gone to Cosmosgen. Your technician's phone will show it in a moment - you can close this page.</p>
+</div></body></html>`);
+};
+
+module.exports = { phonepeWebhook, phonepeWebhookAlive, phonepeReturn, handlePhonePeEvent, settleGatewayPayment };

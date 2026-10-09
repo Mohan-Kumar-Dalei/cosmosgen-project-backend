@@ -2059,16 +2059,23 @@ const generateBill = async (req, res) => {
         }
         message += "*Total: Rs " + paymentService.paiseToRupees(bill.totalPaise) + "*\n\n";
 
-        // Nothing to click: the QR is on the vendor's phone, in front of the
-        // customer, and any UPI app pays it.
+        // The QR is on the vendor's phone, in front of the customer. A UPI QR
+        // any UPI app pays; PhonePe's page (the standard flow) is a link, so
+        // it is opened with the camera - and is sent here too, for a customer
+        // who would rather pay from the message.
+        const onPage = qr && paymentService.qrKind(qr.qrData) === "page";
+        const howToPay = onPage
+            ? "scan the QR on the technician's phone with your phone camera and pay by UPI on PhonePe's page, or open: " + qr.qrData
+            : "scan the QR on the technician's phone with any UPI app (PhonePe, Google Pay, Paytm, BHIM).";
+
         if (method === "split") {
             message +=
                 "Please pay in two parts:\n\n" +
                 "1) Service charge Rs " + paymentService.paiseToRupees(commissionPaise) +
-                " - scan the QR on the technician's phone with any UPI app.\n\n" +
+                " - " + howToPay + "\n\n" +
                 "2) Rs " + paymentService.paiseToRupees(technicianSharePaise) + " in cash to the technician.";
         } else if (qr) {
-            message += "Scan the QR on the technician's phone with any UPI app (PhonePe, Google Pay, Paytm, BHIM) to pay.";
+            message += "To pay, " + howToPay;
         } else {
             message += "Please pay Rs " + paymentService.paiseToRupees(bill.totalPaise) + " in cash to the technician.";
         }
@@ -2979,6 +2986,8 @@ const getPaymentStatus = async (req, res) => {
  */
 const qrPayload = async (qr, amountPaise) => ({
     orderId: qr.orderId,
+    // "upi" or "page" - how the screen tells the payer to use it
+    kind: paymentService.qrKind(qr.qrData),
     qrImage: await paymentService.qrImage(qr.qrData),
     intentUrl: qr.intentUrl || null,
     expiresAt: qr.expiresAt,
