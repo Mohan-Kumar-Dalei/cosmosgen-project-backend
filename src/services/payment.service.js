@@ -150,6 +150,11 @@ const RETRY_WAITS_MS = [600, 1800];
 const worthRetrying = (error) => {
     const status = error?.response?.status || error?.statusCode || error?.status;
 
+    // PhonePe's sandbox answers a merchant with no test template configured
+    // with a 500 that says "Scenario ... not found". It is a setup problem,
+    // not a wobble, and asking twice more only keeps the vendor waiting.
+    if (/scenario/i.test(gatewaySaid(error))) return false;
+
     // No status at all is a connection that never landed - the most retryable
     // thing there is. 5xx is the gateway's own trouble. 429 is being asked to
     // wait, which is a request to try again rather than a refusal.

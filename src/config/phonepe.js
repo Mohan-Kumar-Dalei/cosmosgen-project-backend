@@ -166,7 +166,10 @@ const webhookIsGenuine = (header) => {
     if (!user || !pass || !header) return false;
 
     const expected = crypto.createHash("sha256").update(user + ":" + pass).digest("hex");
-    const got = String(header).replace(/^SHA256\s+/i, "").trim().toLowerCase();
+
+    // The hash itself, however it is wrapped - bare, "SHA256 <hash>" or
+    // "SHA256(<hash>)", which is how PhonePe's own page writes it.
+    const got = (String(header).match(/[a-f0-9]{64}/i) || [""])[0].toLowerCase();
 
     return got.length === expected.length
         && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
@@ -187,7 +190,26 @@ const estimateGatewayFee = (amountPaise, percent = 0, gstPercent = 18) => {
     return { feePaise, taxPaise };
 };
 
+/**
+ * Why a webhook was turned away, for the log - without printing the header
+ * or the password. "No username/password in .env" and "a header that is not
+ * a hash at all" each need a different fix from "the pair on the dashboard is
+ * not the pair in .env".
+ */
+const whyNotGenuine = (header) => {
+    if (!process.env.PHONEPE_WEBHOOK_USERNAME || !process.env.PHONEPE_WEBHOOK_PASSWORD) {
+        return "PHONEPE_WEBHOOK_USERNAME / PHONEPE_WEBHOOK_PASSWORD are not set in .env";
+    }
+    if (!header) return "the request carried no Authorization header (a URL check, not an event)";
+    if (!/[a-f0-9]{64}/i.test(String(header))) {
+        return "the Authorization header is not a SHA256 hash (" + String(header).length + " characters)";
+    }
+    return "the hash is of a different username:password than the one in .env - "
+        + "the pair typed on the dashboard's webhook must be exactly the pair in .env";
+};
+
 module.exports = {
+    whyNotGenuine,
     isConfigured,
     orderIdFor,
     createQrOrder,

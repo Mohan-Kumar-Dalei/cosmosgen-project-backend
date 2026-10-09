@@ -4,7 +4,7 @@ const Payment = require("../models/payment.model");
 const notification = require("../services/notification.service");
 const settingsService = require("../services/settings.service");
 const { paiseToRupees } = require("../services/payment.service");
-const { webhookIsGenuine, estimateGatewayFee } = require("../config/phonepe");
+const { webhookIsGenuine, whyNotGenuine, estimateGatewayFee } = require("../config/phonepe");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
 const walletService = require("../services/wallet.service");
 const { emitToRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
@@ -39,7 +39,7 @@ const phonepeWebhook = async (req, res) => {
      * (reconcile.service.js), so no payment is lost to a wrong password.
      */
     if (!webhookIsGenuine(req.headers.authorization)) {
-        console.warn("PhonePe webhook: Authorization does not match PHONEPE_WEBHOOK_USERNAME/PASSWORD - acknowledged, not processed");
+        console.warn("PhonePe webhook acknowledged, not processed: " + whyNotGenuine(req.headers.authorization));
         return res.status(200).json({ success: true, processed: false });
     }
 
