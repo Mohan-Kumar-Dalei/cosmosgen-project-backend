@@ -1,29 +1,32 @@
 const Ticket = require("../models/ticket.model");
-const { getRazorpay, isConfigured } = require("../config/razorpay");
-const { handleRazorpayEvent } = require("../controllers/webhook.controller");
+const Payment = require("../models/payment.model");
+const settingsService = require("./settings.service");
+const { isConfigured, estimateGatewayFee } = require("../config/phonepe");
+const { fetchOrderStatus } = require("./payment.service");
+const { settleGatewayPayment } = require("../controllers/webhook.controller");
 
 /**
  * Asking the gateway about the payments we never heard about.
  *
  * Everything we know about a customer paying online arrives as a webhook, and
  * a webhook is one delivery over the internet to one server. It can be missed:
- * the server was restarting, Razorpay was having an hour, the signing secret
- * was wrong for a day - which it was. When it is missed the money is in the
+ * the server was restarting, the gateway was having an hour, the webhook's
+ * password was wrong for a day. When it is missed the money is in the
  * company's account and the ticket still says Payment-Pending, so the customer
  * is shown an unpaid job, the assistant believes they still owe it, and the
  * engineer is never credited. Nothing in the system ever noticed, because
  * nothing ever asked.
  *
- * This asks. Every quarter of an hour it takes the jobs that are still waiting
- * on money, fetches each one's payment link from Razorpay, and for any the
- * gateway calls paid it replays the event the webhook would have handled.
+ * This asks. Every quarter of an hour it takes the jobs - and the vendors'
+ * settlement QRs - still waiting on money, asks PhonePe about each order, and
+ * for any PhonePe calls completed it files the payment through the same path
+ * the webhook uses.
  *
- * Replaying rather than settling it here on purpose. One path closes a ticket,
- * credits a vendor, counts the gateway's fee and sends the receipt; a second
- * path doing the same thing slightly differently is how the two come to
- * disagree about money. The handler is also already safe to run twice - the
- * ticket update is guarded on Payment-Pending, so a job that has been settled
- * since falls out before anybody is credited for it.
+ * The same path on purpose. One path closes a ticket, credits a vendor, counts
+ * the gateway's fee and sends the receipt; a second path doing the same thing
+ * slightly differently is how the two come to disagree about money. That path
+ * is also safe to run twice - every write in it is guarded on the state it
+ * moves away from.
  */
 
 /** Far enough back to catch an outage nobody noticed over a weekend. */
@@ -32,6 +35,30 @@ const LOOK_BACK_DAYS = 7;
 /** Enough that a bad hour at the gateway cannot queue up forever. */
 const PER_RUN = 25;
 
+/** A paid order, as the one settling path wants it. */
+const settle = async (orderId, status, notes) => {
+    const { feePaise, taxPaise } = estimateGatewayFee(
+        status.amountPaidPaise,
+        await settingsService.getSetting("GATEWAY_FEE_PERCENT"),
+        await settingsService.getSetting("GATEWAY_FEE_GST_PERCENT"),
+    );
+
+    await settleGatewayPayment({
+        // The same id the webhook would have used, so a late webhook after
+        // this is recognised as the same payment.
+        eventId: "pp-" + (status.paymentId || orderId),
+        orderId,
+        paymentId: status.paymentId || orderId,
+        utr: status.utr,
+        amountPaise: status.amountPaidPaise,
+        method: "upi",
+        feePaise,
+        taxPaise,
+        notes,
+        by: "PhonePe (reconciled)",
+    });
+};
+
 const reconcileOnlinePayments = async () => {
     if (!isConfigured()) return { checked: 0, settled: 0 };
 
@@ -39,60 +66,37 @@ const reconcileOnlinePayments = async () => {
 
     const waiting = await Ticket.find({
         status: "Payment-Pending",
-        "payment.razorpayLinkId": { $nin: [null, ""] },
+        // Our own PhonePe orders only - an old Razorpay link id is nothing
+        // PhonePe can answer about.
+        "payment.razorpayLinkId": { $regex: /^(BIL|SPL)-/ },
         updatedAt: { $gte: since },
     })
-        .select("ticketNumber payment.razorpayLinkId")
+        .select("ticketNumber payment.razorpayLinkId payment.method billing.invoiceNumber")
         .limit(PER_RUN)
         .lean();
 
-    if (!waiting.length) return { checked: 0, settled: 0 };
+    const settlements = await Payment.find({
+        ticket: null,
+        status: "pending",
+        razorpayLinkId: { $regex: /^STL-/ },
+        createdAt: { $gte: since },
+    })
+        .select("razorpayLinkId collectedBy")
+        .limit(PER_RUN)
+        .lean();
 
     let settled = 0;
 
     for (const ticket of waiting) {
+        const orderId = ticket.payment.razorpayLinkId;
         try {
-            const link = await getRazorpay().paymentLink.fetch(ticket.payment.razorpayLinkId);
+            const status = await fetchOrderStatus(orderId);
+            if (!status?.isPaid) continue;
 
-            if (link?.status !== "paid") continue;
-
-            /*
-             * The capture itself, which carries the fee and the method.
-             *
-             * A link can hold more than one attempt and only one of them is
-             * the one that worked. Without it the handler would still close
-             * the ticket, but the gateway's cut would be recorded as zero and
-             * the company's margin would read high from then on.
-             */
-            const captured = (link.payments || []).find((p) => p.status === "captured");
-
-            await handleRazorpayEvent({
-                event: "payment_link.paid",
-
-                /*
-                 * Keyed on the payment, not on the moment this ran.
-                 *
-                 * The handler skips an event id it has already seen. A fresh
-                 * id every quarter of an hour would defeat that and have this
-                 * rewriting the same payment record all week.
-                 */
-                id: "reconcile-" + (captured?.payment_id || link.id),
-
-                payload: {
-                    payment_link: { entity: link },
-                    payment: captured
-                        ? {
-                            entity: {
-                                id: captured.payment_id,
-                                amount: captured.amount,
-                                method: captured.method,
-                                fee: captured.fee,
-                                tax: captured.tax,
-                                notes: link.notes,
-                            },
-                        }
-                        : undefined,
-                },
+            await settle(orderId, status, {
+                type: ticket.payment.method === "split" ? "split_commission" : "bill",
+                ticketId: String(ticket._id),
+                invoiceNumber: ticket.billing?.invoiceNumber,
             });
 
             settled += 1;
@@ -100,16 +104,38 @@ const reconcileOnlinePayments = async () => {
         } catch (error) {
             // One ticket that cannot be checked is one ticket; the rest of the
             // run carries on, and the next run tries this one again.
-            console.error(
-                "[RECONCILE] could not check " + ticket.ticketNumber + ":",
-                error?.error?.description || error.message
-            );
+            console.error("[RECONCILE] could not check " + ticket.ticketNumber + ":", error.message);
         }
     }
 
-    if (settled) console.log("[RECONCILE] " + settled + " of " + waiting.length + " were already paid");
+    for (const row of settlements) {
+        try {
+            const status = await fetchOrderStatus(row.razorpayLinkId);
 
-    return { checked: waiting.length, settled };
+            // A QR that lapsed unpaid is nothing for the office to look
+            // into, and would otherwise be asked about every run for a week.
+            if (status?.status === "failed") {
+                await Payment.deleteOne({ _id: row._id, status: "pending" });
+                continue;
+            }
+            if (!status?.isPaid) continue;
+
+            await settle(row.razorpayLinkId, status, {
+                type: "wallet_recharge",
+                technicianId: String(row.collectedBy),
+            });
+
+            settled += 1;
+            console.log("[RECONCILE] filed a vendor settlement nobody told us about:", row.razorpayLinkId);
+        } catch (error) {
+            console.error("[RECONCILE] could not check " + row.razorpayLinkId + ":", error.message);
+        }
+    }
+
+    const checked = waiting.length + settlements.length;
+    if (settled) console.log("[RECONCILE] " + settled + " of " + checked + " were already paid");
+
+    return { checked, settled };
 };
 
 module.exports = { reconcileOnlinePayments };

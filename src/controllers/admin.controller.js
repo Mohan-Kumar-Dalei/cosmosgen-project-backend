@@ -29,8 +29,8 @@ const walletService = require("../services/wallet.service");
 const settingsService = require("../services/settings.service");
 const {
     estimateGatewayFee,
-    getRazorpay, isConfigured: razorpayConfigured,
-} = require("../config/razorpay");
+    isConfigured: gatewayConfigured,
+} = require("../config/phonepe");
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -2402,7 +2402,7 @@ const getPayments = async (req, res) => {
  * first wins and the other finds the row already made - the money can never
  * be recorded twice.
  */
-const claimSettlement = async (technicianId, { paymentId, amountPaise, linkId, paidAt }) => {
+const claimSettlement = async (technicianId, { paymentId, amountPaise, linkId, paidAt, utr }) => {
     try {
         await Payment.findOneAndUpdate(
             { ticket: null, razorpayPaymentId: paymentId },
@@ -2416,6 +2416,7 @@ const claimSettlement = async (technicianId, { paymentId, amountPaise, linkId, p
                     collectedAt: paidAt || new Date(),
                     razorpayPaymentId: paymentId,
                     razorpayLinkId: linkId || null,
+                    utr: utr || undefined,
                     note: "Technician commission settlement",
                 },
             },
@@ -2427,91 +2428,14 @@ const claimSettlement = async (technicianId, { paymentId, amountPaise, linkId, p
     }
 };
 
-/**
- * Everything this technician has paid us at Razorpay in the last month,
- * whether or not we ever wrote the link down.
- *
- * Storing the link covers payments made from now on. It does nothing for the
- * ones already sitting at the gateway from before, or for a link created by a
- * server that has since been restarted - and those are real money the office
- * simply cannot see. Every settlement carries our own note on it (its type,
- * and whose it is), so the gateway can be asked directly rather than guessed
- * at.
- *
- * A failure here is not fatal. The stored-link path still works, and an office
- * that gets an error instead of an answer is worse off than one that gets the
- * answer the local records can give.
- */
-const sweepGatewayForSettlements = async (technicianId) => {
-    try {
-        // A settlement is evidence against a due. If his balance is square
-        // there is no due, and every captured payment of his still sitting at
-        // the gateway is money that was dealt with long ago.
-        //
-        // Without this the sweep resurrected an old commission payment as a
-        // fresh "waiting to be recorded" row every time anybody opened his
-        // wallet - including to record a visit charge, which owes nothing.
-        // That row then told the technician, on his own phone, that the
-        // office was checking money he had paid weeks earlier, and handed the
-        // office a row it could not record against anything.
-        const tech = await technicianModel
-            .findById(technicianId)
-            .select("walletBalancePaise")
-            .lean();
-
-        if (!tech || (tech.walletBalancePaise || 0) >= 0) return 0;
-
-        const to = Math.floor(Date.now() / 1000);
-        let from = to - 30 * 24 * 60 * 60;
-
-        // Money paid before the due existed cannot be paying it. The last
-        // ledger line that left him at zero is the moment his slate was last
-        // clean, so anything at the gateway older than that was settling a
-        // due that has since been cleared - and claiming it again would put
-        // somebody else's cleared money on today's job.
-        const lastSquare = await WalletTransaction.findOne({
-            technician: technicianId,
-            balanceAfterPaise: 0,
-        })
-            .sort({ createdAt: -1 })
-            .select("createdAt")
-            .lean();
-
-        if (lastSquare) {
-            from = Math.max(from, Math.floor(new Date(lastSquare.createdAt).getTime() / 1000));
-        }
-
-        const list = await getRazorpay().payments.all({ from, to, count: 100 });
-
-        const his = (list.items || []).filter(
-            (x) =>
-                x.status === "captured" &&
-                x.notes?.type === "wallet_recharge" &&
-                String(x.notes.technicianId) === String(technicianId)
-        );
-
-        for (const x of his) {
-            await claimSettlement(technicianId, {
-                paymentId: x.id,
-                amountPaise: x.amount,
-                linkId: null,
-                paidAt: x.created_at ? new Date(x.created_at * 1000) : new Date(),
-            });
-        }
-
-        return his.length;
-    } catch (err) {
-        console.error("Gateway settlement sweep failed:", err?.error?.description || err.message);
-        return 0;
-    }
-};
-
 const claimPaidRecharges = async (technicianId) => {
     const openLinks = await Payment.find({
         collectedBy: technicianId,
         ticket: null,
         status: "pending",
-        razorpayLinkId: { $nin: [null, ""] },
+        // PhonePe settlement QRs only - an old Razorpay link is nothing
+        // PhonePe can answer about
+        razorpayLinkId: { $regex: /^STL-/ },
     })
         .select("razorpayLinkId amountPaise")
         .sort({ createdAt: -1 })
@@ -2521,7 +2445,7 @@ const claimPaidRecharges = async (technicianId) => {
     let claimed = 0;
 
     for (const row of openLinks) {
-        const status = await paymentService.fetchPaymentLinkStatus(row.razorpayLinkId);
+        const status = await paymentService.fetchOrderStatus(row.razorpayLinkId);
         if (!status?.isPaid || !status.paymentId) continue;
 
         await claimSettlement(technicianId, {
@@ -2529,6 +2453,7 @@ const claimPaidRecharges = async (technicianId) => {
             amountPaise: status.amountPaidPaise || row.amountPaise,
             linkId: row.razorpayLinkId,
             paidAt: status.paidAt,
+            utr: status.utr,
         });
 
         // The pending row was only a note that a link had been sent
@@ -2536,7 +2461,7 @@ const claimPaidRecharges = async (technicianId) => {
         claimed += 1;
     }
 
-    return claimed + (await sweepGatewayForSettlements(technicianId));
+    return claimed;
 };
 
 /**
@@ -2564,10 +2489,10 @@ const checkPaymentMoney = async (req, res) => {
             return res.status(404).json({ success: false, message: "Payment not found" });
         }
 
-        if (!razorpayConfigured()) {
+        if (!gatewayConfigured()) {
             return res.status(503).json({
                 success: false,
-                message: "Razorpay keys are not set on the server, so nothing can be checked.",
+                message: "PhonePe keys are not set on the server, so nothing can be checked.",
             });
         }
 
@@ -2597,7 +2522,7 @@ const checkPaymentMoney = async (req, res) => {
             return res.status(200).json({
                 success: true,
                 message: payment.isVisitCharge
-                    ? "Nothing to check with Razorpay. The whole Rs " + paiseToRupees(payment.amountPaise) +
+                    ? "Nothing to check with PhonePe. The whole Rs " + paiseToRupees(payment.amountPaise) +
                       " is the technician's and the company takes nothing on a visit - just confirm the figure under Wallet."
                     : "No commission was charged on this one, so there is nothing for the technician to send back.",
                 data: { found: false, kind: "none", expectPaise: 0 },
@@ -2699,14 +2624,14 @@ const checkPaymentMoney = async (req, res) => {
 
         let charge;
         try {
-            charge = await getRazorpay().payments.fetch(reference);
+            charge = await paymentService.fetchCharge(reference);
         } catch (err) {
-            const notFound = err?.statusCode === 400 || err?.statusCode === 404;
+            const notFound = err?.statusCode === 404;
             return res.status(notFound ? 400 : 502).json({
                 success: false,
                 message: notFound
-                    ? "Razorpay has no payment with the id " + reference + ". This money did not come through."
-                    : "Could not reach Razorpay just now. Try again in a moment.",
+                    ? "PhonePe has no payment for " + reference + ". This money did not come through."
+                    : "Could not reach PhonePe just now. Try again in a moment.",
             });
         }
 
@@ -2736,7 +2661,7 @@ const checkPaymentMoney = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: !captured
-                ? "Razorpay says this is \"" + charge.status + "\", not captured. The money is not in the account."
+                ? "PhonePe says this is \"" + charge.status + "\", not captured. The money is not in the account."
                 : kind === "settlement"
                     ? covers
                         ? "Rs " + paiseToRupees(charge.amount) + " came in from this technician"
@@ -2794,26 +2719,26 @@ const checkPaymentReference = async (req, res) => {
         const reference = String(req.body.reference || "").trim();
 
         if (reference.length < 6) {
-            return res.status(400).json({ success: false, message: "Enter the Razorpay payment id to check" });
+            return res.status(400).json({ success: false, message: "Enter the PhonePe transaction id, order id or UTR to check" });
         }
 
-        if (!razorpayConfigured()) {
+        if (!gatewayConfigured()) {
             return res.status(503).json({
                 success: false,
-                message: "Razorpay keys are not set on the server, so the reference cannot be checked.",
+                message: "PhonePe keys are not set on the server, so the reference cannot be checked.",
             });
         }
 
         let charge;
         try {
-            charge = await getRazorpay().payments.fetch(reference);
+            charge = await paymentService.fetchCharge(reference);
         } catch (err) {
-            const notFound = err?.statusCode === 400 || err?.statusCode === 404;
+            const notFound = err?.statusCode === 404;
             return res.status(notFound ? 400 : 502).json({
                 success: false,
                 message: notFound
-                    ? "Razorpay has no payment with the id " + reference + ". This money did not come through."
-                    : "Could not reach Razorpay just now. Try again in a moment.",
+                    ? "PhonePe has no payment for " + reference + ". This money did not come through."
+                    : "Could not reach PhonePe just now. Try again in a moment.",
             });
         }
 
@@ -2829,7 +2754,7 @@ const checkPaymentReference = async (req, res) => {
                       + (charge.method ? " by " + charge.method : "")
                     : "Captured, but for Rs " + paiseToRupees(charge.amount)
                       + " - you are recording Rs " + paiseToRupees(expectPaise)
-                : "Razorpay says this is \"" + charge.status + "\", not captured. The money is not in the account.",
+                : "PhonePe says this is \"" + charge.status + "\", not captured. The money is not in the account.",
             data: {
                 reference,
                 status: charge.status,
@@ -2888,15 +2813,15 @@ const verifyPayment = async (req, res) => {
         if (!payment.razorpayPaymentId) {
             return res.status(400).json({
                 success: false,
-                message: "No Razorpay reference on this payment yet, so there is nothing to check. "
+                message: "No PhonePe reference on this payment yet, so there is nothing to check. "
                     + "It has not come through the gateway.",
             });
         }
 
-        if (!razorpayConfigured()) {
+        if (!gatewayConfigured()) {
             return res.status(503).json({
                 success: false,
-                message: "Razorpay keys are not set on the server, so the reference cannot be checked.",
+                message: "PhonePe keys are not set on the server, so the reference cannot be checked.",
             });
         }
 
@@ -2916,15 +2841,15 @@ const verifyPayment = async (req, res) => {
 
         let charge;
         try {
-            charge = await getRazorpay().payments.fetch(payment.razorpayPaymentId);
+            charge = await paymentService.fetchCharge(payment.razorpayPaymentId);
         } catch (err) {
-            const notFound = err?.statusCode === 400 || err?.statusCode === 404;
+            const notFound = err?.statusCode === 404;
             return res.status(notFound ? 400 : 502).json({
                 success: false,
                 message: notFound
-                    ? "Razorpay does not have a payment with the id " + payment.razorpayPaymentId
+                    ? "PhonePe has no payment for " + payment.razorpayPaymentId
                       + ". Nothing has been marked verified."
-                    : "Could not reach Razorpay to check this reference. Try again in a moment.",
+                    : "Could not reach PhonePe to check this reference. Try again in a moment.",
             });
         }
 
@@ -2943,7 +2868,7 @@ const verifyPayment = async (req, res) => {
             await Payment.updateOne({ _id: req.params.id }, { gatewayCheck });
             return res.status(400).json({
                 success: false,
-                message: "Razorpay says this payment is \"" + charge.status + "\", not captured. "
+                message: "PhonePe says this payment is \"" + charge.status + "\", not captured. "
                     + "The money is not in the account, so it has not been verified.",
                 data: { gatewayCheck },
             });
@@ -2957,7 +2882,7 @@ const verifyPayment = async (req, res) => {
                     + (isSplit
                         ? "The company's half of this split is Rs " + paiseToRupees(expectedPaise)
                         : "The invoice is Rs " + paiseToRupees(expectedPaise))
-                    + " and Razorpay took Rs " + paiseToRupees(charge.amount) + ".",
+                    + " and PhonePe took Rs " + paiseToRupees(charge.amount) + ".",
                 data: { gatewayCheck },
             });
         }
@@ -2992,7 +2917,7 @@ const verifyPayment = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            message: "Checked against Razorpay, Rs " + paiseToRupees(charge.amount)
+            message: "Checked against PhonePe, Rs " + paiseToRupees(charge.amount)
                 + " captured" + (charge.method ? " by " + charge.method : "") + ". Verified.",
             data: updated,
         });
@@ -3832,6 +3757,7 @@ const methodFromDescription = (text = "") => {
 
     const lower = text.toLowerCase();
     if (lower.includes("razor")) return "Razorpay";
+    if (lower.includes("phonepe") || lower.includes("phone pe")) return "PhonePe";
     if (lower.includes("upi")) return "UPI";
     if (lower.includes("bank")) return "Bank Transfer";
     if (lower.includes("cash")) return "Cash";
@@ -3845,8 +3771,8 @@ const referenceFromDescription = (text = "") => {
     if (!inBrackets) return null;
 
     const inner = inBrackets[1].trim();
-    // "(Razorpay)" is a method, not a reference - only ids are useful here
-    return /^(cash|upi|razorpay|razor pay|bank transfer)$/i.test(inner) ? null : inner;
+    // "(PhonePe)" is a method, not a reference - only ids are useful here
+    return /^(cash|upi|razorpay|razor pay|phonepe|phone pe|bank transfer)$/i.test(inner) ? null : inner;
 };
 
 /**
@@ -4171,10 +4097,11 @@ const getTechnicianWallet = async (req, res) => {
  * him out for it. The option is gone from the screen, and a stale browser tab
  * still holding it cannot put one through either.
  */
-const SETTLEMENT_METHODS = ["UPI", "Razorpay", "Bank Transfer", "Cash", "Visit charge"];
+// Razorpay stays so the rows written before the move to PhonePe still read.
+const SETTLEMENT_METHODS = ["UPI", "PhonePe", "Razorpay", "Bank Transfer", "Cash", "Visit charge"];
 
 /** Cash leaves no trace to quote, so it is the one with no reference. */
-const CASHLESS_METHODS = ["UPI", "Razorpay", "Bank Transfer"];
+const CASHLESS_METHODS = ["UPI", "PhonePe", "Razorpay", "Bank Transfer"];
 
 const collectFromTechnician = async (req, res) => {
     try {
@@ -4359,7 +4286,7 @@ const collectFromTechnician = async (req, res) => {
                     collectedBy: req.params.technicianId,
                     ticket: null,
                     status: "collected",
-                    $or: [{ razorpayPaymentId: reference }, { razorpayLinkId: reference }],
+                    $or: [{ razorpayPaymentId: reference }, { razorpayLinkId: reference }, { utr: reference }],
                 },
                 { status: "verified", verifiedBy: req.admin._id, verifiedAt: new Date() }
             );

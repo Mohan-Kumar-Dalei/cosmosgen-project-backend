@@ -89,6 +89,7 @@ router.post("/tickets/:id/skip-visit-charge", isTechAuthenticated, technicianCon
 router.post("/tickets/generateBill", isTechAuthenticated, technicianController.generateBill);
 router.post("/tickets/:id/collect-cash", isTechAuthenticated, technicianController.collectCash);
 router.get("/tickets/:id/payment-status", isTechAuthenticated, technicianController.getPaymentStatus);
+router.get("/tickets/:id/payment-qr", isTechAuthenticated, technicianController.getPaymentQr);
 router.post("/tickets/:id/start-now", isTechAuthenticated, technicianController.startScheduledNow);
 
 /* ---------- WALLET ---------- */

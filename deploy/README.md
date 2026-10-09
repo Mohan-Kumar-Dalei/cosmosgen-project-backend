@@ -81,7 +81,10 @@ pm2 hands the old environment straight back and the file looks ignored.
   free-form text only inside 24 hours of the customer's last message - real
   vendors need a verified number and an authentication template.
 - **Exotel** - Flow applet URLs and StatusCallback to `https://<api>/api/voice/...`
-- **Razorpay** - webhook to `https://<api>/api/webhook/razorpay`
+- **PhonePe** - Business Dashboard > Developer Settings > Webhook, URL
+  `https://<api>/api/webhook/phonepe`, events `pg.order.completed` and
+  `pg.order.failed`; the username and password go in `.env` as
+  `PHONEPE_WEBHOOK_USERNAME` / `PHONEPE_WEBHOOK_PASSWORD`.
 
 ---
 

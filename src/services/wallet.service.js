@@ -234,11 +234,11 @@ const settleCashJobsFor = async (technicianId, adminId) => {
 };
 
 /**
- * Technician cleared their dues - online through Razorpay, or in cash at
+ * Technician cleared their dues - online through the gateway, or in cash at
  * the office. Credits the wallet so the negative balance moves back
  * towards zero.
  */
-const recordRecharge = async (technicianId, amountPaise, referenceNote, method = "Razorpay", description = null, adminId = null) => {
+const recordRecharge = async (technicianId, amountPaise, referenceNote, method = "PhonePe", description = null, adminId = null) => {
     const amount = Number(amountPaise);
     if (!Number.isFinite(amount) || amount <= 0) {
         throw new Error("Recharge amount must be positive");
@@ -259,7 +259,7 @@ const recordRecharge = async (technicianId, amountPaise, referenceNote, method =
         balanceAfterPaise: updatedTech.walletBalancePaise,
         source: "recharge",
         ticket: null,
-        method: method || "Razorpay",
+        method: method || "PhonePe",
         reference: referenceNote || null,
         description: description
             || "Settled: Rs " + (amount / 100).toFixed(2) + (referenceNote ? " (" + referenceNote + ")" : ""),

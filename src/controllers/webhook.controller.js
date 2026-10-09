@@ -3,29 +3,129 @@ const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const Payment = require("../models/payment.model");
 const notification = require("../services/notification.service");
+const settingsService = require("../services/settings.service");
 const { paiseToRupees } = require("../services/payment.service");
+const { webhookIsGenuine, estimateGatewayFee } = require("../config/phonepe");
 const { promoteQueuedTicket } = require("../services/dispatch.service");
 const walletService = require("../services/wallet.service");
 const { emitToRoom, techRoom, adminRoom } = require("../sockets/socket.instance");
 
+/** The body, whether express handed it over raw or already parsed. */
+const bodyOf = (req) => {
+    if (Buffer.isBuffer(req.body)) return JSON.parse(req.body.toString("utf8"));
+    if (typeof req.body === "string") return JSON.parse(req.body);
+    return req.body || {};
+};
+
 /**
- * POST /api/webhook/razorpay
+ * POST /api/webhook/phonepe
  *
- * req.body must be a RAW BUFFER here, not parsed JSON - the signature is
- * calculated over the raw bytes. See the mounting order in app.js: this
- * route is registered BEFORE express.json().
+ * PhonePe's word that a QR was paid. It signs nothing: the Authorization
+ * header is SHA256 of the username and password set on the dashboard's
+ * webhook, and that is the whole of the check (see webhookIsGenuine).
+ *
+ * Only pg.order.completed moves money here. A failed or lapsed order needs
+ * nothing doing - the bill is still waiting, and the vendor asks for a new QR.
+ */
+const phonepeWebhook = async (req, res) => {
+    /*
+     * Anything that cannot prove it is PhonePe is acknowledged and ignored.
+     *
+     * Not refused with a 401: the dashboard checks the URL answers before it
+     * will save a webhook ("Webhook validation failed" on anything but a 2xx),
+     * and that check can arrive before the username and password are in this
+     * server's .env. Answering 200 costs nothing - nothing below runs without
+     * the hash matching - and if the pair ever disagrees for real, the
+     * reconciler still finds every paid order by asking PhonePe directly
+     * (reconcile.service.js), so no payment is lost to a wrong password.
+     */
+    if (!webhookIsGenuine(req.headers.authorization)) {
+        console.warn("PhonePe webhook: Authorization does not match PHONEPE_WEBHOOK_USERNAME/PASSWORD - acknowledged, not processed");
+        return res.status(200).json({ success: true, processed: false });
+    }
+
+    let body;
+    try {
+        body = bodyOf(req);
+    } catch {
+        return res.status(400).json({ success: false, message: "Invalid JSON" });
+    }
+
+    // Answer at once; the work below can take longer than PhonePe waits.
+    res.status(200).json({ success: true });
+
+    try {
+        await handlePhonePeEvent(body);
+    } catch (err) {
+        console.error("PhonePe event processing failed:", err.message);
+    }
+};
+
+/**
+ * One PhonePe order event, turned into the payment it stands for.
+ *
+ * PhonePe's guidance is to go by `event` and `payload.state` and nothing
+ * else - `type` is not to be relied on - and to read the rest loosely.
+ */
+const handlePhonePeEvent = async (body) => {
+    const event = body?.event;
+    const order = body?.payload || {};
+
+    console.log("PhonePe webhook:", event, order.merchantOrderId, order.state);
+
+    if (event !== "pg.order.completed" || order.state !== "COMPLETED") return;
+
+    const attempts = order.paymentDetails || [];
+    const attempt = attempts.find((a) => a.state === "COMPLETED") || attempts[0] || {};
+    const meta = order.metaInfo || {};
+    const amountPaise = Number(order.amount) || 0;
+
+    // PhonePe does not report its own cut on the order, so the company's cost
+    // is the owner's rate - zero while the free offer runs.
+    const { feePaise, taxPaise } = estimateGatewayFee(
+        amountPaise,
+        await settingsService.getSetting("GATEWAY_FEE_PERCENT"),
+        await settingsService.getSetting("GATEWAY_FEE_GST_PERCENT"),
+    );
+
+    await settleGatewayPayment({
+        // Keyed on the transaction, so the status check and the reconciler
+        // replaying the same payment are recognised as the same payment.
+        eventId: "pp-" + (attempt.transactionId || order.merchantOrderId),
+        orderId: order.merchantOrderId,
+        paymentId: attempt.transactionId || order.orderId,
+        utr: attempt.rail?.utr || attempt.splitInstruments?.[0]?.rail?.utr || null,
+        amountPaise,
+        method: "upi",
+        feePaise,
+        taxPaise,
+        notes: {
+            type: meta.udf1 || "bill",
+            ticketId: meta.udf2 || null,
+            technicianId: meta.udf3 || null,
+            invoiceNumber: meta.udf4 || null,
+        },
+        by: "PhonePe",
+    });
+};
+
+/**
+ * POST /api/webhook/razorpay - kept only for bills sent before the move.
+ *
+ * A Razorpay link already sitting in a customer's messages can still be paid
+ * after the company stopped making new ones, and that money must still close
+ * the job. With RAZORPAY_WEBHOOK_SECRET unset this route refuses everything,
+ * which is the right state once the last old link has lapsed.
+ *
+ * req.body must be a RAW BUFFER here - the signature is over the raw bytes.
  */
 const razorpayWebhook = async (req, res) => {
     const signature = req.headers["x-razorpay-signature"];
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
-    if (!secret) {
-        console.error("RAZORPAY_WEBHOOK_SECRET missing");
-        return res.status(500).json({ success: false });
-    }
+    if (!secret) return res.status(410).json({ success: false, message: "Razorpay is no longer in use" });
 
     const rawBody = req.body;
-
     const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
     if (!signature || expected !== signature) {
         console.error("Razorpay webhook signature mismatch");
@@ -39,55 +139,66 @@ const razorpayWebhook = async (req, res) => {
         return res.status(400).json({ success: false, message: "Invalid JSON" });
     }
 
-    // Respond immediately - Razorpay retries anything slower than 5 seconds
     res.status(200).json({ success: true });
 
+    const type = event.event;
+    if (type !== "payment_link.paid" && type !== "payment.captured") return;
+
+    const link = event.payload?.payment_link?.entity;
+    const payment = event.payload?.payment?.entity;
+
     try {
-        await handleRazorpayEvent(event);
+        await settleGatewayPayment({
+            eventId: event.id || type + "-" + event.created_at,
+            // Razorpay sends two events for one payment; the payment id is
+            // the same on both, which is what the claims below key on.
+            orderId: link?.id || null,
+            paymentId: payment?.id,
+            utr: payment?.acquirer_data?.rrn || null,
+            amountPaise: Number(payment?.amount) || Number(link?.amount) || 0,
+            method: payment?.method || "online",
+            feePaise: Number(payment?.fee) || 0,
+            taxPaise: Number(payment?.tax) || 0,
+            notes: link?.notes || payment?.notes || {},
+            by: "Razorpay",
+            legacy: true,
+        });
     } catch (err) {
         console.error("Razorpay event processing failed:", err.message);
     }
 };
 
-const handleRazorpayEvent = async (event) => {
-    const eventType = event.event;
-    const eventId = event.id || `${eventType}-${event.created_at}`;
-
-    console.log("Razorpay webhook:", eventType);
-
-    if (eventType !== "payment_link.paid" && eventType !== "payment.captured") {
-        return;
-    }
-
-    const link = event.payload?.payment_link?.entity;
-    const payment = event.payload?.payment?.entity;
-
-    const notes = link?.notes || payment?.notes || {};
+/**
+ * Money the gateway says has landed, filed against what it was for.
+ *
+ * One path for every way we hear about it - PhonePe's webhook, the vendor's
+ * "check now", the reconciler, an old Razorpay link - so the four of them
+ * cannot come to disagree about money. Safe to run twice: every write below
+ * is guarded on the state it moves away from.
+ *
+ * `paid`: { eventId, orderId, paymentId, utr, amountPaise, method, feePaise,
+ * taxPaise, notes: { type, ticketId, technicianId, invoiceNumber }, by }
+ */
+const settleGatewayPayment = async (paid) => {
+    const { eventId, orderId: linkId, paymentId, utr, method, feePaise = 0, taxPaise = 0, notes = {} } = paid;
     const ticketId = notes.ticketId;
-    const linkId = link?.id;
-    const paymentId = payment?.id;
-    const method = payment?.method;
 
     // A wallet recharge has no ticket - it settles commission the technician
     // already owed. Handling it before the ticket lookup keeps the two flows
     // from tripping over each other.
     if (notes.type === "wallet_recharge" && notes.technicianId) {
-        const amountPaise = Number(payment?.amount) || Number(link?.amount) || 0;
+        const amountPaise = paid.amountPaise || 0;
 
-        // Razorpay sends TWO events for one payment-link payment -
-        // payment.captured and payment_link.paid - each with its own event id.
-        // Keying on the event id let both through, so a single settlement was
-        // credited twice and left the technician holding a balance the company
-        // then paid out. The payment id is the same on both, so claim on that.
-        //
-        // The claim is one atomic upsert: whichever event arrives first
-        // inserts the row and credits the wallet, and the other one finds the
-        // row already there and stops. Crediting first and recording after
-        // leaves exactly the window this bug fell through.
+        // The claim is one atomic upsert on the payment id: whichever report
+        // arrives first inserts the row, and any other - a second webhook,
+        // the vendor's own check, the reconciler - finds the row already
+        // there and stops. Keying on the event id instead once let two
+        // Razorpay events for one payment both through, and a single
+        // settlement was credited twice.
         const claimKey = paymentId || linkId;
 
         if (!claimKey) {
-            console.warn("Recharge webhook carries no payment or link id, skipping");
+            console.warn("Recharge report carries no payment or order id, skipping");
             return;
         }
 
@@ -101,16 +212,15 @@ const handleRazorpayEvent = async (event) => {
                         amountPaise,
                         method: "online",
                         // Not verified. The office checks the reference
-                        // against Razorpay and then records it against the
-                        // right ticket in the wallet - that is what clears
-                        // the due. Marking it verified here skipped both
-                        // steps, so the settlement never appeared in the
-                        // queue and nobody ever looked at it.
+                        // against the gateway and then records it against the
+                        // right ticket in the wallet - that is what clears the
+                        // due. Marking it verified here skipped both steps.
                         status: "collected",
                         collectedBy: notes.technicianId,
                         collectedAt: new Date(),
                         razorpayPaymentId: claimKey,
                         razorpayLinkId: linkId,
+                        utr: utr || undefined,
                         note: "Technician commission settlement",
                     },
                     $addToSet: { processedEventIds: eventId },
@@ -120,26 +230,24 @@ const handleRazorpayEvent = async (event) => {
         } catch (err) {
             // The unique index rejected a genuinely simultaneous delivery
             if (err.code === 11000) {
-                console.log("Recharge already claimed by the other event:", claimKey);
+                console.log("Recharge already claimed:", claimKey);
                 return;
             }
             throw err;
         }
 
         if (existing) {
-            console.log("Settlement already recorded for", claimKey, "- ignoring", eventType);
+            console.log("Settlement already recorded for", claimKey);
             return;
         }
 
         // The wallet is NOT credited here. The office verifies the reference
         // and records it against the ticket, and that is the step that clears
-        // the due - crediting it now would leave nothing for them to record
-        // and no record of which job the money was for.
+        // the due. Both ends are told instead: the office so it lands in the
+        // queue, and the vendor so he can see it arrived and does not pay
+        // twice while waiting for someone to confirm it.
         //
-        // Both ends are told instead: the office so it lands in the queue,
-        // and the technician so he can see it arrived and does not pay twice
-        // while waiting for someone to confirm it.
-        // The row that only recorded "a link was sent to him" has served its
+        // The row that only recorded "a QR was made for him" has served its
         // purpose now that the real payment is here.
         if (linkId) {
             await Payment.deleteOne({ ticket: null, razorpayLinkId: linkId, status: "pending" });
@@ -167,21 +275,43 @@ const handleRazorpayEvent = async (event) => {
     }
 
     if (!ticketId) {
-        console.warn("Webhook has no ticketId in notes, skipping");
+        console.warn("Payment report has no ticket on it, skipping");
         return;
     }
 
-    // Razorpay reports its cut in paise on the payment entity. Capturing it
-    // here is the only chance - it isn't queryable later without another API
-    // call per payment.
-    const feePaise = Number(payment?.fee) || 0;
-    const taxPaise = Number(payment?.tax) || 0;
+    /*
+     * Paid on a QR the bill has since moved past.
+     *
+     * PhonePe cannot cancel an order, so a corrected bill leaves the old QR
+     * payable until it lapses. Money paid on it is real, but it is the wrong
+     * figure for this bill - closing the job on it would settle a corrected
+     * bill with the amount it was corrected away from. The office is told
+     * instead, with the ticket and the reference, to put right by hand.
+     */
+    if (!paid.legacy && linkId) {
+        const current = await ticketModel.findById(ticketId)
+            .select("ticketNumber payment.razorpayLinkId")
+            .lean();
 
-    // A split bill is only half settled by this webhook. The customer has
-    // paid the company's commission; the technician still has to confirm he
-    // took his own share in cash. Closing the ticket here would let him walk
-    // away without recording it, and would credit him a share the company
-    // never held.
+        if (current && current.payment?.razorpayLinkId && current.payment.razorpayLinkId !== linkId) {
+            console.warn(
+                "Paid on a superseded QR for", current.ticketNumber,
+                "- order", linkId, "Rs", paiseToRupees(paid.amountPaise), "- left for the office"
+            );
+            emitToRoom(adminRoom(), "payment:stray", {
+                ticketId: String(ticketId),
+                ticketNumber: current.ticketNumber,
+                reference: paymentId || linkId,
+                amountDisplay: paiseToRupees(paid.amountPaise),
+            });
+            return;
+        }
+    }
+
+    // A split bill is only half settled by this. The customer has paid the
+    // company's commission; the vendor still has to confirm he took his own
+    // share in cash. Closing the ticket here would let him walk away without
+    // recording it, and would credit him a share the company never held.
     if (notes.type === "split_commission") {
         const splitTicket = await ticketModel.findOneAndUpdate(
             {
@@ -193,6 +323,7 @@ const handleRazorpayEvent = async (event) => {
             {
                 "payment.split.onlinePaidAt": new Date(),
                 "payment.razorpayPaymentId": paymentId,
+                ...(utr ? { "payment.utr": utr } : {}),
                 $push: {
                     statusHistory: {
                         from: "Payment-Pending",
@@ -217,6 +348,7 @@ const handleRazorpayEvent = async (event) => {
             { ticket: ticketId },
             {
                 razorpayPaymentId: paymentId,
+                ...(utr ? { utr } : {}),
                 gatewayFeePaise: feePaise,
                 gatewayTaxPaise: taxPaise,
                 $addToSet: { processedEventIds: eventId },
@@ -235,12 +367,13 @@ const handleRazorpayEvent = async (event) => {
     }
 
     // Idempotency - the $ne filter makes this atomic, so two parallel
-    // deliveries of the same event can't both process
+    // reports of the same payment can't both process
     const paymentRecord = await Payment.findOneAndUpdate(
         { ticket: ticketId, processedEventIds: { $ne: eventId } },
         {
             status: "collected",
             razorpayPaymentId: paymentId,
+            ...(utr ? { utr } : {}),
             method: method || "online",
             collectedAt: new Date(),
             gatewayFeePaise: feePaise,
@@ -251,7 +384,7 @@ const handleRazorpayEvent = async (event) => {
     );
 
     if (!paymentRecord) {
-        console.log("Event already processed or payment record missing:", eventId);
+        console.log("Payment already processed or record missing:", eventId);
         return;
     }
 
@@ -262,7 +395,8 @@ const handleRazorpayEvent = async (event) => {
             "payment.status": "Collected",   // see the note on the enum in ticket.model.js
             "payment.method": method || "online",
             "payment.razorpayPaymentId": paymentId,
-            "payment.razorpayLinkId": linkId,
+            ...(linkId ? { "payment.razorpayLinkId": linkId } : {}),
+            ...(utr ? { "payment.utr": utr } : {}),
             "payment.gatewayFeePaise": feePaise + taxPaise,
             "payment.paidAt": new Date(),
             $push: {
@@ -270,7 +404,7 @@ const handleRazorpayEvent = async (event) => {
                     from: "Payment-Pending",
                     to: "Closed",
                     actorRole: "system",
-                    reason: "Payment confirmed by Razorpay webhook",
+                    reason: "Payment confirmed by " + (paid.by || "the gateway"),
                     at: new Date(),
                 },
             },
@@ -324,8 +458,7 @@ const handleRazorpayEvent = async (event) => {
     const said = await notification.speaks(ticket);
 
     // The receipt goes to the chat and to the phone, not to WhatsApp - see
-    // notifyCustomer. The bill that asked for this money did go to WhatsApp,
-    // because the link in it is the only way anybody can pay online.
+    // notifyCustomer.
     await notification.notifyCustomer({
         ticket,
         alsoWhatsApp: false,
@@ -344,10 +477,16 @@ const handleRazorpayEvent = async (event) => {
 };
 
 /*
- * `handleRazorpayEvent` is exported for the reconciler, which replays the
- * events this server never received - see reconcile.service.js. Nothing else
- * should call it: it trusts that whatever handed it an event has already
- * checked the signature, which the route above does and a caller inside the
- * process does not need to.
+ * `handlePhonePeEvent` is exported for the reconciler, and
+ * `settleGatewayPayment` for the vendor's own "check now" - both of which
+ * have asked PhonePe themselves. Nothing else should call them: they trust
+ * that whatever handed them a payment has already established it is genuine,
+ * which the routes above do with the Authorization header or the signature.
  */
-module.exports = { razorpayWebhook, handleRazorpayEvent };
+/**
+ * GET /api/webhook/phonepe - "is this URL alive?", for the dashboard's check
+ * and for anybody setting it up with a browser. Says nothing else.
+ */
+const phonepeWebhookAlive = (req, res) => res.status(200).json({ success: true });
+
+module.exports = { phonepeWebhook, phonepeWebhookAlive, razorpayWebhook, handlePhonePeEvent, settleGatewayPayment };

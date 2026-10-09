@@ -544,7 +544,7 @@ const ticketSchema = new mongoose.Schema({
 
         // "split" is the cheapest way to take a bill. The technician takes
         // his own share in cash straight from the customer, and the customer
-        // pays the company's commission through Razorpay. The gateway then
+        // pays the company's commission through the gateway. The gateway then
         // charges 2% of the commission instead of 2% of the whole bill, and
         // no money has to travel between company and technician afterwards -
         // so there is no second gateway fee and nothing left to chase.
@@ -563,9 +563,27 @@ const ticketSchema = new mongoose.Schema({
         collectedNote: { type: String },
         verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
         verifiedAt: { type: Date },
+        /*
+         * The gateway's handles on this bill. The names are Razorpay's, from
+         * before the company moved to PhonePe, and are kept so no old ticket
+         * has to be rewritten: razorpayLinkId is now the PhonePe order id we
+         * made (merchantOrderId), razorpayLinkUrl the upi:// link that opens
+         * the same payment in a UPI app, and razorpayPaymentId PhonePe's
+         * transaction id once somebody has paid.
+         */
         razorpayLinkId: { type: String },
         razorpayLinkUrl: { type: String },
         razorpayPaymentId: { type: String },
+
+        // What the QR encodes, and when PhonePe stops accepting it. The
+        // vendor's screen draws the QR from this; a lapsed one is replaced
+        // with a fresh order rather than shown.
+        qrData: { type: String },
+        qrExpiresAt: { type: Date },
+
+        // The UPI reference the customer's own app shows them. What they read
+        // out when they ring to say they have paid.
+        utr: { type: String },
     },
 }, { timestamps: true });
 

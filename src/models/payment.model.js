@@ -11,9 +11,10 @@ const paymentSchema = new mongoose.Schema({
      * How the money moved, and it is not a tidy list.
      *
      * Three of these are ours - cash, online and split, chosen by the vendor
-     * when the bill is raised. The rest are Razorpay's: the webhook
-     * overwrites the method with whatever the gateway says it actually was,
-     * so an online bill comes back as "upi" or "card" or "netbanking".
+     * when the bill is raised. The rest are the gateway's: the webhook
+     * overwrites the method with whatever the gateway says it actually was.
+     * Razorpay's bills came back as "upi" or "card" or "netbanking"; a
+     * PhonePe QR is always "upi".
      *
      * The enum said cash, upi, online and had been wrong for as long as
      * splits existed. It never threw, because findOneAndUpdate does not run
@@ -38,7 +39,8 @@ const paymentSchema = new mongoose.Schema({
     commissionPaise: { type: Number, default: 0 },
     technicianSharePaise: { type: Number, default: 0 },
 
-    // Razorpay's cut, captured from the webhook. Without this the company's
+    // The gateway's cut - Razorpay reported it; PhonePe does not, so it is
+    // estimated from the owner's rate setting. Without this the company's
     // real margin is invisible - commission looks like profit when 2% of
     // gross has already left the account.
     gatewayFeePaise: { type: Number, default: 0 },
@@ -57,7 +59,7 @@ const paymentSchema = new mongoose.Schema({
     // line items, so the office can pull them out as their own list.
     isVisitCharge: { type: Boolean, default: false },
 
-    // What Razorpay itself said when the office pressed Verify. Kept so the
+    // What the gateway itself said when the office pressed Verify. Kept so the
     // screen can show that the id was actually checked against the gateway
     // rather than simply ticked off by hand - the two look identical
     // afterwards otherwise, and only one of them is evidence.
@@ -74,9 +76,22 @@ const paymentSchema = new mongoose.Schema({
         checkedByName: { type: String },
     },
 
+    /*
+     * Razorpay's names, kept from before the move to PhonePe so old rows read
+     * the same as new ones: razorpayLinkId is the PhonePe order id we made,
+     * razorpayLinkUrl its upi:// link, razorpayPaymentId PhonePe's
+     * transaction id once the money is in.
+     */
     razorpayLinkId: { type: String, index: true },
     razorpayLinkUrl: { type: String },
     razorpayPaymentId: { type: String },
+
+    // What the QR encodes and when it lapses, for a settlement still waiting
+    // to be paid; and the UPI reference once it has been.
+    qrData: { type: String },
+    qrExpiresAt: { type: Date },
+    utr: { type: String },
+
     processedEventIds: [{ type: String }],
 }, { timestamps: true });
 

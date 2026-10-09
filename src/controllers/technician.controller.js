@@ -23,7 +23,7 @@ const { emitToRoom, userRoom, techRoom, adminRoom, dropRoom } = require("../sock
 const walletService = require("../services/wallet.service");
 const discountService = require("../services/discount.service");
 const settingsService = require("../services/settings.service");
-const { estimateGatewayFee } = require("../config/razorpay");
+const { estimateGatewayFee } = require("../config/phonepe");
 const isProd = process.env.NODE_ENV === "production";
 
 const cookieOptions = {
@@ -579,6 +579,9 @@ const bootstrap = async (req, res) => {
                 // Offered on the job card when a refusal is confirmed, so the
                 // technician sees the figure before he agrees to ask for it
                 visitChargePaise: (await settingsService.getSetting("VISIT_CHARGE_RUPEES")) * 100,
+
+                // What he owes the office, for the bar on the home screen
+                dues: duesOf(req.technician.walletBalancePaise),
             },
         });
     } catch (error) {
@@ -1704,7 +1707,7 @@ const getPricing = async (req, res) => {
                 .map((i) => ({ ...i, priceDisplay: paymentService.paiseToRupees(i.pricePaise) }))
                 .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name)),
             limits: paymentService.LIMITS,
-            onlinePaymentAvailable: paymentService.isRazorpayActive(),
+            onlinePaymentAvailable: paymentService.isGatewayActive(),
 
             // So the bill screen can show what a split would look like before
             // the technician commits to it
@@ -1881,7 +1884,7 @@ const generateBill = async (req, res) => {
         // On a split the technician is handed physical notes, so his half is
         // rounded down to a whole rupee - nobody counts out 30 paise on a
         // doorstep. The remainder rides along with the company's half, which
-        // goes through Razorpay and can be any amount. Rs 799 at 30% becomes
+        // goes through the gateway and can be any amount. Rs 799 at 30% becomes
         // Rs 559 in his hand and Rs 240.00 online, not Rs 559.30 and 239.70.
         //
         // The stored commission is then the figure actually collected, not
@@ -1898,27 +1901,31 @@ const generateBill = async (req, res) => {
             });
         }
 
-        // The old link is for the old amount. Leaving it live lets the
-        // customer scroll up in WhatsApp and pay the figure we just corrected.
-        if (isEdit && ticket.payment?.razorpayLinkId) {
-            await paymentService.cancelPaymentLink(ticket.payment.razorpayLinkId);
-        }
+        // A corrected bill gets a QR of its own below. PhonePe cannot cancel
+        // the old one; it lapses on its own within minutes, and money paid on
+        // it in the meantime is held back for the office rather than closing
+        // the job at the wrong figure (see settleGatewayPayment).
 
         // Online takes the whole bill; split takes only the company's cut.
         const onlineAmountPaise = method === "online" ? bill.totalPaise
             : method === "split" ? commissionPaise
             : 0;
 
-        let link = null;
+        // The QR the customer scans on the vendor's phone - the whole bill,
+        // or only the company's share on a split.
+        let qr = null;
         if (onlineAmountPaise > 0) {
-            link = method === "split"
-                ? await paymentService.createCommissionLink({ ticket, amountPaise: onlineAmountPaise, invoiceNumber })
-                : await paymentService.createPaymentLink({ ticket, amountPaise: onlineAmountPaise, invoiceNumber });
+            qr = await paymentService.createBillQr({
+                ticket,
+                amountPaise: onlineAmountPaise,
+                invoiceNumber,
+                split: method === "split",
+            });
 
-            if (!link) {
+            if (!qr) {
                 return res.status(502).json({
                     success: false,
-                    message: "Could not create the payment link. Collect cash instead, or check the gateway settings.",
+                    message: "Could not make the payment QR. Collect cash instead, or check the gateway settings.",
                 });
             }
         }
@@ -1966,7 +1973,12 @@ const generateBill = async (req, res) => {
                     companyOnlinePaise: commissionPaise,
                 },
             } : {}),
-            ...(link ? { razorpayLinkId: link.linkId, razorpayLinkUrl: link.linkUrl } : {}),
+            ...(qr ? {
+                razorpayLinkId: qr.orderId,
+                razorpayLinkUrl: qr.intentUrl,
+                qrData: qr.qrData,
+                qrExpiresAt: qr.expiresAt,
+            } : {}),
         };
 
         ticket.status = "Payment-Pending";
@@ -2013,8 +2025,8 @@ const generateBill = async (req, res) => {
                 commissionPercent,
                 commissionPaise,
                 technicianSharePaise,
-                razorpayLinkId: link?.linkId || null,
-                razorpayLinkUrl: link?.linkUrl || null,
+                razorpayLinkId: qr?.orderId || null,
+                razorpayLinkUrl: qr?.intentUrl || null,
             },
             { upsert: true }
         );
@@ -2047,14 +2059,16 @@ const generateBill = async (req, res) => {
         }
         message += "*Total: Rs " + paymentService.paiseToRupees(bill.totalPaise) + "*\n\n";
 
+        // Nothing to click: the QR is on the vendor's phone, in front of the
+        // customer, and any UPI app pays it.
         if (method === "split") {
             message +=
                 "Please pay in two parts:\n\n" +
                 "1) Service charge Rs " + paymentService.paiseToRupees(commissionPaise) +
-                " - pay online here:\n" + link.linkUrl + "\n\n" +
+                " - scan the QR on the technician's phone with any UPI app.\n\n" +
                 "2) Rs " + paymentService.paiseToRupees(technicianSharePaise) + " in cash to the technician.";
-        } else if (link) {
-            message += "Pay here:\n" + link.linkUrl;
+        } else if (qr) {
+            message += "Scan the QR on the technician's phone with any UPI app (PhonePe, Google Pay, Paytm, BHIM) to pay.";
         } else {
             message += "Please pay Rs " + paymentService.paiseToRupees(bill.totalPaise) + " in cash to the technician.";
         }
@@ -2079,7 +2093,7 @@ const generateBill = async (req, res) => {
                 totalDisplay: paymentService.paiseToRupees(bill.totalPaise),
                 commissionDisplay: paymentService.paiseToRupees(commissionPaise),
                 technicianShareDisplay: paymentService.paiseToRupees(technicianSharePaise),
-                paymentLink: link?.linkUrl || null,
+                qr: qr ? await qrPayload(qr, onlineAmountPaise) : null,
             },
         });
     } catch (error) {
@@ -2404,12 +2418,37 @@ const vendorView = (txn) => {
     return known;
 };
 
+// How far a technician can go into the red before the office steps in - the
+// same Rs 1,000 at which the office stops assigning him work.
+const CREDIT_LIMIT_PAISE = -100000;
+
+/**
+ * What he owes the office, sized against that limit.
+ *
+ * The home screen draws it as a bar the moment the app opens, so it rides on
+ * bootstrap rather than costing the whole wallet's arithmetic. Zero owed is
+ * null - there is no bar for a vendor who is square or in credit.
+ */
+const duesOf = (balancePaise = 0) => {
+    const owedPaise = Math.abs(Math.min(0, balancePaise));
+    if (owedPaise === 0) return null;
+
+    const limitPaise = Math.abs(CREDIT_LIMIT_PAISE);
+    return {
+        owedPaise,
+        owedDisplay: paymentService.paiseToRupees(owedPaise),
+        limitPaise,
+        limitDisplay: paymentService.paiseToRupees(limitPaise),
+        share: Math.min(1, owedPaise / limitPaise),
+        nearLimit: balancePaise <= CREDIT_LIMIT_PAISE * 0.7,
+        atLimit: balancePaise <= CREDIT_LIMIT_PAISE,
+        canPayOnline: paymentService.isGatewayActive(),
+    };
+};
+
 const getWallet = async (req, res) => {
     try {
         const techId = req.technician._id;
-
-        // How far a technician can go into the red before the office steps in
-        const CREDIT_LIMIT_PAISE = -100000;
 
         const days = Math.min(365, Math.max(7, Number(req.query.days) || 90));
         const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -2623,7 +2662,7 @@ const getWallet = async (req, res) => {
                 owedPaise,
                 // Nothing to pay twice while one transfer is still being
                 // checked by the office
-                canPayOnline: owedPaise > 0 && !settlementPending && paymentService.isRazorpayActive(),
+                canPayOnline: owedPaise > 0 && !settlementPending && paymentService.isGatewayActive(),
                 settlementPending,
 
                 payoutExpected,
@@ -2773,10 +2812,10 @@ const getPaymentStatus = async (req, res) => {
 
         const linkId = ticket.payment?.razorpayLinkId;
         if (!linkId) {
-            return res.status(400).json({ success: false, message: "No payment link on this ticket" });
+            return res.status(400).json({ success: false, message: "No payment QR on this ticket" });
         }
 
-        const status = await paymentService.fetchPaymentLinkStatus(linkId);
+        const status = await paymentService.fetchOrderStatus(linkId);
         if (!status) {
             return res.status(502).json({ success: false, message: "Could not reach the payment gateway" });
         }
@@ -2786,7 +2825,7 @@ const getPaymentStatus = async (req, res) => {
         // is about to take in cash as well - paying him twice.
         //
         // This is also the only way a split gets confirmed at all when the
-        // Razorpay webhook cannot reach the server, which is the normal state
+        // gateway's webhook cannot reach the server, which is the normal state
         // during development: the gateway has no route to localhost.
         if (ticket.payment?.method === "split") {
             const alreadyPaid = Boolean(ticket.payment?.split?.onlinePaidAt);
@@ -2797,6 +2836,7 @@ const getPaymentStatus = async (req, res) => {
                     {
                         "payment.split.onlinePaidAt": status.paidAt || new Date(),
                         "payment.razorpayPaymentId": status.paymentId,
+                        ...(status.utr ? { "payment.utr": status.utr } : {}),
                         $push: {
                             statusHistory: {
                                 from: "Payment-Pending", to: "Payment-Pending",
@@ -2852,6 +2892,7 @@ const getPaymentStatus = async (req, res) => {
                     status: "Closed",
                     "payment.status": "Collected",   // see the note on the enum in ticket.model.js
                     "payment.razorpayPaymentId": status.paymentId,
+                    ...(status.utr ? { "payment.utr": status.utr } : {}),
                     "payment.method": status.method || "online",
                     "payment.paidAt": status.paidAt || new Date(),
                     $push: {
@@ -2879,8 +2920,8 @@ const getPaymentStatus = async (req, res) => {
                 });
             }
 
-            // The webhook carries the exact gateway fee. This path doesn't
-            // have it, so estimate - the webhook overwrites it when it lands.
+            // PhonePe does not report its cut, so this is the owner's rate -
+            // the same estimate the webhook would have written.
             const { feePaise, taxPaise } = estimateGatewayFee(
                 closed.billing?.totalPaise || 0,
                 await settingsService.getSetting("GATEWAY_FEE_PERCENT"),
@@ -2930,6 +2971,110 @@ const getPaymentStatus = async (req, res) => {
 
 
 /**
+ * What a screen needs to put a QR in front of somebody.
+ *
+ * The picture is drawn on the server (see qrImage) so every screen shows the
+ * same thing; intentUrl is the same payment as a link, for when the payer is
+ * holding the phone the QR is on and cannot scan their own screen.
+ */
+const qrPayload = async (qr, amountPaise) => ({
+    orderId: qr.orderId,
+    qrImage: await paymentService.qrImage(qr.qrData),
+    intentUrl: qr.intentUrl || null,
+    expiresAt: qr.expiresAt,
+    amountDisplay: paymentService.paiseToRupees(amountPaise),
+});
+
+/**
+ * GET /api/technician/tickets/:id/payment-qr
+ *
+ * The QR for a bill that is still waiting to be paid online.
+ *
+ * Asked by the screen the vendor turns towards the customer. A QR lasts
+ * twenty minutes (BILL_QR_SECONDS); one that has lapsed - the customer went
+ * to find their phone, the vendor stepped out - is replaced here with a fresh
+ * order for the same amount, which is safe precisely because the old one can
+ * no longer take money. One that is still live is handed back as it is, so
+ * two screens never show two different QRs for one bill.
+ */
+const getPaymentQr = async (req, res) => {
+    try {
+        const ticket = await ticketModel.findOne({
+            _id: req.params.id,
+            technician: req.technician._id,
+        });
+
+        if (!ticket) {
+            return res.status(404).json({ success: false, message: "Ticket not found" });
+        }
+
+        const pay = ticket.payment || {};
+        const amountPaise = pay.method === "split"
+            ? pay.split?.companyOnlinePaise || 0
+            : pay.method === "online" ? ticket.billing?.totalPaise || 0 : 0;
+
+        if (ticket.status !== "Payment-Pending" || amountPaise <= 0
+            || (pay.method === "split" && pay.split?.onlinePaidAt)) {
+            return res.status(400).json({ success: false, message: "Nothing is waiting to be paid online on this job" });
+        }
+
+        // Thirty seconds of slack: a QR about to lapse is not worth showing.
+        const live = pay.qrData && pay.qrExpiresAt
+            && new Date(pay.qrExpiresAt).getTime() - 30000 > Date.now();
+
+        let qr = live
+            ? { orderId: pay.razorpayLinkId, qrData: pay.qrData, intentUrl: pay.razorpayLinkUrl, expiresAt: pay.qrExpiresAt }
+            : null;
+
+        if (!qr) {
+            // Before replacing it, make sure the old one was not paid in its
+            // last moments - a new QR for a bill already paid is how a
+            // customer pays twice.
+            if (pay.razorpayLinkId) {
+                const before = await paymentService.fetchOrderStatus(pay.razorpayLinkId);
+                if (before?.isPaid) {
+                    return res.status(409).json({
+                        success: false,
+                        message: "This bill has just been paid. Checking it now.",
+                        data: { paid: true },
+                    });
+                }
+            }
+
+            qr = await paymentService.createBillQr({
+                ticket,
+                amountPaise,
+                invoiceNumber: ticket.billing?.invoiceNumber,
+                split: pay.method === "split",
+            });
+
+            if (!qr) {
+                return res.status(502).json({
+                    success: false,
+                    message: "Could not make a new QR just now. Try again, or take cash.",
+                });
+            }
+
+            ticket.payment.razorpayLinkId = qr.orderId;
+            ticket.payment.razorpayLinkUrl = qr.intentUrl;
+            ticket.payment.qrData = qr.qrData;
+            ticket.payment.qrExpiresAt = qr.expiresAt;
+            await ticket.save();
+
+            await Payment.updateOne(
+                { ticket: ticket._id },
+                { razorpayLinkId: qr.orderId, razorpayLinkUrl: qr.intentUrl }
+            );
+        }
+
+        return res.status(200).json({ success: true, data: await qrPayload(qr, amountPaise) });
+    } catch (error) {
+        console.error("Payment QR error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+/**
  * POST /api/technician/wallet/recharge
  * body: { amountRupees }
  *
@@ -2939,7 +3084,7 @@ const getPaymentStatus = async (req, res) => {
  */
 const createWalletRecharge = async (req, res) => {
     try {
-        if (!paymentService.isRazorpayActive()) {
+        if (!paymentService.isGatewayActive()) {
             return res.status(503).json({
                 success: false,
                 message: "Online payment isn't set up yet. Please deposit the cash at the office.",
@@ -2966,19 +3111,19 @@ const createWalletRecharge = async (req, res) => {
 
         const amountPaise = Math.min(requested, owedPaise);
 
-        const link = await paymentService.createWalletRechargeLink({
+        const qr = await paymentService.createSettlementQr({
             technician: tech,
             amountPaise,
         });
 
-        if (!link) {
+        if (!qr) {
             return res.status(502).json({
                 success: false,
-                message: "Could not create the payment link. Try again shortly.",
+                message: "Could not make the payment QR. Try again shortly.",
             });
         }
 
-        // The link is written down before he pays it.
+        // The QR is written down before he pays it.
         //
         // Until now it existed only in his browser tab, so the only thing that
         // could ever tell us he had paid was the webhook. When the webhook did
@@ -2991,17 +3136,19 @@ const createWalletRecharge = async (req, res) => {
             method: "online",
             status: "pending",
             collectedBy: tech._id,
-            razorpayLinkId: link.linkId,
-            razorpayLinkUrl: link.linkUrl,
+            razorpayLinkId: qr.orderId,
+            razorpayLinkUrl: qr.intentUrl,
+            qrData: qr.qrData,
+            qrExpiresAt: qr.expiresAt,
             note: "Technician commission settlement",
         });
 
         return res.status(200).json({
             success: true,
             data: {
-                linkUrl: link.linkUrl,
-                linkId: link.linkId,
-                amountDisplay: paymentService.paiseToRupees(amountPaise),
+                ...(await qrPayload(qr, amountPaise)),
+                // What the "check now" call asks about
+                linkId: qr.orderId,
             },
         });
     } catch (error) {
@@ -3015,9 +3162,14 @@ const createWalletRecharge = async (req, res) => {
 // that would have announced the payment does not arrive
 const checkWalletRecharge = async (req, res) => {
     try {
-        const status = await paymentService.fetchPaymentLinkStatus(req.params.linkId);
+        const status = await paymentService.fetchOrderStatus(req.params.linkId);
         if (!status) {
             return res.status(502).json({ success: false, message: "Could not reach the payment gateway" });
+        }
+
+        // His own settlement and nobody else's. The order carries whose it is.
+        if (status.meta?.udf3 && status.meta.udf3 !== String(req.technician._id)) {
+            return res.status(404).json({ success: false, message: "No such payment" });
         }
 
         // Write it down ourselves rather than waiting on the webhook.
@@ -3049,6 +3201,7 @@ const checkWalletRecharge = async (req, res) => {
                             collectedAt: status.paidAt || new Date(),
                             razorpayPaymentId: status.paymentId,
                             razorpayLinkId: req.params.linkId,
+                            ...(status.utr ? { utr: status.utr } : {}),
                             note: "Technician commission settlement",
                         },
                     },
@@ -3091,6 +3244,8 @@ const checkWalletRecharge = async (req, res) => {
             success: true,
             data: {
                 isPaid: status.isPaid,
+                // A QR that lapsed unpaid - the screen offers a fresh one
+                expired: status.status === "failed",
                 balancePaise: tech?.walletBalancePaise || 0,
                 balanceDisplay: paymentService.paiseToRupees(Math.abs(tech?.walletBalancePaise || 0)),
             },
@@ -3129,6 +3284,7 @@ module.exports = {
     getPaymentStatus,
     startScheduledNow,
     createWalletRecharge,
+    getPaymentQr,
     checkWalletRecharge,
     sendSignupOtp,
     verifySignupOtp,

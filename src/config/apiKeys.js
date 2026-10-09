@@ -99,17 +99,22 @@ const ENV_KEYS = [
         note: "This is the one nothing else can stand in for. If it lapses, the company stops taking bookings.",
     },
     {
-        envVar: "RAZORPAY_KEY_ID",
+        envVar: "PHONEPE_CLIENT_ID",
+        // Named the way PhonePe's Business Dashboard names them, under
+        // Developer Settings - Test Mode on for sandbox keys, off for live.
         fields: [
-            { envVar: "RAZORPAY_KEY_ID", label: "Key ID", kind: "id" },
-            { envVar: "RAZORPAY_KEY_SECRET", label: "Key secret", kind: "secret" },
-            { envVar: "RAZORPAY_WEBHOOK_SECRET", label: "Webhook secret", kind: "secret" },
+            { envVar: "PHONEPE_CLIENT_ID", label: "Client ID", kind: "id" },
+            { envVar: "PHONEPE_CLIENT_SECRET", label: "Client secret", kind: "secret" },
+            { envVar: "PHONEPE_CLIENT_VERSION", label: "Client version", kind: "id" },
+            { envVar: "PHONEPE_ENV", label: "Environment (sandbox or production)", kind: "id" },
+            { envVar: "PHONEPE_WEBHOOK_USERNAME", label: "Webhook username", kind: "id" },
+            { envVar: "PHONEPE_WEBHOOK_PASSWORD", label: "Webhook password", kind: "secret" },
         ],
-        provider: "razorpay",
-        label: "Razorpay",
-        powers: "Payment links, and the webhook that confirms a customer has paid.",
+        provider: "phonepe",
+        label: "PhonePe Payment Gateway",
+        powers: "The UPI QR on the vendor's phone for every online bill and every dues settlement, and the webhook that confirms it was paid.",
         free: false,
-        also: ["RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"],
+        also: ["PHONEPE_CLIENT_SECRET", "PHONEPE_CLIENT_VERSION", "PHONEPE_ENV", "PHONEPE_WEBHOOK_USERNAME", "PHONEPE_WEBHOOK_PASSWORD"],
     },
     {
         envVar: "EXOTEL_API_KEY",

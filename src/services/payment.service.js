@@ -1,7 +1,11 @@
 const Payment = require("../models/payment.model");
 const Counter = require("../models/counter.model");
 const discountService = require("./discount.service");
-const { getRazorpay, isConfigured } = require("../config/razorpay");
+const Ticket = require("../models/ticket.model");
+const QRCode = require("qrcode");
+const phonepe = require("../config/phonepe");
+
+const { isConfigured } = phonepe;
 
 const paiseToRupees = (paise) => (Number(paise || 0) / 100).toFixed(2);
 const rupeesToPaise = (rupees) => Math.round(Number(rupees) * 100);
@@ -123,67 +127,18 @@ const generateInvoiceNumber = async () => {
     return `${prefix}-${String(counter.seq).padStart(4, "0")}`;
 };
 
-const createPaymentLink = async ({ ticket, amountPaise, invoiceNumber }) => {
-    if (!isConfigured()) {
-        console.log("Razorpay not configured - no payment link created");
-        return null;
-    }
-
-    try {
-        const customer = ticket.customerSnapshot || {};
-        const phone = String(customer.phone || "").replace(/\D/g, "");
-
-        const link = await askGateway("payment link", () => getRazorpay().paymentLink.create({
-            amount: amountPaise,
-            currency: "INR",
-            description: `${ticket.serviceLabel} - ${ticket.ticketNumber}`,
-            customer: {
-                name: customer.name || "Customer",
-                contact: phone.length === 10 ? `+91${phone}` : `+${phone}`,
-            },
-            notify: { sms: true, email: false },
-            reminder_enable: true,
-            notes: {
-                ticketId: String(ticket._id),
-                ticketNumber: ticket.ticketNumber,
-                invoiceNumber,
-            },
-            callback_url: process.env.PAYMENT_CALLBACK_URL || undefined,
-            callback_method: process.env.PAYMENT_CALLBACK_URL ? "get" : undefined,
-        }));
-
-        // askGateway has already said why, and said it once rather than as a
-        // null dereference three lines further on.
-        if (!link) return null;
-
-        return { linkId: link.id, linkUrl: link.short_url };
-    } catch (error) {
-        console.error("Razorpay link failed:", error?.error?.description || error.message);
-        return null;
-    }
-};
-
-/**
- * Kills a payment link that is no longer the right amount.
- *
- * A corrected bill needs a new link, and leaving the old one live means the
- * customer can still open the WhatsApp message above it and pay the wrong
- * figure. Best effort: if Razorpay refuses (already paid, already cancelled)
- * the correction still goes through, because the new link is what the
- * customer is told to use.
- */
 /**
  * Ask the gateway again before giving up on it.
  *
- * A payment link was one attempt. Razorpay refusing for a second - a timeout,
- * a 502, one of the brief wobbles every gateway has - failed the whole bill:
- * the vendor got a 502 of his own, the ticket was not touched, and he was told
- * to take cash instead while standing in somebody's kitchen. For a fault that
- * would very often have been over before he had read the message.
+ * A QR was one attempt. PhonePe refusing for a second - a timeout, a 502, one
+ * of the brief wobbles every gateway has - failed the whole bill: the vendor
+ * got a 502 of his own, the ticket was not touched, and he was told to take
+ * cash instead while standing in somebody's kitchen. For a fault that would
+ * very often have been over before he had read the message.
  *
  * Three tries with a growing gap, and only for the faults worth retrying. A
- * refusal with a reason - a bad amount, a contact Razorpay will not accept,
- * keys that are wrong - fails the same way however many times it is asked, and
+ * refusal with a reason - a bad amount, keys that are wrong, a merchant not
+ * yet enabled for QR - fails the same way however many times it is asked, and
  * trying again only makes the vendor wait longer for the same answer.
  *
  * This is not a circuit breaker and does not pretend to be one. It rides out a
@@ -193,7 +148,7 @@ const createPaymentLink = async ({ ticket, amountPaise, invoiceNumber }) => {
 const RETRY_WAITS_MS = [600, 1800];
 
 const worthRetrying = (error) => {
-    const status = error?.statusCode || error?.status || error?.response?.status;
+    const status = error?.response?.status || error?.statusCode || error?.status;
 
     // No status at all is a connection that never landed - the most retryable
     // thing there is. 5xx is the gateway's own trouble. 429 is being asked to
@@ -202,21 +157,27 @@ const worthRetrying = (error) => {
     return status >= 500 || status === 429;
 };
 
+/** What PhonePe said, in one line, for the log. */
+const gatewaySaid = (error) => {
+    const body = error?.response?.data;
+    return body?.message || body?.code || error?.message || "unknown error";
+};
+
 const askGateway = async (what, call) => {
     for (let attempt = 0; ; attempt += 1) {
         try {
             return await call();
         } catch (error) {
             const last = attempt >= RETRY_WAITS_MS.length;
-            const reason = error?.error?.description || error.message;
+            const reason = gatewaySaid(error);
 
             if (last || !worthRetrying(error)) {
-                console.error("Razorpay " + what + " failed:", reason);
+                console.error("PhonePe " + what + " failed:", reason);
                 return null;
             }
 
             console.warn(
-                "Razorpay " + what + " did not answer (" + reason + ") - trying again in "
+                "PhonePe " + what + " did not answer (" + reason + ") - trying again in "
                 + RETRY_WAITS_MS[attempt] + "ms"
             );
 
@@ -225,139 +186,197 @@ const askGateway = async (what, call) => {
     }
 };
 
-const cancelPaymentLink = async (linkId) => {
-    if (!isConfigured() || !linkId) return false;
+/*
+ * How long a QR stays payable.
+ *
+ * Long enough for a customer to find their phone, open an app and scan; short
+ * enough that a QR left on a screen, or one replaced by a corrected bill,
+ * stops taking money soon after. PhonePe has no way to cancel an order, so the
+ * expiry is the only thing that retires an old one. When it lapses before the
+ * customer gets to it the vendor asks for a new QR, which is a new order.
+ */
+const BILL_QR_SECONDS = 20 * 60;
+const SETTLEMENT_QR_SECONDS = 15 * 60;
 
-    try {
-        await getRazorpay().paymentLink.cancel(linkId);
-        return true;
-    } catch (error) {
-        console.warn("Could not cancel payment link", linkId, "-", error?.error?.description || error.message);
-        return false;
+/** A QR order, in the shape every caller here stores and hands on. */
+const qrOrder = async (what, { prefix, parts, amountPaise, seconds, meta }) => {
+    if (!isConfigured()) {
+        console.log("PhonePe not configured - no QR created");
+        return null;
     }
+
+    const order = await askGateway(what, () => phonepe.createQrOrder({
+        merchantOrderId: phonepe.orderIdFor(prefix, ...parts),
+        amountPaise,
+        expireAfterSeconds: seconds,
+        meta,
+    }));
+
+    // askGateway has already said why, and said it once.
+    if (!order) return null;
+
+    return {
+        orderId: order.merchantOrderId,
+        qrData: order.qrData || order.intentUrl,
+        intentUrl: order.intentUrl || order.qrData,
+        expiresAt: order.expiresAt,
+    };
 };
 
 /**
- * A payment link for one specific amount, used when the whole bill is not
- * what is being collected online - the split flow charges the customer only
- * the company's commission and lets the technician take his share in cash.
+ * The QR for a bill: the whole of it on an online job, or only the company's
+ * share on a split, where the vendor takes his own share in cash.
  */
-const createCommissionLink = async ({ ticket, amountPaise, invoiceNumber }) => {
-    if (!isConfigured()) return null;
+const createBillQr = async ({ ticket, amountPaise, invoiceNumber, split = false }) => qrOrder("bill QR", {
+    prefix: split ? "SPL" : "BIL",
+    parts: [ticket.ticketNumber],
+    amountPaise,
+    seconds: BILL_QR_SECONDS,
+    meta: {
+        type: split ? "split_commission" : "bill",
+        ticketId: String(ticket._id),
+        invoiceNumber,
+    },
+});
 
+/**
+ * A QR for a vendor clearing his own dues. The type tells the webhook to file
+ * it as a settlement for the office to record, not to close a ticket.
+ */
+const createSettlementQr = async ({ technician, amountPaise }) => qrOrder("settlement QR", {
+    prefix: "STL",
+    parts: [String(technician._id).slice(-8)],
+    amountPaise,
+    seconds: SETTLEMENT_QR_SECONDS,
+    meta: { type: "wallet_recharge", technicianId: String(technician._id) },
+});
+
+/**
+ * The QR itself, as a picture.
+ *
+ * Drawn here rather than on each phone, so the vendor app, the web panel and
+ * anything after them show the same QR without each carrying a QR library.
+ * A PNG data URI is a few kilobytes - smaller than the screen it sits on.
+ */
+const qrImage = async (qrData) => {
+    if (!qrData) return null;
     try {
-        const customer = ticket.customerSnapshot || {};
-        const phone = String(customer.phone || "").replace(/\D/g, "");
-
-        const link = await askGateway("payment link", () => getRazorpay().paymentLink.create({
-            amount: amountPaise,
-            currency: "INR",
-            description: "Service charge for " + ticket.ticketNumber,
-            customer: {
-                name: customer.name || "Customer",
-                contact: phone.length === 10 ? "+91" + phone : "+" + phone,
-            },
-            notify: { sms: true, email: false },
-            reminder_enable: true,
-            notes: {
-                ticketId: String(ticket._id),
-                ticketNumber: ticket.ticketNumber,
-                invoiceNumber,
-                type: "split_commission",
-            },
-            callback_url: process.env.PAYMENT_CALLBACK_URL || undefined,
-            callback_method: process.env.PAYMENT_CALLBACK_URL ? "get" : undefined,
-        }));
-
-        // askGateway has already said why, and said it once rather than as a
-        // null dereference three lines further on.
-        if (!link) return null;
-
-        return { linkId: link.id, linkUrl: link.short_url };
+        return await QRCode.toDataURL(qrData, { errorCorrectionLevel: "M", margin: 1, width: 480 });
     } catch (error) {
-        console.error("Razorpay commission link failed:", error?.error?.description || error.message);
+        console.error("QR could not be drawn:", error.message);
         return null;
     }
 };
 
 /**
- * Live status check against Razorpay. The webhook is the source of truth for
- * closing tickets, but technicians need to see confirmation on their screen
- * without waiting - this gives them a pull-based check.
+ * Where an order stands, in the shape the rest of the server already reads.
+ *
+ * PhonePe's order is PENDING until somebody pays, COMPLETED once they have,
+ * and FAILED when the attempt failed or the QR lapsed unpaid. The latest
+ * attempt carries the transaction id - the one id that names the money - and
+ * the UTR the customer's own app shows them.
  */
-const fetchPaymentLinkStatus = async (linkId) => {
-    if (!isConfigured() || !linkId) return null;
+const fetchOrderStatus = async (orderId) => {
+    if (!isConfigured() || !orderId) return null;
 
-    try {
-        const link = await getRazorpay().paymentLink.fetch(linkId);
+    const order = await askGateway("status check", () => phonepe.getOrderStatus(orderId));
+    if (!order) return null;
 
-        // payments[] holds the actual transaction once someone pays
-        const paidPayment = (link.payments || []).find((p) => p.status === "captured");
+    const attempt = (order.paymentDetails || [])[0] || null;
+    const paid = order.state === "COMPLETED";
 
-        return {
-            status: link.status, // created | partially_paid | expired | cancelled | paid
-            isPaid: link.status === "paid",
-            amountPaidPaise: link.amount_paid || 0,
-            paymentId: paidPayment?.payment_id || null,
-            method: paidPayment?.method || null,
-            paidAt: paidPayment?.created_at ? new Date(paidPayment.created_at * 1000) : null,
-        };
-    } catch (error) {
-        console.error("Razorpay status fetch failed:", error?.error?.description || error.message);
-        return null;
-    }
+    return {
+        // paid | created | failed - the words the screens already used
+        status: paid ? "paid" : order.state === "FAILED" ? "failed" : "created",
+        isPaid: paid,
+        amountPaidPaise: paid ? Number(order.amount) || 0 : 0,
+        paymentId: paid ? attempt?.transactionId || null : null,
+        utr: attempt?.rail?.utr || attempt?.splitInstruments?.[0]?.rail?.utr || null,
+        method: paid ? "upi" : null,
+        paidAt: paid && attempt?.timestamp ? new Date(Number(attempt.timestamp)) : null,
+        expiresAt: order.expireAt ? new Date(Number(order.expireAt)) : null,
+        meta: order.metaInfo || {},
+    };
 };
 
-
 /**
- * A link for a technician clearing their own commission dues. The notes
- * carry a different type so the webhook credits a wallet instead of
- * closing a ticket.
+ * The money behind a reference, whatever the office has in hand.
+ *
+ * PhonePe is asked by our own order id and by nothing else - there is no
+ * "look up this transaction" call. The office, though, has whatever the row
+ * shows or the vendor read out: our order id, PhonePe's transaction id, or
+ * the UTR from the customer's app. Each of those is written down beside the
+ * order id it belongs to when the money lands, so the order is found here
+ * first and then asked about.
+ *
+ * Answers in the shape the office screens were written for - status
+ * "captured" when the money is in - and throws with statusCode 404 when the
+ * reference is nothing we know of.
  */
-const createWalletRechargeLink = async ({ technician, amountPaise }) => {
-    if (!isConfigured()) return null;
+const fetchCharge = async (reference) => {
+    const ref = String(reference || "").trim();
 
-    try {
-        const phone = String(technician.phone || "").replace(/\D/g, "");
+    const row = await Payment.findOne({
+        $or: [{ razorpayPaymentId: ref }, { razorpayLinkId: ref }, { utr: ref }],
+    }).select("razorpayLinkId").lean();
 
-        const link = await askGateway("payment link", () => getRazorpay().paymentLink.create({
-            amount: amountPaise,
-            currency: "INR",
-            description: "Commission settlement, Cosmosgen",
-            customer: {
-                name: technician.name || "Technician",
-                contact: phone.length === 10 ? "+91" + phone : "+" + phone,
-            },
-            notify: { sms: true, email: false },
-            reminder_enable: false,
-            notes: {
-                type: "wallet_recharge",
-                technicianId: String(technician._id),
-            },
-        }));
+    let orderId = row?.razorpayLinkId || null;
 
-        // askGateway has already said why, and said it once rather than as a
-        // null dereference three lines further on.
-        if (!link) return null;
-
-        return { linkId: link.id, linkUrl: link.short_url };
-    } catch (error) {
-        console.error("Recharge link failed:", error?.error?.description || error.message);
-        return null;
+    if (!orderId) {
+        const ticket = await Ticket.findOne({
+            $or: [
+                { "payment.razorpayPaymentId": ref },
+                { "payment.razorpayLinkId": ref },
+                { "payment.utr": ref },
+            ],
+        }).select("payment.razorpayLinkId").lean();
+        orderId = ticket?.payment?.razorpayLinkId || null;
     }
+
+    // Our own order ids all start with one of these. Anything else that was
+    // not found above is a reference this company has never issued.
+    if (!orderId && /^(BIL|SPL|STL)-/.test(ref)) orderId = ref;
+
+    if (!orderId) {
+        const error = new Error("No order for " + ref);
+        error.statusCode = 404;
+        throw error;
+    }
+
+    let order;
+    try {
+        order = await phonepe.getOrderStatus(orderId);
+    } catch (error) {
+        const status = error?.response?.status;
+        const wrapped = new Error(gatewaySaid(error));
+        wrapped.statusCode = status === 400 || status === 404 ? 404 : status || 502;
+        throw wrapped;
+    }
+
+    const attempt = (order.paymentDetails || [])[0] || null;
+
+    return {
+        id: attempt?.transactionId || orderId,
+        orderId,
+        status: order.state === "COMPLETED" ? "captured" : String(order.state || "PENDING").toLowerCase(),
+        amount: Number(order.amount) || 0,
+        method: "upi",
+        utr: attempt?.rail?.utr || null,
+        created_at: attempt?.timestamp ? Math.floor(Number(attempt.timestamp) / 1000) : null,
+    };
 };
 
 
 module.exports = {
     buildBill,
     generateInvoiceNumber,
-    createPaymentLink,
-    fetchPaymentLinkStatus,
+    createBillQr,
+    createSettlementQr,
+    qrImage,
+    fetchOrderStatus,
+    fetchCharge,
     paiseToRupees,
     rupeesToPaise,
-    createWalletRechargeLink,
     LIMITS,
-    isRazorpayActive: isConfigured,
-    cancelPaymentLink,
-    createCommissionLink,
-};
+    isGatewayActive: isConfigured,
+};
