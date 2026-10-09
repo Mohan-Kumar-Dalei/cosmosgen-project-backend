@@ -196,9 +196,22 @@ const createQrOrder = async ({ merchantOrderId, amountPaise, expireAfterSeconds,
         },
     });
 
+    /*
+     * UPI only - plus, in the sandbox alone, net banking.
+     *
+     * PhonePe's UAT takes no real money, so a real UPI app (the iPhone that
+     * tried first, 2026-10-09) cannot finish a sandbox payment: only PhonePe's
+     * Android Test App can, or a UAT QR shown on a desktop. Sandbox net
+     * banking is a page where username "test", password "test" and a Success
+     * button complete the order from any phone - which is what lets the flow
+     * be shown to anybody. It never reaches production.
+     */
+    const modes = [{ type: "UPI_INTENT" }, { type: "UPI_QR" }];
+    if (process.env.PHONEPE_ENV !== "production") modes.push({ type: "NET_BANKING" });
+
     let data;
     try {
-        data = await call("post", PATHS.standard.pay, checkout([{ type: "UPI_INTENT" }, { type: "UPI_QR" }]));
+        data = await call("post", PATHS.standard.pay, checkout(modes));
     } catch (error) {
         // An account that will not take a payment-mode list still takes the
         // order without one; the page then offers whatever PhonePe allows.
