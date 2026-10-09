@@ -76,7 +76,7 @@ app.use(cors({
 /* ------------------------------------------------------------------ */
 /* WEBHOOKS - these must come BEFORE express.json()                     */
 /*                                                                      */
-/* Razorpay and Meta both sign the raw request bytes. Once express.json */
+/* Meta signs the raw request bytes. Once express.json                  */
 /* has parsed the body, those bytes are gone and every signature check  */
 /* fails. Each of these routers applies express.raw() itself.           */
 /* ------------------------------------------------------------------ */

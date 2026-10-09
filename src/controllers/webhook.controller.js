@@ -1,4 +1,3 @@
-const crypto = require("crypto");
 const ticketModel = require("../models/ticket.model");
 const technicianModel = require("../models/technician.model");
 const Payment = require("../models/payment.model");
@@ -110,69 +109,10 @@ const handlePhonePeEvent = async (body) => {
 };
 
 /**
- * POST /api/webhook/razorpay - kept only for bills sent before the move.
- *
- * A Razorpay link already sitting in a customer's messages can still be paid
- * after the company stopped making new ones, and that money must still close
- * the job. With RAZORPAY_WEBHOOK_SECRET unset this route refuses everything,
- * which is the right state once the last old link has lapsed.
- *
- * req.body must be a RAW BUFFER here - the signature is over the raw bytes.
- */
-const razorpayWebhook = async (req, res) => {
-    const signature = req.headers["x-razorpay-signature"];
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-
-    if (!secret) return res.status(410).json({ success: false, message: "Razorpay is no longer in use" });
-
-    const rawBody = req.body;
-    const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-    if (!signature || expected !== signature) {
-        console.error("Razorpay webhook signature mismatch");
-        return res.status(400).json({ success: false, message: "Invalid signature" });
-    }
-
-    let event;
-    try {
-        event = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-        return res.status(400).json({ success: false, message: "Invalid JSON" });
-    }
-
-    res.status(200).json({ success: true });
-
-    const type = event.event;
-    if (type !== "payment_link.paid" && type !== "payment.captured") return;
-
-    const link = event.payload?.payment_link?.entity;
-    const payment = event.payload?.payment?.entity;
-
-    try {
-        await settleGatewayPayment({
-            eventId: event.id || type + "-" + event.created_at,
-            // Razorpay sends two events for one payment; the payment id is
-            // the same on both, which is what the claims below key on.
-            orderId: link?.id || null,
-            paymentId: payment?.id,
-            utr: payment?.acquirer_data?.rrn || null,
-            amountPaise: Number(payment?.amount) || Number(link?.amount) || 0,
-            method: payment?.method || "online",
-            feePaise: Number(payment?.fee) || 0,
-            taxPaise: Number(payment?.tax) || 0,
-            notes: link?.notes || payment?.notes || {},
-            by: "Razorpay",
-            legacy: true,
-        });
-    } catch (err) {
-        console.error("Razorpay event processing failed:", err.message);
-    }
-};
-
-/**
  * Money the gateway says has landed, filed against what it was for.
  *
  * One path for every way we hear about it - PhonePe's webhook, the vendor's
- * "check now", the reconciler, an old Razorpay link - so the four of them
+ * "check now", the reconciler - so the three of them
  * cannot come to disagree about money. Safe to run twice: every write below
  * is guarded on the state it moves away from.
  *
@@ -288,7 +228,7 @@ const settleGatewayPayment = async (paid) => {
      * bill with the amount it was corrected away from. The office is told
      * instead, with the ticket and the reference, to put right by hand.
      */
-    if (!paid.legacy && linkId) {
+    if (linkId) {
         const current = await ticketModel.findById(ticketId)
             .select("ticketNumber payment.razorpayLinkId")
             .lean();
@@ -489,4 +429,4 @@ const settleGatewayPayment = async (paid) => {
  */
 const phonepeWebhookAlive = (req, res) => res.status(200).json({ success: true });
 
-module.exports = { phonepeWebhook, phonepeWebhookAlive, razorpayWebhook, handlePhonePeEvent, settleGatewayPayment };
+module.exports = { phonepeWebhook, phonepeWebhookAlive, handlePhonePeEvent, settleGatewayPayment };
