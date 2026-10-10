@@ -551,7 +551,7 @@ const bootstrap = async (req, res) => {
 
             ticketModel
                 .find({ technician: techId, status: "Closed" })
-                .select("ticketNumber serviceKey serviceLabel selectedIssueGroups billing.totalPaise billing.invoiceNumber customerSnapshot payment.method payment.status updatedAt")
+                .select("ticketNumber serviceKey serviceLabel selectedIssueGroups billing.totalPaise billing.technicianSharePaise billing.invoiceNumber customerSnapshot payment.method payment.status updatedAt")
                 .sort({ updatedAt: -1 })
                 .limit(30)
                 .lean(),
