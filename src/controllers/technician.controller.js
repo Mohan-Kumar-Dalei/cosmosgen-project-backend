@@ -522,7 +522,7 @@ const bootstrap = async (req, res) => {
         const [activeTicket, nextJobs, scheduledJobs, history, cashSummary] = await Promise.all([
             ticketModel
                 .findOne({ technician: techId, status: { $in: ACTIVE_STATUSES } })
-                .select("ticketNumber serviceKey serviceLabel selectedIssues problemDescription customerSnapshot location ride refusal status billing payment scheduling createdAt assignedAt acceptedAt")
+                .select("ticketNumber serviceKey serviceLabel selectedIssues selectedIssueGroups problemDescription customerSnapshot location ride refusal status billing payment scheduling createdAt assignedAt acceptedAt")
                 .sort({ createdAt: -1 })
                 .lean(),
 
@@ -534,7 +534,7 @@ const bootstrap = async (req, res) => {
                     status: "Queued",
                     "scheduling.scheduledFor": { $in: [null, undefined] },
                 })
-                .select("ticketNumber serviceLabel problemDescription customerSnapshot queuedAt acceptedAt")
+                .select("ticketNumber serviceKey serviceLabel selectedIssueGroups problemDescription customerSnapshot queuedAt acceptedAt")
                 .sort({ queuedAt: 1 })
                 .lean(),
 
@@ -545,13 +545,13 @@ const bootstrap = async (req, res) => {
                     status: "Queued",
                     "scheduling.scheduledFor": { $ne: null },
                 })
-                .select("ticketNumber serviceLabel problemDescription customerSnapshot scheduling queuedAt acceptedAt")
+                .select("ticketNumber serviceKey serviceLabel selectedIssueGroups problemDescription customerSnapshot scheduling queuedAt acceptedAt")
                 .sort({ "scheduling.scheduledFor": 1 })
                 .lean(),
 
             ticketModel
                 .find({ technician: techId, status: "Closed" })
-                .select("ticketNumber serviceLabel billing.totalPaise billing.invoiceNumber customerSnapshot payment.method payment.status updatedAt")
+                .select("ticketNumber serviceKey serviceLabel selectedIssueGroups billing.totalPaise billing.invoiceNumber customerSnapshot payment.method payment.status updatedAt")
                 .sort({ updatedAt: -1 })
                 .limit(30)
                 .lean(),
