@@ -190,6 +190,17 @@ const userSchema = new mongoose.Schema({
     languageConfirmedAt: { type: Date },
 
     role: { type: String, default: "customer" },
+
+    /*
+     * When the customer deleted their account from the app.
+     *
+     * The row is emptied rather than removed: their tickets point at it, and
+     * the office's history of who was served when must not lose its other
+     * end. Everything that says who they were - name, number, address,
+     * picture, saved places - is cleared, and the number is released, so
+     * writing on WhatsApp again starts a brand new customer.
+     */
+    deletedAt: { type: Date },
 }, { timestamps: true });
 
 userSchema.index({ location: "2dsphere" });

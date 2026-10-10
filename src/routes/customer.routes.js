@@ -86,6 +86,7 @@ router.delete("/chat/:chatId", isAuthenticated, customer.forgetChat);
 /* ---------- THEIR ACCOUNT ---------- */
 router.get("/me", isAuthenticated, customer.me);
 router.put("/profile", isAuthenticated, customer.updateProfile);
+router.delete("/account", isAuthenticated, customer.deleteAccount);
 router.put("/push-token", isAuthenticated, customer.savePushToken);
 
 /* ---------- THEIR JOBS ---------- */

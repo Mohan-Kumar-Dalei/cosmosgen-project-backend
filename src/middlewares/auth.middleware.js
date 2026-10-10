@@ -46,12 +46,14 @@ const isAuthenticated = async (req, res, next) => {
              * the app makes first. Reading it separately would be a second
              * round trip to the same document to fetch one date.
              */
-            .select("_id name phone address state area lat lon role language languageConfirmedAt noticesSeenAt photoUrl bookmarks")
+            .select("_id name phone address state area lat lon role language languageConfirmedAt noticesSeenAt photoUrl bookmarks deletedAt")
             .lean();
 
-        if (!user) {
+        // A deleted account is gone for every token it ever issued
+        if (!user || user.deletedAt) {
             return res.status(401).json({ success: false, message: "Unauthorized: User not found" });
         }
+        delete user.deletedAt;
 
         req.user = user;
         next();
@@ -81,10 +83,13 @@ const attachUserIfAny = async (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const user = await userModel
             .findById(decoded.userId || decoded.id)
-            .select("_id name phone language role")
+            .select("_id name phone language role deletedAt")
             .lean();
 
-        if (user) req.user = user;
+        if (user && !user.deletedAt) {
+            delete user.deletedAt;
+            req.user = user;
+        }
     } catch {
         // No session, and that is a perfectly ordinary state here
     }

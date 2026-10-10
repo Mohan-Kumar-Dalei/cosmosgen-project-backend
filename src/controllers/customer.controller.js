@@ -16,6 +16,8 @@ const registration = require("../services/registration.service");
 const paymentService = require("../services/payment.service");
 const assistant = require("../services/assistant.service");
 const WebChat = require("../models/webChat.model");
+const Message = require("../models/message.model");
+const Conversation = require("../models/conversation.model");
 const uploadImage = require("../utils/imagekit");
 const Announcement = require("../models/announcement.model");
 const { emitToRoom, adminRoom } = require("../sockets/socket.instance");
@@ -154,6 +156,64 @@ const me = async (req, res) =>
 const logout = (req, res) => {
     res.clearCookie("token", { ...cookieOptions, maxAge: undefined });
     return res.status(200).json({ success: true, message: "Logged out" });
+};
+
+/**
+ * DELETE /api/customer/account
+ *
+ * The customer closing their own account from the app - Google Play asks that
+ * an account made in an app can be deleted from it (Mohan, 2026-10-10).
+ *
+ * Not while a booking is still open: somebody may be on the way to that door,
+ * and only the office can take a job back once a vendor has it. Otherwise the
+ * row is emptied in place - see `deletedAt` on the model - and the assistant's
+ * chats and the WhatsApp conversation go with it. The bookings stay, as the
+ * company's record of the work, under the name they were booked in.
+ */
+const deleteAccount = async (req, res) => {
+    try {
+        const id = req.user._id;
+
+        const open = await ticketModel.countDocuments({ customer: id, status: { $in: booking.OPEN_STATUSES } });
+        if (open) {
+            return res.status(400).json({
+                success: false,
+                message: open === 1
+                    ? "You have a booking that is still open. Cancel it or let it finish, then delete your account."
+                    : `You have ${open} bookings that are still open. Cancel them or let them finish, then delete your account.`,
+            });
+        }
+
+        await userModel.updateOne({ _id: id }, {
+            $set: {
+                // Unique, so the real number is free for a new account
+                phone: "deleted:" + id,
+                name: "",
+                address: "",
+                state: "",
+                area: "",
+                city: "",
+                pincode: "",
+                photoUrl: "",
+                bookmarks: [],
+                addresses: [],
+                deletedAt: new Date(),
+            },
+            $unset: { lat: 1, lon: 1, location: 1, pushToken: 1, nameConfirmedAt: 1, languageConfirmedAt: 1 },
+        });
+
+        await Promise.all([
+            WebChat.deleteMany({ user: id }),
+            Message.deleteMany({ user: id }),
+            Conversation.deleteMany({ phone: req.user.phone }),
+        ]);
+
+        res.clearCookie("token", { ...cookieOptions, maxAge: undefined });
+        return res.status(200).json({ success: true, message: "Account deleted" });
+    } catch (error) {
+        console.error("Delete account error:", error.message);
+        return res.status(500).json({ success: false, message: "Could not delete the account. Please try again." });
+    }
 };
 
 /**
@@ -538,7 +598,11 @@ const TICKET_FIELDS =
     + "technicianSnapshot scheduling ride billing.totalPaise billing.invoiceNumber billing.workDone "
     + "payment.method payment.status tracking.token otp.start otp.close cancelReason "
     + "billing.invoicePdfUrl billing.lineItems billing.subtotalPaise billing.discountPaise "
-    + "billing.discountLabel billing.gstPercent billing.gstPaise billing.billedAt createdAt updatedAt";
+    + "billing.discountLabel billing.gstPercent billing.gstPaise billing.billedAt createdAt updatedAt "
+    // The customer's own rating of the job. Left out of this list, `rating`
+    // below was always null - the job screen kept offering the stars again
+    // and never showed the review it already had.
+    + "feedback.ratedAt feedback.rating feedback.tags feedback.note feedback.photos";
 
 /**
  * Whether the customer has been told who is coming.
@@ -641,7 +705,16 @@ const shape = (t) => ({
      * a screen that looks like it lost the first one.
      */
     rating: t.feedback?.ratedAt
-        ? { stars: t.feedback.rating || 0, tags: t.feedback.tags || [] }
+        ? {
+            stars: t.feedback.rating || 0,
+            tags: t.feedback.tags || [],
+            // What they wrote and the pictures they added. Only the stars
+            // came back before, so the job screen showed a bare row of
+            // stars while the service page showed the whole review (Mohan,
+            // 2026-10-10: feedback in service details, not in the booking).
+            note: t.feedback.note || "",
+            photos: t.feedback.photos || [],
+        }
         : null,
 
     /*
@@ -1760,6 +1833,7 @@ module.exports = {
     me,
     logout,
     updateProfile,
+    deleteAccount,
     getServices,
     coverage,
     ask,
