@@ -18,9 +18,10 @@ const assistant = require("../services/assistant.service");
 const WebChat = require("../models/webChat.model");
 const Message = require("../models/message.model");
 const Conversation = require("../models/conversation.model");
+const Call = require("../models/call.model");
 const uploadImage = require("../utils/imagekit");
 const Announcement = require("../models/announcement.model");
-const { emitToRoom, adminRoom } = require("../sockets/socket.instance");
+const { emitToRoom, adminRoom, userRoom, dropRoom } = require("../sockets/socket.instance");
 const ratings = require("../services/rating.service");
 const { lookupPlace } = require("./map.controller");
 const { serviceRanges } = require("../services/estimate.service");
@@ -165,10 +166,21 @@ const logout = (req, res) => {
  * an account made in an app can be deleted from it (Mohan, 2026-10-10).
  *
  * Not while a booking is still open: somebody may be on the way to that door,
- * and only the office can take a job back once a vendor has it. Otherwise the
- * row is emptied in place - see `deletedAt` on the model - and the assistant's
- * chats and the WhatsApp conversation go with it. The bookings stay, as the
- * company's record of the work, under the name they were booked in.
+ * and only the office can take a job back once a vendor has it.
+ *
+ * Otherwise the customer is removed from the database outright (Mohan,
+ * 2026-10-10: "customer ka account poora db se remove hoga ... db main nehi
+ * rakhenge"). Their row goes, and with it everything kept about them as a
+ * person: the assistant's chats, the WhatsApp messages and conversation, and
+ * the calls we placed to them with what was said on them.
+ *
+ * The bookings stay, as the company's books - the invoice, what was charged,
+ * which vendor did it - each carrying the copy of the name and address it was
+ * booked under. Nothing reads the customer row through a ticket, so a ticket
+ * whose customer is gone still opens everywhere it did before.
+ *
+ * Writing on WhatsApp again, or signing in with the same number, starts a
+ * brand new customer.
  */
 const deleteAccount = async (req, res) => {
     try {
@@ -184,29 +196,21 @@ const deleteAccount = async (req, res) => {
             });
         }
 
-        await userModel.updateOne({ _id: id }, {
-            $set: {
-                // Unique, so the real number is free for a new account
-                phone: "deleted:" + id,
-                name: "",
-                address: "",
-                state: "",
-                area: "",
-                city: "",
-                pincode: "",
-                photoUrl: "",
-                bookmarks: [],
-                addresses: [],
-                deletedAt: new Date(),
-            },
-            $unset: { lat: 1, lon: 1, location: 1, pushToken: 1, nameConfirmedAt: 1, languageConfirmedAt: 1 },
-        });
-
+        // What hangs off the customer first, and the row itself last - so a
+        // failure half way leaves an account that can be deleted again rather
+        // than loose chats belonging to nobody
         await Promise.all([
             WebChat.deleteMany({ user: id }),
             Message.deleteMany({ user: id }),
-            Conversation.deleteMany({ phone: req.user.phone }),
+            Conversation.deleteMany({ $or: [{ phone: req.user.phone }, { user: id }] }),
+            Call.deleteMany({ customer: id }),
         ]);
+
+        await userModel.deleteOne({ _id: id });
+
+        // The cookie goes, and so does any live socket - which the cookie has
+        // no say over, having been authorised when it opened
+        dropRoom(userRoom(id));
 
         res.clearCookie("token", { ...cookieOptions, maxAge: undefined });
         return res.status(200).json({ success: true, message: "Account deleted" });

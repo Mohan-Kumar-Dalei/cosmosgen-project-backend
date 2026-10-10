@@ -192,13 +192,13 @@ const userSchema = new mongoose.Schema({
     role: { type: String, default: "customer" },
 
     /*
-     * When the customer deleted their account from the app.
+     * Only on accounts deleted before 2026-10-10.
      *
-     * The row is emptied rather than removed: their tickets point at it, and
-     * the office's history of who was served when must not lose its other
-     * end. Everything that says who they were - name, number, address,
-     * picture, saved places - is cleared, and the number is released, so
-     * writing on WhatsApp again starts a brand new customer.
+     * Deleting an account used to empty the row and stamp this. It now
+     * removes the row outright (see deleteAccount in customer.controller), and
+     * the weekly housekeeping pass removes any row still carrying this date,
+     * so the field dies out on its own. Sign-in still refuses a row that has
+     * it, for the days until that pass has run.
      */
     deletedAt: { type: Date },
 }, { timestamps: true });

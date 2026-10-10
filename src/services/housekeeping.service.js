@@ -1,5 +1,6 @@
 const ticketModel = require("../models/ticket.model");
 const callModel = require("../models/call.model");
+const userModel = require("../models/user.model");
 
 /**
  * Throwing away the weight of old jobs, and keeping the rest.
@@ -90,6 +91,20 @@ const stripOldCallTurns = async (before) => {
 };
 
 /**
+ * Customers who deleted their account before deletion meant removal.
+ *
+ * Until 2026-10-10 a deleted account was emptied and left in place with
+ * `deletedAt` set. Mohan wants a deleted customer gone from the database, as
+ * new deletions now are, so the rows left over from the old way are removed
+ * here. Their chats and messages went at the time; their bookings stay as the
+ * company's books, as they do for a deletion today.
+ */
+const removeDeletedCustomers = async () => {
+    const result = await userModel.deleteMany({ deletedAt: { $ne: null } });
+    return result.deletedCount || 0;
+};
+
+/**
  * Never throws and never blocks anything.
  *
  * This runs beside a live server. A housekeeping pass that fails is a database
@@ -100,9 +115,10 @@ const sweep = async () => {
     const before = cutoff();
 
     try {
-        const [rides, calls] = await Promise.all([
+        const [rides, calls, customers] = await Promise.all([
             stripOldRides(before),
             stripOldCallTurns(before),
+            removeDeletedCustomers(),
         ]);
 
         if (rides || calls) {
@@ -110,6 +126,9 @@ const sweep = async () => {
                 "[HOUSEKEEPING] older than " + before.toISOString().slice(0, 10)
                 + ": " + rides + " ride(s) stripped, " + calls + " call transcript(s) cleared"
             );
+        }
+        if (customers) {
+            console.log("[HOUSEKEEPING] " + customers + " deleted customer account(s) removed");
         }
     } catch (err) {
         console.error("[HOUSEKEEPING] sweep failed:", err.message);
